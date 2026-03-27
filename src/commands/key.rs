@@ -4,7 +4,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use tpm_core::backend::TpmBackend;
-use tpm_core::diag::{DiagCode, Diagnostic};
+use tpm_core::diag::TpmError;
 use tpm_core::model::{Algorithm, ObjectKind, ObjectPath, TpmObject};
 use tpm_core::output::format::{render, TextRenderable};
 use tpm_core::output::OutputFormat;
@@ -23,21 +23,16 @@ pub fn create(
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     let path = ObjectPath::new(path_str).map_err(|e| {
-        let diag = Diagnostic::error(DiagCode::E0003, e.to_string());
-        eprintln!("{}", diag.render_text());
+        let err = TpmError::invalid_path(path_str, &e.to_string());
+        err.emit();
         e
     })?;
 
     // Check if already exists
     if store.get_object(&path)?.is_some() {
-        let diag = Diagnostic::error(
-            DiagCode::E0007,
-            format!("object already exists: {}", path),
-        )
-        .with_suggestion(format!("run `tpm key show {}` to inspect it", path))
-        .with_suggestion("use a different name or delete the existing object first");
-        eprintln!("{}", diag.render_text());
-        anyhow::bail!("object already exists: {}", path);
+        let err = TpmError::object_already_exists(path_str);
+        err.emit();
+        return Err(err.into());
     }
 
     let algorithm: Algorithm = algorithm_str.parse().map_err(|e: String| anyhow::anyhow!(e))?;
@@ -167,42 +162,34 @@ impl TextRenderable for KeyListing {
 
 pub fn show(store: &Store, path_str: &str, format: OutputFormat) -> anyhow::Result<()> {
     let path = ObjectPath::new(path_str).map_err(|e| {
-        let diag = Diagnostic::error(DiagCode::E0003, e.to_string());
-        eprintln!("{}", diag.render_text());
+        let err = TpmError::invalid_path(path_str, &e.to_string());
+        err.emit();
         e
     })?;
 
-    let obj = store.get_object(&path)?;
-    match obj {
-        Some(obj) => {
-            let policy_name = if let Some(pid) = obj.policy_id {
-                store.get_policy_by_id(&pid)?.map(|p| p.name)
-            } else {
-                None
-            };
-            let detail = KeyDetail {
-                path: obj.path.to_string(),
-                id: obj.id.to_string(),
-                kind: obj.kind.to_string(),
-                algorithm: obj.algorithm.to_string(),
-                policy: policy_name,
-                created_at: obj.created_at.to_rfc3339(),
-                has_handle: obj.handle_blob.is_some(),
-                metadata: obj.metadata.clone(),
-            };
-            println!("{}", render(&detail, format));
-        }
-        None => {
-            let diag = Diagnostic::error(
-                DiagCode::E0004,
-                format!("object not found: {}", path),
-            )
-            .with_suggestion("run `tpm key list` to see available keys");
-            eprintln!("{}", diag.render_text());
-            anyhow::bail!("object not found: {}", path);
-        }
-    }
+    let obj = store.get_object(&path)?.ok_or_else(|| {
+        let err = TpmError::object_not_found(path_str);
+        err.emit();
+        err
+    })?;
 
+    let policy_name = if let Some(pid) = obj.policy_id {
+        store.get_policy_by_id(&pid)?.map(|p| p.name)
+    } else {
+        None
+    };
+
+    let detail = KeyDetail {
+        path: obj.path.to_string(),
+        id: obj.id.to_string(),
+        kind: obj.kind.to_string(),
+        algorithm: obj.algorithm.to_string(),
+        policy: policy_name,
+        created_at: obj.created_at.to_rfc3339(),
+        has_handle: obj.handle_blob.is_some(),
+        metadata: obj.metadata.clone(),
+    };
+    println!("{}", render(&detail, format));
     Ok(())
 }
 
@@ -317,12 +304,10 @@ fn hex_encode(bytes: &[u8]) -> String {
 pub fn delete(store: &Store, path_str: &str, format: OutputFormat) -> anyhow::Result<()> {
     let path = ObjectPath::new(path_str)?;
 
-    let obj = store.get_object(&path)?;
-    if obj.is_none() {
-        let diag = Diagnostic::error(DiagCode::E0004, format!("object not found: {}", path))
-            .with_suggestion("run `tpm key list` to see available keys");
-        eprintln!("{}", diag.render_text());
-        anyhow::bail!("object not found: {}", path);
+    if store.get_object(&path)?.is_none() {
+        let err = TpmError::object_not_found(path_str);
+        err.emit();
+        return Err(err.into());
     }
 
     store.delete_object(&path)?;
