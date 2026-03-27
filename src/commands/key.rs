@@ -355,6 +355,7 @@ pub fn export_pub(
     store: &Store,
     path_str: &str,
     key_format: &str,
+    target: Option<&str>,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     let path = ObjectPath::new(path_str)?;
@@ -363,22 +364,72 @@ pub fn export_pub(
         .get_object(&path)?
         .ok_or_else(|| anyhow::anyhow!("object not found: {}", path))?;
 
-    // Mock: generate a deterministic "public key" representation
-    let pub_material = match key_format {
-        "pem" => format!(
-            "-----BEGIN PUBLIC KEY-----\n(mock {} public key for {})\n-----END PUBLIC KEY-----",
-            obj.algorithm, obj.path
+    let handle_hex = hex_encode(obj.handle_blob.as_deref().unwrap_or(&[]));
+
+    // Determine format based on target integration
+    let (actual_format, pub_material, integration_hint) = match target {
+        Some("openssl") => (
+            "pem",
+            format!(
+                "-----BEGIN PUBLIC KEY-----\n(mock {} public key for {})\n-----END PUBLIC KEY-----",
+                obj.algorithm, obj.path
+            ),
+            Some("use with: openssl dgst -verify key.pem -signature sig.bin data.bin".to_string()),
         ),
-        "der" => format!("(mock DER for {})", obj.path),
-        "raw" => hex_encode(obj.handle_blob.as_deref().unwrap_or(&[])),
-        _ => anyhow::bail!("unsupported key format: {} (use pem, der, raw)", key_format),
+        Some("ssh") => (
+            "ssh",
+            format!(
+                "ssh-{} {} tpm:{}",
+                match obj.algorithm {
+                    Algorithm::EccP256 => "ed25519",
+                    Algorithm::EccP384 => "ed25519",
+                    Algorithm::Rsa2048 => "rsa",
+                    Algorithm::Rsa3072 => "rsa",
+                },
+                handle_hex,
+                obj.path
+            ),
+            Some("add to ~/.ssh/authorized_keys or use as SSH host key".to_string()),
+        ),
+        Some("cosign") => (
+            "pem",
+            format!(
+                "-----BEGIN PUBLIC KEY-----\n(mock {} public key for {})\n-----END PUBLIC KEY-----",
+                obj.algorithm, obj.path
+            ),
+            Some("use with: cosign verify --key key.pem <image>".to_string()),
+        ),
+        Some("pkcs11") => (
+            "uri",
+            format!("pkcs11:model=TPM;manufacturer=mock;object={}", obj.path),
+            Some("use as PKCS#11 URI reference to TPM-backed key".to_string()),
+        ),
+        Some(other) => {
+            anyhow::bail!(
+                "unknown integration target: '{}'\navailable: openssl, ssh, cosign, pkcs11",
+                other
+            )
+        }
+        None => {
+            let material = match key_format {
+                "pem" => format!(
+                    "-----BEGIN PUBLIC KEY-----\n(mock {} public key for {})\n-----END PUBLIC KEY-----",
+                    obj.algorithm, obj.path
+                ),
+                "der" => format!("(mock DER for {})", obj.path),
+                "raw" => handle_hex,
+                _ => anyhow::bail!("unsupported key format: {} (use pem, der, raw)", key_format),
+            };
+            (key_format, material, None)
+        }
     };
 
     let result = ExportPubResult {
         path: path.to_string(),
         algorithm: obj.algorithm.to_string(),
-        key_format: key_format.to_string(),
+        key_format: actual_format.to_string(),
         public_key: pub_material,
+        integration_hint,
     };
 
     println!("{}", render(&result, format));
@@ -391,14 +442,19 @@ struct ExportPubResult {
     algorithm: String,
     key_format: String,
     public_key: String,
+    integration_hint: Option<String>,
 }
 
 impl TextRenderable for ExportPubResult {
     fn render_text(&self) -> String {
-        format!(
+        let mut out = format!(
             "path:       {}\nalgorithm:  {}\nformat:     {}\n\n{}\n",
             self.path, self.algorithm, self.key_format, self.public_key
-        )
+        );
+        if let Some(ref hint) = self.integration_hint {
+            out.push_str(&format!("\nhint: {}\n", hint));
+        }
+        out
     }
 }
 

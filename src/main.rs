@@ -123,9 +123,17 @@ fn main() -> anyhow::Result<()> {
                     KeyCommand::Delete { path } => {
                         commands::key::delete(&store, &path, cli.format)
                     }
-                    KeyCommand::ExportPub { path, key_format } => {
-                        commands::key::export_pub(&store, &path, &key_format, cli.format)
-                    }
+                    KeyCommand::ExportPub {
+                        path,
+                        key_format,
+                        target,
+                    } => commands::key::export_pub(
+                        &store,
+                        &path,
+                        &key_format,
+                        target.as_deref(),
+                        cli.format,
+                    ),
                     KeyCommand::Rotate { path } => {
                         commands::key::rotate(&store, backend.as_ref(), &path, cli.format)
                     }

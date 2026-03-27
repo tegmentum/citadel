@@ -148,6 +148,10 @@ pub enum KeyCommand {
         /// Export format (pem, der, raw)
         #[arg(long, default_value = "pem")]
         key_format: String,
+
+        /// Integration target (openssl, ssh, cosign, pkcs11)
+        #[arg(long = "export-for")]
+        target: Option<String>,
     },
     /// Rotate a key (create new, archive old)
     Rotate {
