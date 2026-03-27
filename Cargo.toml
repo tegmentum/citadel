@@ -13,6 +13,10 @@ edition = "2021"
 version = "0.1.0"
 license = "Apache-2.0"
 
+[features]
+default = []
+tpm-hw = ["tpm-core/tpm-hw"]
+
 [[bin]]
 name = "tpm"
 path = "src/main.rs"

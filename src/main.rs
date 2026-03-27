@@ -27,6 +27,27 @@ fn default_store_path() -> std::path::PathBuf {
     }
 }
 
+fn create_backend(name: &str) -> anyhow::Result<Box<dyn tpm_core::backend::TpmBackend>> {
+    match name {
+        "mock" => Ok(Box::new(MockBackend::new())),
+        #[cfg(feature = "tpm-hw")]
+        "device" => Ok(Box::new(tpm_core::backend::HardwareBackend::new_device()?)),
+        #[cfg(not(feature = "tpm-hw"))]
+        "device" => {
+            anyhow::bail!(
+                "hardware TPM backend not available: rebuild with --features tpm-hw\n\
+                 This requires the tpm2-tss development libraries to be installed."
+            )
+        }
+        other => {
+            anyhow::bail!(
+                "unknown backend: '{}'\navailable backends: mock, device",
+                other
+            )
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -47,18 +68,19 @@ fn main() -> anyhow::Result<()> {
         Some(cmd) => {
             let store_path = cli.store_path.unwrap_or_else(default_store_path);
             let store = Store::open(&store_path)?;
-            let backend = MockBackend::new();
+            let backend: Box<dyn tpm_core::backend::TpmBackend> =
+                create_backend(&cli.backend)?;
 
             match cmd {
                 Command::Init { profile } => commands::init::run(
                     &store,
-                    &backend,
+                    backend.as_ref(),
                     &store_path,
                     profile.as_deref(),
                     cli.format,
                 ),
-                Command::Status => commands::status::run(&store, &backend, cli.format),
-                Command::Doctor => commands::doctor::run(&store, &backend, cli.format),
+                Command::Status => commands::status::run(&store, backend.as_ref(), cli.format),
+                Command::Doctor => commands::doctor::run(&store, backend.as_ref(), cli.format),
                 Command::Key(key_cmd) => match key_cmd {
                     KeyCommand::Create {
                         path,
@@ -66,7 +88,7 @@ fn main() -> anyhow::Result<()> {
                         policy,
                     } => commands::key::create(
                         &store,
-                        &backend,
+                        backend.as_ref(),
                         &path,
                         &algorithm,
                         policy.as_deref(),
@@ -80,7 +102,7 @@ fn main() -> anyhow::Result<()> {
                         output,
                     } => commands::key::sign(
                         &store,
-                        &backend,
+                        backend.as_ref(),
                         &path,
                         &input,
                         output.as_ref(),
@@ -100,7 +122,7 @@ fn main() -> anyhow::Result<()> {
                         policy,
                     } => commands::secret::seal(
                         &store,
-                        &backend,
+                        backend.as_ref(),
                         &name,
                         &input,
                         policy.as_deref(),
@@ -108,7 +130,7 @@ fn main() -> anyhow::Result<()> {
                     ),
                     SecretCommand::Unseal { name, output } => commands::secret::unseal(
                         &store,
-                        &backend,
+                        backend.as_ref(),
                         &name,
                         output.as_deref(),
                         cli.format,
@@ -117,31 +139,31 @@ fn main() -> anyhow::Result<()> {
                 },
                 Command::Nv(nv_cmd) => match nv_cmd {
                     NvCommand::Define { name, size } => {
-                        commands::nv::define(&store, &backend, &name, size, cli.format)
+                        commands::nv::define(&store, backend.as_ref(), &name, size, cli.format)
                     }
                     NvCommand::Write { name, input } => {
-                        commands::nv::write(&store, &backend, &name, &input)
+                        commands::nv::write(&store, backend.as_ref(), &name, &input)
                     }
                     NvCommand::Read { name, output } => {
-                        commands::nv::read(&store, &backend, &name, output.as_deref(), cli.format)
+                        commands::nv::read(&store, backend.as_ref(), &name, output.as_deref(), cli.format)
                     }
                     NvCommand::List => commands::nv::list(&store, cli.format),
                     NvCommand::Delete { name } => {
-                        commands::nv::delete(&store, &backend, &name)
+                        commands::nv::delete(&store, backend.as_ref(), &name)
                     }
                 },
                 Command::Pcr(pcr_cmd) => match pcr_cmd {
                     PcrCommand::Show { bank, index } => {
-                        commands::pcr::show(&backend, &bank, &index, cli.format)
+                        commands::pcr::show(backend.as_ref(), &bank, &index, cli.format)
                     }
                     PcrCommand::Baseline(bl_cmd) => match bl_cmd {
                         PcrBaselineCommand::Save { name, bank, index } => {
                             commands::pcr::baseline_save(
-                                &store, &backend, &name, &bank, &index, cli.format,
+                                &store, backend.as_ref(), &name, &bank, &index, cli.format,
                             )
                         }
                         PcrBaselineCommand::Diff { name } => {
-                            commands::pcr::baseline_diff(&store, &backend, &name, cli.format)
+                            commands::pcr::baseline_diff(&store, backend.as_ref(), &name, cli.format)
                         }
                         PcrBaselineCommand::List => {
                             commands::pcr::baseline_list(&store, cli.format)
@@ -179,13 +201,13 @@ fn main() -> anyhow::Result<()> {
                 },
                 Command::Repair(rep_cmd) => match rep_cmd {
                     RepairCommand::Scan => {
-                        commands::repair::scan(&store, &backend, cli.format)
+                        commands::repair::scan(&store, backend.as_ref(), cli.format)
                     }
                     RepairCommand::Plan => {
-                        commands::repair::plan(&store, &backend, cli.format)
+                        commands::repair::plan(&store, backend.as_ref(), cli.format)
                     }
                     RepairCommand::Apply => {
-                        commands::repair::apply(&store, &backend, cli.format)
+                        commands::repair::apply(&store, backend.as_ref(), cli.format)
                     }
                 },
                 Command::Explain { concept } => commands::explain::run(&concept),

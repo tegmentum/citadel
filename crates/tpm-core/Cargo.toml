@@ -3,6 +3,12 @@ name = "tpm-core"
 edition.workspace = true
 version.workspace = true
 
+[features]
+default = []
+# Enable real TPM hardware backend via tss-esapi.
+# Requires tpm2-tss system library to be installed.
+tpm-hw = ["tss-esapi"]
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
@@ -13,6 +19,9 @@ rusqlite.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 tracing.workspace = true
+
+# Optional: real TPM backend
+tss-esapi = { version = "8.0.0-alpha.2", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

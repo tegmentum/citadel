@@ -20,6 +20,10 @@ pub struct Cli {
     /// Path to the metadata store
     #[arg(long, global = true, env = "TPM_STORE_PATH")]
     pub store_path: Option<PathBuf>,
+
+    /// TPM backend to use (mock, device)
+    #[arg(long, global = true, default_value = "mock", env = "TPM_BACKEND")]
+    pub backend: String,
 }
 
 fn parse_output_format(s: &str) -> Result<OutputFormat, String> {
