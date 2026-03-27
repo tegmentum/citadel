@@ -8,7 +8,7 @@ use clap::Parser;
 use tpm_core::backend::MockBackend;
 use tpm_core::store::Store;
 
-use app::{Cli, Command, KeyCommand, ProfileCommand};
+use app::{Cli, Command, DaemonCommand, KeyCommand, ProfileCommand};
 
 fn default_store_path() -> std::path::PathBuf {
     if let Ok(dir) = std::env::var("XDG_DATA_HOME") {
@@ -29,14 +29,13 @@ fn main() -> anyhow::Result<()> {
 
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| {
-                    if cli.verbose {
-                        "tpm=debug".into()
-                    } else {
-                        "tpm=warn".into()
-                    }
-                }),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                if cli.verbose {
+                    "tpm=debug".into()
+                } else {
+                    "tpm=warn".into()
+                }
+            }),
         )
         .with_writer(std::io::stderr)
         .init();
@@ -48,6 +47,9 @@ fn main() -> anyhow::Result<()> {
             let backend = MockBackend::new();
 
             match cmd {
+                Command::Init { profile } => {
+                    commands::init::run(&store, &backend, &store_path, profile.as_deref(), cli.format)
+                }
                 Command::Status => commands::status::run(&store, &backend, cli.format),
                 Command::Doctor => commands::doctor::run(&store, &backend, cli.format),
                 Command::Key(key_cmd) => match key_cmd {
@@ -55,9 +57,7 @@ fn main() -> anyhow::Result<()> {
                         commands::key::create(&store, &backend, &path, &algorithm, cli.format)
                     }
                     KeyCommand::List => commands::key::list(&store, cli.format),
-                    KeyCommand::Show { path } => {
-                        commands::key::show(&store, &path, cli.format)
-                    }
+                    KeyCommand::Show { path } => commands::key::show(&store, &path, cli.format),
                     KeyCommand::Sign {
                         path,
                         input,
@@ -70,6 +70,12 @@ fn main() -> anyhow::Result<()> {
                         output.as_ref(),
                         cli.format,
                     ),
+                    KeyCommand::Delete { path } => {
+                        commands::key::delete(&store, &path, cli.format)
+                    }
+                    KeyCommand::ExportPub { path, key_format } => {
+                        commands::key::export_pub(&store, &path, &key_format, cli.format)
+                    }
                 },
                 Command::Profile(prof_cmd) => match prof_cmd {
                     ProfileCommand::List => commands::profile::list(&store, cli.format),
@@ -77,6 +83,16 @@ fn main() -> anyhow::Result<()> {
                         commands::profile::show(&store, name.as_deref(), cli.format)
                     }
                     ProfileCommand::Set { name } => commands::profile::set(&store, &name),
+                },
+                Command::Daemon(daemon_cmd) => match daemon_cmd {
+                    DaemonCommand::Run { listen } => {
+                        eprintln!("daemon: starting on {} (not yet implemented)", listen);
+                        std::process::exit(1);
+                    }
+                    DaemonCommand::Status => {
+                        eprintln!("daemon: status check (not yet implemented)");
+                        std::process::exit(1);
+                    }
                 },
             }
         }

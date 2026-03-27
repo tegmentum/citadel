@@ -28,6 +28,12 @@ fn parse_output_format(s: &str) -> Result<OutputFormat, String> {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Initialize workspace with default profile
+    Init {
+        /// Profile name to create
+        #[arg(long)]
+        profile: Option<String>,
+    },
     /// Show TPM and workspace status
     Status,
     /// Run diagnostic health checks
@@ -38,6 +44,9 @@ pub enum Command {
     /// Profile management
     #[command(subcommand)]
     Profile(ProfileCommand),
+    /// Daemon management
+    #[command(subcommand)]
+    Daemon(DaemonCommand),
 }
 
 #[derive(Subcommand)]
@@ -71,6 +80,20 @@ pub enum KeyCommand {
         #[arg(long)]
         output: Option<PathBuf>,
     },
+    /// Delete a key
+    Delete {
+        /// Object path
+        path: String,
+    },
+    /// Export public key material
+    ExportPub {
+        /// Object path
+        path: String,
+
+        /// Export format (pem, der, raw)
+        #[arg(long, default_value = "pem")]
+        key_format: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -87,4 +110,16 @@ pub enum ProfileCommand {
         /// Profile name
         name: String,
     },
+}
+
+#[derive(Subcommand)]
+pub enum DaemonCommand {
+    /// Run the daemon
+    Run {
+        /// Listen address
+        #[arg(long, default_value = "127.0.0.1:7701")]
+        listen: String,
+    },
+    /// Show daemon status
+    Status,
 }

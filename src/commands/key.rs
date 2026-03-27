@@ -289,3 +289,90 @@ impl TextRenderable for SignResult {
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
+
+// -- key delete --
+
+pub fn delete(store: &Store, path_str: &str, format: OutputFormat) -> anyhow::Result<()> {
+    let path = ObjectPath::new(path_str)?;
+
+    let obj = store.get_object(&path)?;
+    if obj.is_none() {
+        let diag = Diagnostic::error(DiagCode::E0004, format!("object not found: {}", path))
+            .with_suggestion("run `tpm key list` to see available keys");
+        eprintln!("{}", diag.render_text());
+        anyhow::bail!("object not found: {}", path);
+    }
+
+    store.delete_object(&path)?;
+    store.log_action("key.delete", Some(path.as_str()), &serde_json::json!({}))?;
+
+    let result = KeyDeleted {
+        path: path.to_string(),
+    };
+    println!("{}", render(&result, format));
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct KeyDeleted {
+    path: String,
+}
+
+impl TextRenderable for KeyDeleted {
+    fn render_text(&self) -> String {
+        format!("key deleted: {}\n", self.path)
+    }
+}
+
+// -- key export-pub --
+
+pub fn export_pub(
+    store: &Store,
+    path_str: &str,
+    key_format: &str,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let path = ObjectPath::new(path_str)?;
+
+    let obj = store
+        .get_object(&path)?
+        .ok_or_else(|| anyhow::anyhow!("object not found: {}", path))?;
+
+    // Mock: generate a deterministic "public key" representation
+    let pub_material = match key_format {
+        "pem" => format!(
+            "-----BEGIN PUBLIC KEY-----\n(mock {} public key for {})\n-----END PUBLIC KEY-----",
+            obj.algorithm, obj.path
+        ),
+        "der" => format!("(mock DER for {})", obj.path),
+        "raw" => hex_encode(obj.handle_blob.as_deref().unwrap_or(&[])),
+        _ => anyhow::bail!("unsupported key format: {} (use pem, der, raw)", key_format),
+    };
+
+    let result = ExportPubResult {
+        path: path.to_string(),
+        algorithm: obj.algorithm.to_string(),
+        key_format: key_format.to_string(),
+        public_key: pub_material,
+    };
+
+    println!("{}", render(&result, format));
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct ExportPubResult {
+    path: String,
+    algorithm: String,
+    key_format: String,
+    public_key: String,
+}
+
+impl TextRenderable for ExportPubResult {
+    fn render_text(&self) -> String {
+        format!(
+            "path:       {}\nalgorithm:  {}\nformat:     {}\n\n{}\n",
+            self.path, self.algorithm, self.key_format, self.public_key
+        )
+    }
+}

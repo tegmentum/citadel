@@ -993,7 +993,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tpm-cli"
+name = "tpm"
 version = "0.1.0"
 dependencies = [
  "anyhow",

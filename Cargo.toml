@@ -1,11 +1,33 @@
 [workspace]
 resolver = "2"
 members = [
+    ".",
     "crates/tpm-core",
-    "crates/tpm-cli",
     "crates/tpm-tui",
     "crates/tpmd",
 ]
+
+[package]
+name = "tpm"
+edition = "2021"
+version = "0.1.0"
+license = "Apache-2.0"
+
+[[bin]]
+name = "tpm"
+path = "src/main.rs"
+
+[dependencies]
+tpm-core.workspace = true
+tpm-tui.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+chrono.workspace = true
+uuid.workspace = true
 
 [workspace.package]
 edition = "2021"
