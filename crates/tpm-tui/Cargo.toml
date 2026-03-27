@@ -1,0 +1,11 @@
+[package]
+name = "tpm-tui"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+tpm-core.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+anyhow.workspace = true
+tracing.workspace = true

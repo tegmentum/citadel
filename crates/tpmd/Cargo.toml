@@ -1,0 +1,8 @@
+[package]
+name = "tpmd"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+tpm-core.workspace = true
+anyhow.workspace = true
