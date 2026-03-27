@@ -364,23 +364,138 @@ impl TpmBackend for HardwareBackend {
 
     fn quote(
         &self,
-        _ak_handle: &KeyHandle,
-        _nonce: &[u8],
-        _pcr_bank: &str,
-        _pcr_indices: &[u32],
+        ak_handle: &KeyHandle,
+        nonce: &[u8],
+        pcr_bank: &str,
+        pcr_indices: &[u32],
     ) -> anyhow::Result<super::traits::QuoteData> {
-        // Full quote implementation requires loading the AK and calling ctx.quote
-        // This is complex and depends on correct session setup
-        anyhow::bail!("hardware quote requires session management — use mock for development")
+        let mut ctx = self.open_context()?;
+
+        // Recreate primary and load the AK
+        let primary = self.create_primary_key(&mut ctx)?;
+
+        let key_data: serde_json::Value = serde_json::from_slice(&ak_handle.id)?;
+        let pub_bytes: Vec<u8> = serde_json::from_value(key_data["public"].clone())?;
+        let priv_bytes: Vec<u8> = serde_json::from_value(key_data["private"].clone())?;
+
+        let ak_public = tss_esapi::structures::Public::unmarshall(&pub_bytes)?;
+        let ak_private = tss_esapi::structures::Private::unmarshall(&priv_bytes)?;
+
+        let ak_key_handle = ctx.load(primary.key_handle, ak_private, ak_public.clone())?;
+
+        // Build PCR selection
+        let hash_alg = match pcr_bank {
+            "sha256" => HashingAlgorithm::Sha256,
+            "sha384" => HashingAlgorithm::Sha384,
+            "sha1" => HashingAlgorithm::Sha1,
+            _ => anyhow::bail!("unsupported PCR bank: {}", pcr_bank),
+        };
+
+        let pcr_slots: Vec<tss_esapi::interface_types::algorithm::PcrSlot> = pcr_indices
+            .iter()
+            .map(|&i| tss_esapi::interface_types::algorithm::PcrSlot::try_from(i as u8))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let pcr_selection = tss_esapi::structures::PcrSelectionListBuilder::new()
+            .with_selection(hash_alg, &pcr_slots)
+            .build()?;
+
+        // Create nonce
+        let qualifying_data = MaxBuffer::try_from(nonce)?;
+
+        // Perform the quote
+        let scheme = tss_esapi::structures::SignatureScheme::Null;
+        let (attestation_data, signature) =
+            ctx.quote(ak_key_handle.into(), qualifying_data, scheme, pcr_selection.clone())?;
+
+        // Read the actual PCR values to include in the response
+        let pcr_values = self.pcr_read(pcr_bank, pcr_indices)?;
+
+        // Serialize attestation and signature
+        let attest_bytes = attestation_data.marshall()?;
+        let sig_bytes = signature.marshall()?;
+
+        ctx.flush_context(ak_key_handle.into())?;
+        ctx.flush_context(primary.key_handle.into())?;
+
+        Ok(super::traits::QuoteData {
+            attestation: attest_bytes,
+            signature: sig_bytes,
+            pcr_values,
+            nonce: nonce.to_vec(),
+            ak_public: pub_bytes,
+        })
     }
 
     fn verify_quote(
         &self,
-        _quote: &super::traits::QuoteData,
-        _ak_public: &[u8],
-        _nonce: &[u8],
+        quote: &super::traits::QuoteData,
+        ak_public_bytes: &[u8],
+        nonce: &[u8],
     ) -> anyhow::Result<super::traits::QuoteVerification> {
-        anyhow::bail!("hardware quote verification not yet implemented")
+        // Verify nonce matches
+        let nonce_matches = quote.nonce == nonce;
+
+        // Deserialize and verify the attestation signature
+        let ak_public = tss_esapi::structures::Public::unmarshall(ak_public_bytes)?;
+        let attestation = tss_esapi::structures::Attest::unmarshall(&quote.attestation)?;
+        let signature = tss_esapi::structures::Signature::unmarshall(&quote.signature)?;
+
+        // Use the TPM to verify the signature over the attestation
+        let mut ctx = self.open_context()?;
+        let ak_handle = ctx.load_external_public(ak_public, Hierarchy::Null)?;
+
+        let signature_valid = ctx
+            .verify_signature(
+                ak_handle.into(),
+                MaxBuffer::try_from(quote.attestation.as_slice())?,
+                signature,
+            )
+            .is_ok();
+
+        ctx.flush_context(ak_handle.into())?;
+
+        // Compare current PCR values against quoted values
+        let pcr_matches: Vec<super::traits::PcrMatchResult> = if let Some(first) =
+            quote.pcr_values.first()
+        {
+            let indices: Vec<u32> = quote.pcr_values.iter().map(|v| v.index).collect();
+            let current = self.pcr_read(&first.bank, &indices)?;
+
+            quote
+                .pcr_values
+                .iter()
+                .zip(current.iter())
+                .map(|(quoted, current_val)| {
+                    let q_hex: String =
+                        quoted.digest.iter().map(|b| format!("{:02x}", b)).collect();
+                    let c_hex: String = current_val
+                        .digest
+                        .iter()
+                        .map(|b| format!("{:02x}", b))
+                        .collect();
+                    super::traits::PcrMatchResult {
+                        index: quoted.index,
+                        bank: quoted.bank.clone(),
+                        expected: q_hex.clone(),
+                        actual: c_hex.clone(),
+                        matches: q_hex == c_hex,
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let all_pcrs_match = pcr_matches.iter().all(|m| m.matches);
+        let verified = signature_valid && nonce_matches && all_pcrs_match;
+
+        Ok(super::traits::QuoteVerification {
+            signature_valid,
+            nonce_matches,
+            pcr_matches,
+            verified,
+        })
     }
 }
 

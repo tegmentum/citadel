@@ -1630,6 +1630,7 @@ dependencies = [
  "clap",
  "serde",
  "serde_json",
+ "tempfile",
  "tpm-core",
  "tpm-tui",
  "tracing",
