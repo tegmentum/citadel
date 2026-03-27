@@ -72,5 +72,11 @@ chrono = { version = "0.4", features = ["serde"] }
 # IDs
 uuid = { version = "1", features = ["v4", "serde"] }
 
+# Async
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+
+# HTTP
+axum = "0.8"
+
 # Test
 tempfile = "3"

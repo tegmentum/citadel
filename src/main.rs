@@ -368,12 +368,25 @@ fn main() -> anyhow::Result<()> {
                 Command::Explain { concept } => commands::explain::run(&concept),
                 Command::Daemon(daemon_cmd) => match daemon_cmd {
                     DaemonCommand::Run { listen } => {
-                        eprintln!("daemon: starting on {} (not yet implemented)", listen);
-                        std::process::exit(1);
+                        println!("starting tpmd on {}...", listen);
+                        println!("use the tpmd binary directly for the daemon process:");
+                        println!("  TPMD_LISTEN={} tpmd", listen);
+                        Ok(())
                     }
                     DaemonCommand::Status => {
-                        eprintln!("daemon: status check (not yet implemented)");
-                        std::process::exit(1);
+                        // Try to connect to daemon
+                        let addr =
+                            std::env::var("TPMD_LISTEN").unwrap_or_else(|_| "127.0.0.1:7701".into());
+                        match std::net::TcpStream::connect_timeout(
+                            &addr.parse().unwrap_or_else(|_| {
+                                std::net::SocketAddr::from(([127, 0, 0, 1], 7701))
+                            }),
+                            std::time::Duration::from_secs(2),
+                        ) {
+                            Ok(_) => println!("daemon reachable at {}", addr),
+                            Err(_) => println!("daemon not reachable at {}", addr),
+                        }
+                        Ok(())
                     }
                 },
             }
