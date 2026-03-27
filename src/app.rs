@@ -41,9 +41,20 @@ pub enum Command {
     /// Key management
     #[command(subcommand)]
     Key(KeyCommand),
+    /// Policy management
+    #[command(subcommand)]
+    Policy(PolicyCommand),
+    /// Object inspection
+    #[command(subcommand)]
+    Object(ObjectCommand),
     /// Profile management
     #[command(subcommand)]
     Profile(ProfileCommand),
+    /// Explain a TPM concept
+    Explain {
+        /// Concept to explain (pcr, policy, hierarchy, key, seal, attestation, nv, ek, ak, handle, session, dictionary-attack)
+        concept: String,
+    },
     /// Daemon management
     #[command(subcommand)]
     Daemon(DaemonCommand),
@@ -59,6 +70,10 @@ pub enum KeyCommand {
         /// Algorithm
         #[arg(long, short, default_value = "ecc-p256")]
         algorithm: String,
+
+        /// Attach a named policy
+        #[arg(long)]
+        policy: Option<String>,
     },
     /// List all keys
     List,
@@ -94,6 +109,52 @@ pub enum KeyCommand {
         #[arg(long, default_value = "pem")]
         key_format: String,
     },
+}
+
+#[derive(Subcommand)]
+pub enum PolicyCommand {
+    /// Create a new policy
+    Create {
+        /// Policy name
+        name: String,
+
+        /// PCR indices (comma-separated, e.g. 7,11)
+        #[arg(long, value_delimiter = ',')]
+        pcr: Vec<u32>,
+
+        /// PCR bank
+        #[arg(long, default_value = "sha256")]
+        pcr_bank: String,
+
+        /// Require password/auth value
+        #[arg(long)]
+        password: bool,
+    },
+    /// List all policies
+    List,
+    /// Show policy details
+    Show {
+        /// Policy name
+        name: String,
+    },
+    /// Explain what a policy requires
+    Explain {
+        /// Policy name
+        name: String,
+    },
+    /// Delete a policy
+    Delete {
+        /// Policy name
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ObjectCommand {
+    /// List all workspace objects
+    List,
+    /// Show workspace object tree
+    Tree,
 }
 
 #[derive(Subcommand)]

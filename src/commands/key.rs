@@ -19,6 +19,7 @@ pub fn create(
     backend: &dyn TpmBackend,
     path_str: &str,
     algorithm_str: &str,
+    policy_name: Option<&str>,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     let path = ObjectPath::new(path_str).map_err(|e| {
@@ -41,6 +42,16 @@ pub fn create(
 
     let algorithm: Algorithm = algorithm_str.parse().map_err(|e: String| anyhow::anyhow!(e))?;
 
+    // Resolve policy if specified
+    let policy_id = if let Some(pname) = policy_name {
+        let policy = store
+            .get_policy(pname)?
+            .ok_or_else(|| anyhow::anyhow!("policy not found: {}", pname))?;
+        Some(policy.id)
+    } else {
+        None
+    };
+
     let handle = backend.create_key(algorithm, &path)?;
 
     let obj = TpmObject {
@@ -48,7 +59,7 @@ pub fn create(
         path: path.clone(),
         kind: ObjectKind::SigningKey,
         algorithm,
-        policy_id: None,
+        policy_id,
         handle_blob: Some(handle.id),
         created_at: Utc::now(),
         metadata: serde_json::json!({}),
@@ -164,11 +175,17 @@ pub fn show(store: &Store, path_str: &str, format: OutputFormat) -> anyhow::Resu
     let obj = store.get_object(&path)?;
     match obj {
         Some(obj) => {
+            let policy_name = if let Some(pid) = obj.policy_id {
+                store.get_policy_by_id(&pid)?.map(|p| p.name)
+            } else {
+                None
+            };
             let detail = KeyDetail {
                 path: obj.path.to_string(),
                 id: obj.id.to_string(),
                 kind: obj.kind.to_string(),
                 algorithm: obj.algorithm.to_string(),
+                policy: policy_name,
                 created_at: obj.created_at.to_rfc3339(),
                 has_handle: obj.handle_blob.is_some(),
                 metadata: obj.metadata.clone(),
@@ -195,6 +212,7 @@ struct KeyDetail {
     id: String,
     kind: String,
     algorithm: String,
+    policy: Option<String>,
     created_at: String,
     has_handle: bool,
     metadata: serde_json::Value,
@@ -207,6 +225,10 @@ impl TextRenderable for KeyDetail {
         out.push_str(&format!("id:         {}\n", self.id));
         out.push_str(&format!("kind:       {}\n", self.kind));
         out.push_str(&format!("algorithm:  {}\n", self.algorithm));
+        out.push_str(&format!(
+            "policy:     {}\n",
+            self.policy.as_deref().unwrap_or("(none)")
+        ));
         out.push_str(&format!("created:    {}\n", self.created_at));
         out.push_str(&format!(
             "handle:     {}\n",

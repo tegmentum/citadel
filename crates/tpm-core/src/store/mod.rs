@@ -208,6 +208,81 @@ impl Store {
         Ok(())
     }
 
+    // -- Policies --
+
+    pub fn insert_policy(&self, policy: &crate::model::Policy) -> anyhow::Result<()> {
+        let rules_json = serde_json::to_string(&policy.rules)?;
+        self.conn.execute(
+            "INSERT INTO policies (id, name, rules) VALUES (?1, ?2, ?3)",
+            params![policy.id.to_string(), policy.name, rules_json],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_policy(&self, name: &str) -> anyhow::Result<Option<crate::model::Policy>> {
+        self.conn
+            .query_row(
+                "SELECT id, name, rules FROM policies WHERE name = ?1",
+                params![name],
+                |row| {
+                    Ok(RawPolicyRow {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        rules: row.get(2)?,
+                    })
+                },
+            )
+            .optional()?
+            .map(|r| r.into_policy())
+            .transpose()
+    }
+
+    pub fn get_policy_by_id(
+        &self,
+        id: &uuid::Uuid,
+    ) -> anyhow::Result<Option<crate::model::Policy>> {
+        self.conn
+            .query_row(
+                "SELECT id, name, rules FROM policies WHERE id = ?1",
+                params![id.to_string()],
+                |row| {
+                    Ok(RawPolicyRow {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        rules: row.get(2)?,
+                    })
+                },
+            )
+            .optional()?
+            .map(|r| r.into_policy())
+            .transpose()
+    }
+
+    pub fn list_policies(&self) -> anyhow::Result<Vec<crate::model::Policy>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, name, rules FROM policies ORDER BY name")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(RawPolicyRow {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                rules: row.get(2)?,
+            })
+        })?;
+        let mut policies = Vec::new();
+        for row in rows {
+            policies.push(row?.into_policy()?);
+        }
+        Ok(policies)
+    }
+
+    pub fn delete_policy(&self, name: &str) -> anyhow::Result<bool> {
+        let count = self
+            .conn
+            .execute("DELETE FROM policies WHERE name = ?1", params![name])?;
+        Ok(count > 0)
+    }
+
     // -- Audit --
 
     pub fn log_action(
@@ -225,6 +300,22 @@ impl Store {
 }
 
 // Internal row types for deserialization from SQLite
+
+struct RawPolicyRow {
+    id: String,
+    name: String,
+    rules: String,
+}
+
+impl RawPolicyRow {
+    fn into_policy(self) -> anyhow::Result<crate::model::Policy> {
+        Ok(crate::model::Policy {
+            id: self.id.parse()?,
+            name: self.name,
+            rules: serde_json::from_str(&self.rules)?,
+        })
+    }
+}
 
 struct RawObjectRow {
     id: String,

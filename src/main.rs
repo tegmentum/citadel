@@ -8,7 +8,9 @@ use clap::Parser;
 use tpm_core::backend::MockBackend;
 use tpm_core::store::Store;
 
-use app::{Cli, Command, DaemonCommand, KeyCommand, ProfileCommand};
+use app::{
+    Cli, Command, DaemonCommand, KeyCommand, ObjectCommand, PolicyCommand, ProfileCommand,
+};
 
 fn default_store_path() -> std::path::PathBuf {
     if let Ok(dir) = std::env::var("XDG_DATA_HOME") {
@@ -47,15 +49,28 @@ fn main() -> anyhow::Result<()> {
             let backend = MockBackend::new();
 
             match cmd {
-                Command::Init { profile } => {
-                    commands::init::run(&store, &backend, &store_path, profile.as_deref(), cli.format)
-                }
+                Command::Init { profile } => commands::init::run(
+                    &store,
+                    &backend,
+                    &store_path,
+                    profile.as_deref(),
+                    cli.format,
+                ),
                 Command::Status => commands::status::run(&store, &backend, cli.format),
                 Command::Doctor => commands::doctor::run(&store, &backend, cli.format),
                 Command::Key(key_cmd) => match key_cmd {
-                    KeyCommand::Create { path, algorithm } => {
-                        commands::key::create(&store, &backend, &path, &algorithm, cli.format)
-                    }
+                    KeyCommand::Create {
+                        path,
+                        algorithm,
+                        policy,
+                    } => commands::key::create(
+                        &store,
+                        &backend,
+                        &path,
+                        &algorithm,
+                        policy.as_deref(),
+                        cli.format,
+                    ),
                     KeyCommand::List => commands::key::list(&store, cli.format),
                     KeyCommand::Show { path } => commands::key::show(&store, &path, cli.format),
                     KeyCommand::Sign {
@@ -77,6 +92,28 @@ fn main() -> anyhow::Result<()> {
                         commands::key::export_pub(&store, &path, &key_format, cli.format)
                     }
                 },
+                Command::Policy(pol_cmd) => match pol_cmd {
+                    PolicyCommand::Create {
+                        name,
+                        pcr,
+                        pcr_bank,
+                        password,
+                    } => commands::policy::create(
+                        &store, &name, &pcr, &pcr_bank, password, cli.format,
+                    ),
+                    PolicyCommand::List => commands::policy::list(&store, cli.format),
+                    PolicyCommand::Show { name } => {
+                        commands::policy::show(&store, &name, cli.format)
+                    }
+                    PolicyCommand::Explain { name } => {
+                        commands::policy::explain(&store, &name, cli.format)
+                    }
+                    PolicyCommand::Delete { name } => commands::policy::delete(&store, &name),
+                },
+                Command::Object(obj_cmd) => match obj_cmd {
+                    ObjectCommand::List => commands::object::list(&store, cli.format),
+                    ObjectCommand::Tree => commands::object::tree(&store, cli.format),
+                },
                 Command::Profile(prof_cmd) => match prof_cmd {
                     ProfileCommand::List => commands::profile::list(&store, cli.format),
                     ProfileCommand::Show { name } => {
@@ -84,6 +121,7 @@ fn main() -> anyhow::Result<()> {
                     }
                     ProfileCommand::Set { name } => commands::profile::set(&store, &name),
                 },
+                Command::Explain { concept } => commands::explain::run(&concept),
                 Command::Daemon(daemon_cmd) => match daemon_cmd {
                     DaemonCommand::Run { listen } => {
                         eprintln!("daemon: starting on {} (not yet implemented)", listen);
