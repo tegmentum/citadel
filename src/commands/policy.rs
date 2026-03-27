@@ -3,6 +3,7 @@ use uuid::Uuid;
 use tpm_core::model::{Policy, PolicyRule};
 use tpm_core::output::format::{render, TextRenderable};
 use tpm_core::output::OutputFormat;
+use tpm_core::policy::PolicyDefinition;
 use tpm_core::store::Store;
 
 use serde::Serialize;
@@ -261,6 +262,200 @@ impl TextRenderable for PolicyExplanation {
             out.push_str(&format!("  {}. {}\n\n", i + 1, req));
         }
         out.push_str(&format!("hint: {}\n", self.usage_hint));
+        out
+    }
+}
+
+// -- policy compile --
+
+pub fn compile(
+    store: &Store,
+    file: &std::path::Path,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let def = PolicyDefinition::from_file(file)?;
+
+    // Validate
+    let issues = def.validate();
+    if !issues.is_empty() {
+        eprintln!("validation errors in {}:\n", file.display());
+        for issue in &issues {
+            eprintln!("  error: {}", issue);
+        }
+        anyhow::bail!("{} validation error(s) in policy file", issues.len());
+    }
+
+    // Check for existing policy with same name
+    if store.get_policy(&def.name)?.is_some() {
+        anyhow::bail!(
+            "policy '{}' already exists. Delete it first or use a different name.",
+            def.name
+        );
+    }
+
+    let rules = def.compile();
+
+    let policy = Policy {
+        id: Uuid::new_v4(),
+        name: def.name.clone(),
+        rules: rules.clone(),
+    };
+
+    store.insert_policy(&policy)?;
+    store.log_action(
+        "policy.compile",
+        None,
+        &serde_json::json!({
+            "name": &def.name,
+            "source": file.display().to_string(),
+            "rule_count": rules.len(),
+        }),
+    )?;
+
+    let result = CompileResult {
+        name: def.name,
+        source: file.display().to_string(),
+        rule_count: rules.len(),
+        rules: rules
+            .iter()
+            .map(|r| match r {
+                PolicyRule::PcrMatch { bank, indices } => format!(
+                    "pcr {}:{}",
+                    bank,
+                    indices
+                        .iter()
+                        .map(|i| i.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ),
+                PolicyRule::Password => "password".to_string(),
+            })
+            .collect(),
+        id: policy.id.to_string(),
+    };
+    println!("{}", render(&result, format));
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct CompileResult {
+    name: String,
+    source: String,
+    rule_count: usize,
+    rules: Vec<String>,
+    id: String,
+}
+
+impl TextRenderable for CompileResult {
+    fn render_text(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!(
+            "policy compiled: {} (from {})\n",
+            self.name, self.source
+        ));
+        out.push_str(&format!("  id: {}\n", self.id));
+        out.push_str(&format!("  rules: {}\n", self.rule_count));
+        for rule in &self.rules {
+            out.push_str(&format!("    - {}\n", rule));
+        }
+        out
+    }
+}
+
+// -- policy test --
+
+pub fn test_policy(
+    store: &Store,
+    backend: &dyn tpm_core::backend::TpmBackend,
+    name: &str,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let policy = store
+        .get_policy(name)?
+        .ok_or_else(|| anyhow::anyhow!("policy not found: {}", name))?;
+
+    let mut results = Vec::new();
+
+    for rule in &policy.rules {
+        match rule {
+            PolicyRule::PcrMatch { bank, indices } => {
+                match backend.pcr_read(bank, indices) {
+                    Ok(values) => {
+                        results.push(TestResult {
+                            rule: format!(
+                                "pcr {}:{}",
+                                bank,
+                                indices
+                                    .iter()
+                                    .map(|i| i.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            ),
+                            satisfied: true,
+                            detail: format!("read {} PCR values successfully", values.len()),
+                        });
+                    }
+                    Err(e) => {
+                        results.push(TestResult {
+                            rule: format!("pcr {}:{}", bank, indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",")),
+                            satisfied: false,
+                            detail: format!("failed to read PCRs: {}", e),
+                        });
+                    }
+                }
+            }
+            PolicyRule::Password => {
+                results.push(TestResult {
+                    rule: "password".to_string(),
+                    satisfied: true,
+                    detail: "auth value would be prompted at operation time".to_string(),
+                });
+            }
+        }
+    }
+
+    let all_satisfied = results.iter().all(|r| r.satisfied);
+
+    let report = TestReport {
+        policy_name: name.to_string(),
+        results,
+        all_satisfied,
+    };
+    println!("{}", render(&report, format));
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct TestResult {
+    rule: String,
+    satisfied: bool,
+    detail: String,
+}
+
+#[derive(Serialize)]
+struct TestReport {
+    policy_name: String,
+    results: Vec<TestResult>,
+    all_satisfied: bool,
+}
+
+impl TextRenderable for TestReport {
+    fn render_text(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("testing policy: {}\n\n", self.policy_name));
+        for r in &self.results {
+            let icon = if r.satisfied { "ok" } else { "FAIL" };
+            out.push_str(&format!("  [{}] {}\n", icon, r.rule));
+            out.push_str(&format!("        {}\n", r.detail));
+        }
+        out.push_str(&format!(
+            "\nresult: {}\n",
+            if self.all_satisfied {
+                "all requirements satisfiable"
+            } else {
+                "SOME REQUIREMENTS CANNOT BE SATISFIED"
+            }
+        ));
         out
     }
 }

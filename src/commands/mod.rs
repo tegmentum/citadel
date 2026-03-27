@@ -1,4 +1,5 @@
 pub mod attest;
+pub mod capabilities;
 pub mod doctor;
 pub mod explain;
 pub mod init;

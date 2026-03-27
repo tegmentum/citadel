@@ -83,6 +83,15 @@ fn main() -> anyhow::Result<()> {
                 ),
                 Command::Status => commands::status::run(&store, backend.as_ref(), cli.format),
                 Command::Doctor => commands::doctor::run(&store, backend.as_ref(), cli.format),
+                Command::Capabilities => {
+                    commands::capabilities::run(backend.as_ref(), cli.format)
+                }
+                Command::Debug { output } => commands::capabilities::debug_bundle(
+                    backend.as_ref(),
+                    &store,
+                    &store_path,
+                    &output,
+                ),
                 Command::Key(key_cmd) => match key_cmd {
                     KeyCommand::Create {
                         path,
@@ -116,6 +125,9 @@ fn main() -> anyhow::Result<()> {
                     }
                     KeyCommand::ExportPub { path, key_format } => {
                         commands::key::export_pub(&store, &path, &key_format, cli.format)
+                    }
+                    KeyCommand::Rotate { path } => {
+                        commands::key::rotate(&store, backend.as_ref(), &path, cli.format)
                     }
                 },
                 Command::Attest(att_cmd) => match att_cmd {
@@ -223,10 +235,19 @@ fn main() -> anyhow::Result<()> {
                         commands::policy::explain(&store, &name, cli.format)
                     }
                     PolicyCommand::Delete { name } => commands::policy::delete(&store, &name),
+                    PolicyCommand::Compile { file } => {
+                        commands::policy::compile(&store, &file, cli.format)
+                    }
+                    PolicyCommand::Test { name } => {
+                        commands::policy::test_policy(&store, backend.as_ref(), &name, cli.format)
+                    }
                 },
                 Command::Object(obj_cmd) => match obj_cmd {
                     ObjectCommand::List => commands::object::list(&store, cli.format),
                     ObjectCommand::Tree => commands::object::tree(&store, cli.format),
+                    ObjectCommand::Dependents { path } => {
+                        commands::object::dependents(&store, &path, cli.format)
+                    }
                 },
                 Command::Profile(prof_cmd) => match prof_cmd {
                     ProfileCommand::List => commands::profile::list(&store, cli.format),

@@ -46,6 +46,14 @@ pub enum Command {
     Status,
     /// Run diagnostic health checks
     Doctor,
+    /// Show TPM capabilities
+    Capabilities,
+    /// Collect debug diagnostic bundle
+    Debug {
+        /// Output file for the bundle
+        #[arg(long)]
+        output: std::path::PathBuf,
+    },
     /// Key management
     #[command(subcommand)]
     Key(KeyCommand),
@@ -141,6 +149,11 @@ pub enum KeyCommand {
         #[arg(long, default_value = "pem")]
         key_format: String,
     },
+    /// Rotate a key (create new, archive old)
+    Rotate {
+        /// Object path
+        path: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -221,6 +234,16 @@ pub enum PolicyCommand {
     },
     /// Delete a policy
     Delete {
+        /// Policy name
+        name: String,
+    },
+    /// Compile a policy from a YAML file
+    Compile {
+        /// Path to policy YAML file
+        file: std::path::PathBuf,
+    },
+    /// Test whether a policy can be satisfied on this system
+    Test {
         /// Policy name
         name: String,
     },
@@ -339,6 +362,11 @@ pub enum ObjectCommand {
     List,
     /// Show workspace object tree
     Tree,
+    /// Show what depends on an object
+    Dependents {
+        /// Object path
+        path: String,
+    },
 }
 
 #[derive(Subcommand)]

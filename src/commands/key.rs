@@ -401,3 +401,89 @@ impl TextRenderable for ExportPubResult {
         )
     }
 }
+
+// -- key rotate --
+
+pub fn rotate(
+    store: &Store,
+    backend: &dyn TpmBackend,
+    path_str: &str,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let path = ObjectPath::new(path_str)?;
+
+    let old_obj = store.get_object(&path)?.ok_or_else(|| {
+        let err = TpmError::object_not_found(path_str);
+        err.emit();
+        err
+    })?;
+
+    // Archive the old key by renaming it
+    let old_name = format!("{}-rotated-{}", path_str, Utc::now().format("%Y%m%d%H%M%S"));
+    let old_path = ObjectPath::new(&old_name)?;
+
+    // Delete old from store and re-insert with archived name
+    store.delete_object(&path)?;
+    let archived = TpmObject {
+        path: old_path.clone(),
+        metadata: serde_json::json!({
+            "rotated_from": path_str,
+            "rotated_at": Utc::now().to_rfc3339(),
+            "original_metadata": old_obj.metadata,
+        }),
+        ..old_obj.clone()
+    };
+    store.insert_object(&archived)?;
+
+    // Create new key with same algorithm
+    let handle = backend.create_key(old_obj.algorithm, &path)?;
+    let new_obj = TpmObject {
+        id: Uuid::new_v4(),
+        path: path.clone(),
+        kind: old_obj.kind,
+        algorithm: old_obj.algorithm,
+        policy_id: old_obj.policy_id,
+        handle_blob: Some(handle.id),
+        created_at: Utc::now(),
+        metadata: serde_json::json!({
+            "predecessor": old_name,
+        }),
+    };
+    store.insert_object(&new_obj)?;
+
+    store.log_action(
+        "key.rotate",
+        Some(path.as_str()),
+        &serde_json::json!({
+            "old_id": old_obj.id.to_string(),
+            "new_id": new_obj.id.to_string(),
+            "archived_as": old_name,
+        }),
+    )?;
+
+    let result = RotateResult {
+        path: path.to_string(),
+        new_id: new_obj.id.to_string(),
+        algorithm: new_obj.algorithm.to_string(),
+        archived_as: old_name,
+    };
+    println!("{}", render(&result, format));
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct RotateResult {
+    path: String,
+    new_id: String,
+    algorithm: String,
+    archived_as: String,
+}
+
+impl TextRenderable for RotateResult {
+    fn render_text(&self) -> String {
+        format!(
+            "key rotated: {}\n  new id:    {}\n  algorithm: {}\n  archived:  {}\n",
+            self.path, self.new_id, self.algorithm, self.archived_as
+        )
+    }
+}

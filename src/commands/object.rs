@@ -1,3 +1,4 @@
+use tpm_core::model::ObjectPath;
 use tpm_core::output::format::{render, TextRenderable};
 use tpm_core::output::OutputFormat;
 use tpm_core::store::Store;
@@ -183,6 +184,106 @@ impl TextRenderable for ObjectTree {
             && self.policies.is_empty()
         {
             out.push_str("  (empty)\n");
+        }
+
+        out
+    }
+}
+
+// -- object dependents --
+
+pub fn dependents(store: &Store, path_str: &str, format: OutputFormat) -> anyhow::Result<()> {
+    let path = ObjectPath::new(path_str)?;
+
+    let target = store
+        .get_object(&path)?
+        .ok_or_else(|| anyhow::anyhow!("object not found: {}", path_str))?;
+
+    let all_objects = store.list_objects()?;
+
+    // Find objects sharing the same policy
+    let mut shared_policy = Vec::new();
+    if let Some(target_policy_id) = target.policy_id {
+        for obj in &all_objects {
+            if obj.path != target.path && obj.policy_id == Some(target_policy_id) {
+                shared_policy.push(obj.path.to_string());
+            }
+        }
+    }
+
+    // Find attached policies
+    let policies = store.list_policies()?;
+    let attached_policies: Vec<String> = policies
+        .iter()
+        .filter(|p| target.policy_id.map(|id| id == p.id).unwrap_or(false))
+        .map(|p| p.name.clone())
+        .collect();
+
+    // Check for rotation history
+    let rotation_history: Vec<String> = all_objects
+        .iter()
+        .filter(|o| {
+            o.metadata
+                .get("rotated_from")
+                .and_then(|v| v.as_str())
+                .map(|s| s == path_str)
+                .unwrap_or(false)
+        })
+        .map(|o| o.path.to_string())
+        .collect();
+
+    let result = DependentsResult {
+        path: path_str.to_string(),
+        kind: target.kind.to_string(),
+        shared_policy,
+        attached_policies,
+        rotation_history,
+    };
+
+    println!("{}", render(&result, format));
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct DependentsResult {
+    path: String,
+    kind: String,
+    shared_policy: Vec<String>,
+    attached_policies: Vec<String>,
+    rotation_history: Vec<String>,
+}
+
+impl TextRenderable for DependentsResult {
+    fn render_text(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("dependents of: {} ({})\n\n", self.path, self.kind));
+
+        if !self.attached_policies.is_empty() {
+            out.push_str("  attached policies:\n");
+            for p in &self.attached_policies {
+                out.push_str(&format!("    - {}\n", p));
+            }
+        }
+
+        if !self.shared_policy.is_empty() {
+            out.push_str("  objects sharing same policy:\n");
+            for o in &self.shared_policy {
+                out.push_str(&format!("    - {}\n", o));
+            }
+        }
+
+        if !self.rotation_history.is_empty() {
+            out.push_str("  rotated predecessors:\n");
+            for r in &self.rotation_history {
+                out.push_str(&format!("    - {}\n", r));
+            }
+        }
+
+        if self.attached_policies.is_empty()
+            && self.shared_policy.is_empty()
+            && self.rotation_history.is_empty()
+        {
+            out.push_str("  no dependents found\n");
         }
 
         out
