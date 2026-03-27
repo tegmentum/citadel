@@ -12,7 +12,7 @@ use tpm_core::store::Store;
 use app::{
     AttestCommand, Cli, Command, DaemonCommand, GcCommand, KeyCommand, LogCommand, NvCommand,
     ObjectCommand, PcrBaselineCommand, PcrCommand, PolicyCommand, ProfileCommand, RecoverCommand,
-    RepairCommand, SecretCommand, TemplateCommand, WorkspaceCommand,
+    RepairCommand, SecretCommand, SimulatorCommand, TemplateCommand, WorkspaceCommand,
 };
 
 fn default_store_path() -> std::path::PathBuf {
@@ -41,9 +41,41 @@ fn create_backend(name: &str) -> anyhow::Result<Box<dyn tpm_core::backend::TpmBa
                  This requires the tpm2-tss development libraries to be installed."
             )
         }
+        // swtpm uses the hardware backend with socket TCTI when tpm-hw is enabled
+        // Without tpm-hw, it uses mock backend with swtpm status check
+        #[cfg(feature = "tpm-hw")]
+        "swtpm" => {
+            let mgr = tpm_core::backend::SwtpmManager::new(None);
+            if !mgr.is_running() {
+                anyhow::bail!(
+                    "swtpm is not running.\n\
+                     Start it with: tpm simulator start"
+                );
+            }
+            let tcti = tss_esapi::tcti_ldr::TctiNameConf::Swtpm(
+                tss_esapi::tcti_ldr::SwtpmConfig::default(),
+            );
+            Ok(Box::new(tpm_core::backend::HardwareBackend::new_with_tcti(tcti)))
+        }
+        #[cfg(not(feature = "tpm-hw"))]
+        "swtpm" => {
+            // Without tpm-hw, we can still check swtpm status but use mock backend
+            let mgr = tpm_core::backend::SwtpmManager::new(None);
+            if !mgr.is_running() {
+                anyhow::bail!(
+                    "swtpm is not running.\n\
+                     Start it with: tpm simulator start\n\
+                     Note: for full swtpm integration, rebuild with --features tpm-hw"
+                );
+            }
+            eprintln!(
+                "note: using mock backend (for real swtpm operations, rebuild with --features tpm-hw)"
+            );
+            Ok(Box::new(MockBackend::new()))
+        }
         other => {
             anyhow::bail!(
-                "unknown backend: '{}'\navailable backends: mock, device",
+                "unknown backend: '{}'\navailable backends: mock, device, swtpm",
                 other
             )
         }
@@ -259,6 +291,10 @@ fn main() -> anyhow::Result<()> {
                     ObjectCommand::Rename { from, to } => {
                         commands::object::rename(&store, &from, &to, cli.format)
                     }
+                    ObjectCommand::Retire { path } => commands::object::retire(&store, &path),
+                    ObjectCommand::Activate { path } => {
+                        commands::object::activate(&store, &path)
+                    }
                 },
                 Command::Gc(gc_cmd) => match gc_cmd {
                     GcCommand::Plan => commands::object::gc_plan(&store, cli.format),
@@ -307,12 +343,26 @@ fn main() -> anyhow::Result<()> {
                         commands::template::show(&name, cli.format)
                     }
                 },
+                Command::Simulator(sim_cmd) => match sim_cmd {
+                    SimulatorCommand::Start { state_dir } => {
+                        commands::simulator::start(state_dir.as_deref(), cli.format)
+                    }
+                    SimulatorCommand::Stop { state_dir } => {
+                        commands::simulator::stop(state_dir.as_deref())
+                    }
+                    SimulatorCommand::Status { state_dir } => {
+                        commands::simulator::status(state_dir.as_deref(), cli.format)
+                    }
+                },
                 Command::Workspace(ws_cmd) => match ws_cmd {
                     WorkspaceCommand::Info => {
                         commands::workspace::info(&store, &store_path, cli.format)
                     }
                     WorkspaceCommand::Export { output } => {
                         commands::workspace::export(&store, &output, cli.format)
+                    }
+                    WorkspaceCommand::Import { input } => {
+                        commands::workspace::import(&store, &input, cli.format)
                     }
                 },
                 Command::Explain { concept } => commands::explain::run(&concept),

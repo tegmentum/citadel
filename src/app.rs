@@ -87,6 +87,9 @@ pub enum Command {
     /// Recovery playbooks for common situations
     #[command(subcommand)]
     Recover(RecoverCommand),
+    /// Manage swtpm simulator
+    #[command(subcommand)]
+    Simulator(SimulatorCommand),
     /// View audit log
     #[command(subcommand)]
     Log(LogCommand),
@@ -384,6 +387,16 @@ pub enum ObjectCommand {
         /// New path
         to: String,
     },
+    /// Retire an object (mark inactive but keep metadata)
+    Retire {
+        /// Object path
+        path: String,
+    },
+    /// Reactivate a retired object
+    Activate {
+        /// Object path
+        path: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -432,6 +445,28 @@ pub enum RepairCommand {
 }
 
 #[derive(Subcommand)]
+pub enum SimulatorCommand {
+    /// Start the swtpm simulator
+    Start {
+        /// State directory for swtpm
+        #[arg(long)]
+        state_dir: Option<String>,
+    },
+    /// Stop the swtpm simulator
+    Stop {
+        /// State directory for swtpm
+        #[arg(long)]
+        state_dir: Option<String>,
+    },
+    /// Show simulator status
+    Status {
+        /// State directory for swtpm
+        #[arg(long)]
+        state_dir: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum LogCommand {
     /// Show recent audit log entries
     Show {
@@ -469,6 +504,12 @@ pub enum WorkspaceCommand {
         /// Output file path
         #[arg(long)]
         output: std::path::PathBuf,
+    },
+    /// Import workspace metadata from JSON
+    Import {
+        /// Input file path
+        #[arg(long)]
+        input: std::path::PathBuf,
     },
 }
 

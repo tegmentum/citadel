@@ -446,3 +446,37 @@ impl TextRenderable for GcResult {
         format!("GC complete: {} object(s) removed\n", self.removed)
     }
 }
+
+// -- object retire --
+
+pub fn retire(store: &Store, path_str: &str) -> anyhow::Result<()> {
+    let path = ObjectPath::new(path_str)?;
+    if store.get_object(&path)?.is_none() {
+        anyhow::bail!("object not found: {}", path_str);
+    }
+    store.set_object_state(&path, "retired")?;
+    store.log_action(
+        "object.retire",
+        Some(path_str),
+        &serde_json::json!({}),
+    )?;
+    println!("object retired: {}", path_str);
+    Ok(())
+}
+
+// -- object activate --
+
+pub fn activate(store: &Store, path_str: &str) -> anyhow::Result<()> {
+    let path = ObjectPath::new(path_str)?;
+    if store.get_object(&path)?.is_none() {
+        anyhow::bail!("object not found: {}", path_str);
+    }
+    store.set_object_state(&path, "active")?;
+    store.log_action(
+        "object.activate",
+        Some(path_str),
+        &serde_json::json!({}),
+    )?;
+    println!("object activated: {}", path_str);
+    Ok(())
+}

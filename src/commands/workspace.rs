@@ -1,3 +1,4 @@
+use tpm_core::model::{Algorithm, Profile};
 use tpm_core::output::format::{render, TextRenderable};
 use tpm_core::output::OutputFormat;
 use tpm_core::store::Store;
@@ -173,6 +174,93 @@ impl TextRenderable for WorkspaceInfo {
         ));
         out.push_str(&format!("baselines:  {}\n", self.pcr_baselines));
         out.push_str(&format!("NV indices: {}\n", self.nv_indices));
+        out
+    }
+}
+
+// -- workspace import --
+
+pub fn import(
+    store: &Store,
+    input: &std::path::Path,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let json = std::fs::read_to_string(input)?;
+    let snapshot: WorkspaceSnapshot = serde_json::from_str(&json)?;
+
+    if snapshot.version != 1 {
+        anyhow::bail!(
+            "unsupported snapshot version: {} (expected 1)",
+            snapshot.version
+        );
+    }
+
+    let mut imported_profiles = 0;
+
+    // Import profiles (skip existing)
+    let existing_profiles = store.list_profiles()?;
+    for ep in &snapshot.profiles {
+        if existing_profiles.iter().any(|p| p.name == ep.name) {
+            continue;
+        }
+        let alg: Algorithm = ep
+            .default_algorithm
+            .parse()
+            .unwrap_or(Algorithm::EccP256);
+        let profile = Profile {
+            name: ep.name.clone(),
+            default_algorithm: alg,
+            default_policy: None,
+            is_active: ep.active && existing_profiles.is_empty(),
+        };
+        store.insert_profile(&profile)?;
+        imported_profiles += 1;
+    }
+
+    store.log_action(
+        "workspace.import",
+        None,
+        &serde_json::json!({
+            "source": input.display().to_string(),
+            "snapshot_objects": snapshot.objects.len(),
+            "snapshot_policies": snapshot.policies.len(),
+            "snapshot_profiles": snapshot.profiles.len(),
+            "imported_profiles": imported_profiles,
+        }),
+    )?;
+
+    let result = ImportResult {
+        source: input.display().to_string(),
+        snapshot_objects: snapshot.objects.len(),
+        snapshot_policies: snapshot.policies.len(),
+        imported_profiles,
+        note: "object and policy import requires recreating keys on the local TPM. \
+               Use the snapshot as a reference to recreate objects with `tpm key create`."
+            .to_string(),
+    };
+    println!("{}", render(&result, format));
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct ImportResult {
+    source: String,
+    snapshot_objects: usize,
+    snapshot_policies: usize,
+    imported_profiles: usize,
+    note: String,
+}
+
+impl TextRenderable for ImportResult {
+    fn render_text(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("workspace imported from: {}\n", self.source));
+        out.push_str(&format!(
+            "  snapshot contained: {} objects, {} policies\n",
+            self.snapshot_objects, self.snapshot_policies
+        ));
+        out.push_str(&format!("  profiles imported:  {}\n", self.imported_profiles));
+        out.push_str(&format!("\n  note: {}\n", self.note));
         out
     }
 }

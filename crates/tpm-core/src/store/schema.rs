@@ -42,6 +42,7 @@ CREATE INDEX idx_audit_timestamp ON audit_log(timestamp);
 "#;
 
 /// SQL for migration version 2: PCR baselines and NV index tracking.
+/// Also adds correlation_id to audit_log.
 pub const V2: &str = r#"
 CREATE TABLE pcr_baselines (
     name        TEXT PRIMARY KEY,
@@ -57,4 +58,11 @@ CREATE TABLE nv_indices (
     data       BLOB,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+"#;
+
+/// SQL for migration version 3: object state and correlation IDs.
+pub const V3: &str = r#"
+ALTER TABLE objects ADD COLUMN state TEXT NOT NULL DEFAULT 'active';
+ALTER TABLE objects ADD COLUMN last_used_at TEXT;
+ALTER TABLE audit_log ADD COLUMN correlation_id TEXT;
 "#;

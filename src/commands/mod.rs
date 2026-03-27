@@ -13,6 +13,7 @@ pub mod profile;
 pub mod recover;
 pub mod repair;
 pub mod secret;
+pub mod simulator;
 pub mod status;
 pub mod template;
 pub mod workspace;

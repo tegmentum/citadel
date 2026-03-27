@@ -406,6 +406,27 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    // -- Object State --
+
+    pub fn set_object_state(&self, path: &ObjectPath, state: &str) -> anyhow::Result<()> {
+        let count = self.conn.execute(
+            "UPDATE objects SET state = ?2 WHERE path = ?1",
+            params![path.as_str(), state],
+        )?;
+        if count == 0 {
+            anyhow::bail!("object not found: {}", path);
+        }
+        Ok(())
+    }
+
+    pub fn touch_object(&self, path: &ObjectPath) -> anyhow::Result<()> {
+        self.conn.execute(
+            "UPDATE objects SET last_used_at = datetime('now') WHERE path = ?1",
+            params![path.as_str()],
+        )?;
+        Ok(())
+    }
+
     // -- Audit --
 
     pub fn log_action(
@@ -417,6 +438,20 @@ impl Store {
         self.conn.execute(
             "INSERT INTO audit_log (action, object_path, details) VALUES (?1, ?2, ?3)",
             params![action, object_path, details.to_string()],
+        )?;
+        Ok(())
+    }
+
+    pub fn log_action_with_correlation(
+        &self,
+        action: &str,
+        object_path: Option<&str>,
+        details: &serde_json::Value,
+        correlation_id: &str,
+    ) -> anyhow::Result<()> {
+        self.conn.execute(
+            "INSERT INTO audit_log (action, object_path, details, correlation_id) VALUES (?1, ?2, ?3, ?4)",
+            params![action, object_path, details.to_string(), correlation_id],
         )?;
         Ok(())
     }
