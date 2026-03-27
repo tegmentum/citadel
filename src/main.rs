@@ -10,9 +10,9 @@ use tpm_core::backend::MockBackend;
 use tpm_core::store::Store;
 
 use app::{
-    AttestCommand, Cli, Command, DaemonCommand, KeyCommand, LogCommand, NvCommand, ObjectCommand,
-    PcrBaselineCommand, PcrCommand, PolicyCommand, ProfileCommand, RepairCommand, SecretCommand,
-    TemplateCommand, WorkspaceCommand,
+    AttestCommand, Cli, Command, DaemonCommand, GcCommand, KeyCommand, LogCommand, NvCommand,
+    ObjectCommand, PcrBaselineCommand, PcrCommand, PolicyCommand, ProfileCommand, RecoverCommand,
+    RepairCommand, SecretCommand, TemplateCommand, WorkspaceCommand,
 };
 
 fn default_store_path() -> std::path::PathBuf {
@@ -255,6 +255,19 @@ fn main() -> anyhow::Result<()> {
                     ObjectCommand::Tree => commands::object::tree(&store, cli.format),
                     ObjectCommand::Dependents { path } => {
                         commands::object::dependents(&store, &path, cli.format)
+                    }
+                    ObjectCommand::Rename { from, to } => {
+                        commands::object::rename(&store, &from, &to, cli.format)
+                    }
+                },
+                Command::Gc(gc_cmd) => match gc_cmd {
+                    GcCommand::Plan => commands::object::gc_plan(&store, cli.format),
+                    GcCommand::Apply => commands::object::gc_apply(&store, cli.format),
+                },
+                Command::Recover(rec_cmd) => match rec_cmd {
+                    RecoverCommand::List => commands::recover::list(cli.format),
+                    RecoverCommand::Show { name } => {
+                        commands::recover::show(&name, cli.format)
                     }
                 },
                 Command::Profile(prof_cmd) => match prof_cmd {

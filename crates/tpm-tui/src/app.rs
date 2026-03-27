@@ -20,6 +20,8 @@ pub struct App {
     pub policies: Vec<Policy>,
     pub audit_entries: Vec<AuditEntry>,
     pub active_profile: Option<String>,
+    pub health_posture: String,
+    pub health_score: u8,
     pub selected_index: usize,
     pub command_preview: Option<String>,
 }
@@ -35,6 +37,8 @@ impl App {
             policies: Vec::new(),
             audit_entries: Vec::new(),
             active_profile: None,
+            health_posture: "unknown".to_string(),
+            health_score: 0,
             selected_index: 0,
             command_preview: None,
         }
@@ -50,6 +54,7 @@ impl App {
             .ok()
             .flatten()
             .map(|p| p.name);
+        self.compute_health();
         self.update_command_preview();
     }
 
@@ -107,6 +112,40 @@ impl App {
 
     pub fn selected_object(&self) -> Option<&TpmObject> {
         self.objects.get(self.selected_index)
+    }
+
+    fn compute_health(&mut self) {
+        let mut score: i32 = 100;
+        let available = self.status.as_ref().map(|s| s.available).unwrap_or(false);
+        if !available {
+            score -= 40;
+        }
+        if self.active_profile.is_none() {
+            score -= 10;
+        }
+        let orphans = self
+            .objects
+            .iter()
+            .filter(|o| {
+                matches!(
+                    o.kind,
+                    tpm_core::model::ObjectKind::SigningKey
+                        | tpm_core::model::ObjectKind::StorageKey
+                        | tpm_core::model::ObjectKind::AttestationKey
+                ) && o.handle_blob.is_none()
+            })
+            .count();
+        if orphans > 0 {
+            score -= 15;
+        }
+        self.health_score = score.max(0) as u8;
+        self.health_posture = match self.health_score {
+            90..=100 => "healthy",
+            70..=89 => "degraded",
+            40..=69 => "warning",
+            _ => "critical",
+        }
+        .to_string();
     }
 
     fn update_command_preview(&mut self) {

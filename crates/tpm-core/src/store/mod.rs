@@ -138,6 +138,17 @@ impl Store {
         Ok(count > 0)
     }
 
+    pub fn rename_object(&self, old_path: &ObjectPath, new_path: &ObjectPath) -> anyhow::Result<()> {
+        let count = self.conn.execute(
+            "UPDATE objects SET path = ?2 WHERE path = ?1",
+            params![old_path.as_str(), new_path.as_str()],
+        )?;
+        if count == 0 {
+            anyhow::bail!("object not found: {}", old_path);
+        }
+        Ok(())
+    }
+
     // -- Profiles --
 
     pub fn insert_profile(&self, profile: &Profile) -> anyhow::Result<()> {

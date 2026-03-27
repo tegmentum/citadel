@@ -1,4 +1,4 @@
-use tpm_core::model::ObjectPath;
+use tpm_core::model::{ObjectKind, ObjectPath};
 use tpm_core::output::format::{render, TextRenderable};
 use tpm_core::output::OutputFormat;
 use tpm_core::store::Store;
@@ -287,5 +287,162 @@ impl TextRenderable for DependentsResult {
         }
 
         out
+    }
+}
+
+// -- object rename --
+
+pub fn rename(
+    store: &Store,
+    old_path_str: &str,
+    new_path_str: &str,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let old_path = ObjectPath::new(old_path_str)?;
+    let new_path = ObjectPath::new(new_path_str)?;
+
+    if store.get_object(&old_path)?.is_none() {
+        anyhow::bail!("object not found: {}", old_path_str);
+    }
+    if store.get_object(&new_path)?.is_some() {
+        anyhow::bail!("target name already exists: {}", new_path_str);
+    }
+
+    store.rename_object(&old_path, &new_path)?;
+    store.log_action(
+        "object.rename",
+        Some(new_path_str),
+        &serde_json::json!({"from": old_path_str, "to": new_path_str}),
+    )?;
+
+    let result = RenameResult {
+        from: old_path_str.to_string(),
+        to: new_path_str.to_string(),
+    };
+    println!("{}", render(&result, format));
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct RenameResult {
+    from: String,
+    to: String,
+}
+
+impl TextRenderable for RenameResult {
+    fn render_text(&self) -> String {
+        format!("renamed: {} -> {}\n", self.from, self.to)
+    }
+}
+
+// -- gc (garbage collection) --
+
+pub fn gc_plan(store: &Store, format: OutputFormat) -> anyhow::Result<()> {
+    let objects = store.list_objects()?;
+    let mut candidates = Vec::new();
+
+    for obj in &objects {
+        // Rotated keys are GC candidates
+        if obj
+            .metadata
+            .get("rotated_from")
+            .and_then(|v| v.as_str())
+            .is_some()
+        {
+            candidates.push(GcCandidate {
+                path: obj.path.to_string(),
+                kind: obj.kind.to_string(),
+                reason: "rotated predecessor (archived key)".to_string(),
+            });
+        }
+
+        // Keys without handles are candidates
+        if matches!(
+            obj.kind,
+            ObjectKind::SigningKey | ObjectKind::StorageKey | ObjectKind::AttestationKey
+        ) && obj.handle_blob.is_none()
+        {
+            candidates.push(GcCandidate {
+                path: obj.path.to_string(),
+                kind: obj.kind.to_string(),
+                reason: "key has no handle blob (orphaned metadata)".to_string(),
+            });
+        }
+    }
+
+    let plan = GcPlan {
+        candidate_count: candidates.len(),
+        candidates,
+    };
+    println!("{}", render(&plan, format));
+    Ok(())
+}
+
+pub fn gc_apply(store: &Store, format: OutputFormat) -> anyhow::Result<()> {
+    let objects = store.list_objects()?;
+    let mut removed = 0;
+
+    for obj in &objects {
+        let should_gc = obj
+            .metadata
+            .get("rotated_from")
+            .and_then(|v| v.as_str())
+            .is_some();
+
+        if should_gc {
+            store.delete_object(&obj.path)?;
+            store.log_action(
+                "gc.remove",
+                Some(obj.path.as_str()),
+                &serde_json::json!({"reason": "rotated predecessor"}),
+            )?;
+            removed += 1;
+        }
+    }
+
+    let result = GcResult { removed };
+    println!("{}", render(&result, format));
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct GcCandidate {
+    path: String,
+    kind: String,
+    reason: String,
+}
+
+#[derive(Serialize)]
+struct GcPlan {
+    candidate_count: usize,
+    candidates: Vec<GcCandidate>,
+}
+
+impl TextRenderable for GcPlan {
+    fn render_text(&self) -> String {
+        if self.candidates.is_empty() {
+            return "No garbage collection candidates found.\n".to_string();
+        }
+        let mut out = String::new();
+        out.push_str(&format!(
+            "GC plan: {} candidate(s) for removal\n\n",
+            self.candidate_count
+        ));
+        for c in &self.candidates {
+            out.push_str(&format!("  {} ({})\n", c.path, c.kind));
+            out.push_str(&format!("    reason: {}\n", c.reason));
+        }
+        out
+    }
+}
+
+#[derive(Serialize)]
+struct GcResult {
+    removed: usize,
+}
+
+impl TextRenderable for GcResult {
+    fn render_text(&self) -> String {
+        format!("GC complete: {} object(s) removed\n", self.removed)
     }
 }

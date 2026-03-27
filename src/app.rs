@@ -81,6 +81,12 @@ pub enum Command {
     /// Repair workspace issues
     #[command(subcommand)]
     Repair(RepairCommand),
+    /// Garbage collect stale objects
+    #[command(subcommand)]
+    Gc(GcCommand),
+    /// Recovery playbooks for common situations
+    #[command(subcommand)]
+    Recover(RecoverCommand),
     /// View audit log
     #[command(subcommand)]
     Log(LogCommand),
@@ -370,6 +376,32 @@ pub enum ObjectCommand {
     Dependents {
         /// Object path
         path: String,
+    },
+    /// Rename an object
+    Rename {
+        /// Current path
+        from: String,
+        /// New path
+        to: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum GcCommand {
+    /// Show what would be garbage collected
+    Plan,
+    /// Remove stale objects
+    Apply,
+}
+
+#[derive(Subcommand)]
+pub enum RecoverCommand {
+    /// List available recovery playbooks
+    List,
+    /// Show a recovery playbook
+    Show {
+        /// Playbook name
+        name: String,
     },
 }
 

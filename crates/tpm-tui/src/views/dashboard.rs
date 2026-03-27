@@ -61,7 +61,21 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .as_deref()
         .unwrap_or("(none)");
 
+    let health_color = match app.health_posture.as_str() {
+        "healthy" => Color::Green,
+        "degraded" => Color::Yellow,
+        "warning" => Color::Magenta,
+        _ => Color::Red,
+    };
+
     let workspace_lines = vec![
+        Line::from(vec![
+            Span::styled("  health:    ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{} ({}/100)", app.health_posture, app.health_score),
+                Style::default().fg(health_color),
+            ),
+        ]),
         Line::from(vec![
             Span::styled("  objects:   ", Style::default().fg(Color::DarkGray)),
             Span::raw(app.objects.len().to_string()),
