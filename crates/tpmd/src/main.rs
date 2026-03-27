@@ -52,10 +52,16 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/status", get(handle_status))
         .route("/v1/keys", get(handle_list_keys))
         .route("/v1/keys", post(handle_create_key))
-        .route("/v1/keys/{path}", get(handle_get_key))
+        .route("/v1/keys/{*path}", get(handle_get_key))
+        .route("/v1/sign/{*path}", post(handle_sign))
+        .route("/v1/delete/{*path}", post(handle_delete_key))
         .route("/v1/objects", get(handle_list_objects))
         .route("/v1/policies", get(handle_list_policies))
+        .route("/v1/policies", post(handle_create_policy))
+        .route("/v1/secrets", get(handle_list_secrets))
+        .route("/v1/audit", get(handle_audit_log))
         .route("/v1/health", get(handle_health))
+        .layer(axum::middleware::from_fn(check_api_key))
         .with_state(state);
 
     let listen = std::env::var("TPMD_LISTEN").unwrap_or_else(|_| "127.0.0.1:7701".to_string());
@@ -265,4 +271,217 @@ async fn handle_health(
         "objects": objects.len(),
         "policies": policies.len(),
     })))
+}
+
+// -- Signing --
+
+#[derive(Deserialize)]
+struct SignRequest {
+    /// Base64 or hex-encoded data to sign.
+    data_hex: String,
+}
+
+async fn handle_sign(
+    State(state): State<Arc<Mutex<AppState>>>,
+    axum::extract::Path(path): axum::extract::Path<String>,
+    Json(req): Json<SignRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let state = state.lock().await;
+    let obj_path =
+        ObjectPath::new(&path).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    let obj = state
+        .store
+        .get_object(&obj_path)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, format!("not found: {}", path)))?;
+
+    let handle_blob = obj
+        .handle_blob
+        .ok_or((StatusCode::BAD_REQUEST, "key has no handle".to_string()))?;
+
+    let handle = tpm_core::backend::KeyHandle {
+        id: handle_blob,
+        path: path.clone(),
+    };
+
+    let data: Vec<u8> = (0..req.data_hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&req.data_hex[i..i + 2], 16))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid hex: {}", e)))?;
+
+    let signature = state
+        .backend
+        .sign(&handle, &data)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    state
+        .store
+        .log_action(
+            "key.sign",
+            Some(&path),
+            &serde_json::json!({"via": "api", "data_len": data.len()}),
+        )
+        .ok();
+
+    let sig_hex: String = signature.iter().map(|b| format!("{:02x}", b)).collect();
+
+    Ok(Json(serde_json::json!({
+        "key": path,
+        "signature_hex": sig_hex,
+    })))
+}
+
+// -- Delete key --
+
+async fn handle_delete_key(
+    State(state): State<Arc<Mutex<AppState>>>,
+    axum::extract::Path(path): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let state = state.lock().await;
+    let obj_path =
+        ObjectPath::new(&path).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    if !state
+        .store
+        .delete_object(&obj_path)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    {
+        return Err((StatusCode::NOT_FOUND, format!("not found: {}", path)));
+    }
+
+    state
+        .store
+        .log_action(
+            "key.delete",
+            Some(&path),
+            &serde_json::json!({"via": "api"}),
+        )
+        .ok();
+
+    Ok(Json(
+        serde_json::json!({"deleted": path}),
+    ))
+}
+
+// -- Create policy --
+
+#[derive(Deserialize)]
+struct CreatePolicyRequest {
+    name: String,
+    pcr_indices: Option<Vec<u32>>,
+    pcr_bank: Option<String>,
+    require_password: Option<bool>,
+}
+
+async fn handle_create_policy(
+    State(state): State<Arc<Mutex<AppState>>>,
+    Json(req): Json<CreatePolicyRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let state = state.lock().await;
+
+    if state.store.get_policy(&req.name).unwrap_or(None).is_some() {
+        return Err((
+            StatusCode::CONFLICT,
+            format!("policy already exists: {}", req.name),
+        ));
+    }
+
+    let mut rules = Vec::new();
+    if let Some(indices) = &req.pcr_indices {
+        if !indices.is_empty() {
+            rules.push(tpm_core::model::PolicyRule::PcrMatch {
+                bank: req.pcr_bank.clone().unwrap_or("sha256".to_string()),
+                indices: indices.clone(),
+            });
+        }
+    }
+    if req.require_password.unwrap_or(false) {
+        rules.push(tpm_core::model::PolicyRule::Password);
+    }
+
+    let policy = tpm_core::model::Policy {
+        id: uuid::Uuid::new_v4(),
+        name: req.name.clone(),
+        rules,
+    };
+
+    state
+        .store
+        .insert_policy(&policy)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    state
+        .store
+        .log_action(
+            "policy.create",
+            None,
+            &serde_json::json!({"name": &req.name, "via": "api"}),
+        )
+        .ok();
+
+    Ok(Json(serde_json::json!({
+        "name": req.name,
+        "id": policy.id.to_string(),
+        "rule_count": policy.rules.len(),
+    })))
+}
+
+// -- List secrets --
+
+async fn handle_list_secrets(
+    State(state): State<Arc<Mutex<AppState>>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let state = state.lock().await;
+    let objects = state
+        .store
+        .list_objects()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let secrets: Vec<serde_json::Value> = objects
+        .iter()
+        .filter(|o| o.kind == ObjectKind::SealedBlob)
+        .map(|o| {
+            serde_json::json!({
+                "path": o.path.to_string(),
+                "has_policy": o.policy_id.is_some(),
+                "created_at": o.created_at.to_rfc3339(),
+            })
+        })
+        .collect();
+    Ok(Json(serde_json::json!({ "secrets": secrets })))
+}
+
+// -- Audit log --
+
+async fn handle_audit_log(
+    State(state): State<Arc<Mutex<AppState>>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let state = state.lock().await;
+    let entries = state
+        .store
+        .list_audit_log(None, None, 50)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(serde_json::json!({ "entries": entries })))
+}
+
+// -- API key auth middleware --
+
+/// Simple API key authentication via X-API-Key header.
+/// Set TPMD_API_KEY env var to require authentication.
+async fn check_api_key(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, StatusCode> {
+    if let Ok(required_key) = std::env::var("TPMD_API_KEY") {
+        let provided = req
+            .headers()
+            .get("x-api-key")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if provided != required_key {
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+    }
+    Ok(next.run(req).await)
 }

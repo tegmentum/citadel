@@ -12,7 +12,7 @@ pub fn poll_key(timeout: Duration) -> anyhow::Result<Option<KeyEvent>> {
     Ok(None)
 }
 
-/// Map a key event to an action.
+/// Map a key event to an action (normal mode).
 pub fn key_to_action(key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => Action::Back,
@@ -26,7 +26,29 @@ pub fn key_to_action(key: KeyEvent) -> Action {
         KeyCode::Char('k') | KeyCode::Up => Action::Up,
         KeyCode::Enter => Action::Enter,
         KeyCode::Char('r') => Action::Refresh,
+        KeyCode::Char('n') => Action::CreateKey,
+        KeyCode::Char('d') | KeyCode::Delete => Action::DeleteSelected,
         _ => Action::None,
+    }
+}
+
+/// Map a key event in modal input mode.
+pub fn key_to_modal_action(key: KeyEvent) -> ModalAction {
+    match key.code {
+        KeyCode::Esc => ModalAction::Cancel,
+        KeyCode::Enter => ModalAction::Confirm,
+        KeyCode::Backspace => ModalAction::Backspace,
+        KeyCode::Char(c) => ModalAction::Input(c),
+        _ => ModalAction::None,
+    }
+}
+
+/// Map a key event in confirmation modal.
+pub fn key_to_confirm_action(key: KeyEvent) -> ConfirmAction {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => ConfirmAction::Yes,
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => ConfirmAction::No,
+        _ => ConfirmAction::None,
     }
 }
 
@@ -43,5 +65,23 @@ pub enum Action {
     Down,
     Enter,
     Refresh,
+    CreateKey,
+    DeleteSelected,
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModalAction {
+    Cancel,
+    Confirm,
+    Backspace,
+    Input(char),
+    None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmAction {
+    Yes,
+    No,
     None,
 }

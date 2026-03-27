@@ -1,5 +1,8 @@
+use chrono::Utc;
+use uuid::Uuid;
+
 use tpm_core::backend::{BackendStatus, TpmBackend};
-use tpm_core::model::{Policy, TpmObject};
+use tpm_core::model::{Algorithm, ObjectKind, ObjectPath, Policy, TpmObject};
 use tpm_core::store::{AuditEntry, Store};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11,10 +14,23 @@ pub enum Screen {
     AuditLog,
 }
 
+/// Modal overlay states.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Modal {
+    None,
+    /// Text input for creating a key. Holds the current input buffer.
+    CreateKey { input: String },
+    /// Confirmation to delete the selected object.
+    ConfirmDelete { path: String },
+    /// Status message shown briefly after an action.
+    Message { text: String },
+}
+
 pub struct App {
     pub screen: Screen,
     pub previous_screen: Screen,
     pub should_quit: bool,
+    pub modal: Modal,
     pub status: Option<BackendStatus>,
     pub objects: Vec<TpmObject>,
     pub policies: Vec<Policy>,
@@ -32,6 +48,7 @@ impl App {
             screen: Screen::Dashboard,
             previous_screen: Screen::Dashboard,
             should_quit: false,
+            modal: Modal::None,
             status: None,
             objects: Vec::new(),
             policies: Vec::new(),
@@ -72,6 +89,10 @@ impl App {
     }
 
     pub fn go_back(&mut self) {
+        if self.modal != Modal::None {
+            self.modal = Modal::None;
+            return;
+        }
         if self.screen == Screen::ObjectDetail {
             self.screen = self.previous_screen;
         }
@@ -114,6 +135,136 @@ impl App {
         self.objects.get(self.selected_index)
     }
 
+    // -- Modal actions --
+
+    pub fn start_create_key(&mut self) {
+        self.modal = Modal::CreateKey {
+            input: String::new(),
+        };
+    }
+
+    pub fn start_delete(&mut self) {
+        if let Some(obj) = self.selected_object() {
+            self.modal = Modal::ConfirmDelete {
+                path: obj.path.to_string(),
+            };
+        }
+    }
+
+    pub fn modal_input_char(&mut self, c: char) {
+        if let Modal::CreateKey { ref mut input } = self.modal {
+            input.push(c);
+        }
+    }
+
+    pub fn modal_input_backspace(&mut self) {
+        if let Modal::CreateKey { ref mut input } = self.modal {
+            input.pop();
+        }
+    }
+
+    pub fn execute_create_key(&mut self, store: &Store, backend: &dyn TpmBackend) {
+        if let Modal::CreateKey { ref input } = self.modal {
+            let path_str = input.trim().to_string();
+            if path_str.is_empty() {
+                self.modal = Modal::Message {
+                    text: "path cannot be empty".to_string(),
+                };
+                return;
+            }
+
+            match ObjectPath::new(&path_str) {
+                Ok(path) => {
+                    if store.get_object(&path).ok().flatten().is_some() {
+                        self.modal = Modal::Message {
+                            text: format!("already exists: {}", path_str),
+                        };
+                        return;
+                    }
+                    match backend.create_key(Algorithm::EccP256, &path) {
+                        Ok(handle) => {
+                            let obj = TpmObject {
+                                id: Uuid::new_v4(),
+                                path,
+                                kind: ObjectKind::SigningKey,
+                                algorithm: Algorithm::EccP256,
+                                policy_id: None,
+                                handle_blob: Some(handle.id),
+                                created_at: Utc::now(),
+                                metadata: serde_json::json!({"created_via": "tui"}),
+                            };
+                            if store.insert_object(&obj).is_ok() {
+                                store
+                                    .log_action(
+                                        "key.create",
+                                        Some(&path_str),
+                                        &serde_json::json!({"via": "tui"}),
+                                    )
+                                    .ok();
+                                self.modal = Modal::Message {
+                                    text: format!("key created: {}", path_str),
+                                };
+                                self.refresh(store, backend);
+                            } else {
+                                self.modal = Modal::Message {
+                                    text: "failed to store key".to_string(),
+                                };
+                            }
+                        }
+                        Err(e) => {
+                            self.modal = Modal::Message {
+                                text: format!("backend error: {}", e),
+                            };
+                        }
+                    }
+                }
+                Err(e) => {
+                    self.modal = Modal::Message {
+                        text: format!("invalid path: {}", e),
+                    };
+                }
+            }
+        }
+    }
+
+    pub fn execute_delete(&mut self, store: &Store, backend: &dyn TpmBackend) {
+        if let Modal::ConfirmDelete { ref path } = self.modal {
+            let path_str = path.clone();
+            match ObjectPath::new(&path_str) {
+                Ok(obj_path) => {
+                    if store.delete_object(&obj_path).unwrap_or(false) {
+                        store
+                            .log_action(
+                                "object.delete",
+                                Some(&path_str),
+                                &serde_json::json!({"via": "tui"}),
+                            )
+                            .ok();
+                        self.modal = Modal::Message {
+                            text: format!("deleted: {}", path_str),
+                        };
+                        self.refresh(store, backend);
+                        // Adjust selection
+                        if self.selected_index > 0
+                            && self.selected_index >= self.objects.len()
+                        {
+                            self.selected_index = self.objects.len().saturating_sub(1);
+                        }
+                    } else {
+                        self.modal = Modal::Message {
+                            text: format!("not found: {}", path_str),
+                        };
+                    }
+                }
+                Err(e) => {
+                    self.modal = Modal::Message {
+                        text: format!("error: {}", e),
+                    };
+                }
+            }
+        }
+    }
+
     fn compute_health(&mut self) {
         let mut score: i32 = 100;
         let available = self.status.as_ref().map(|s| s.available).unwrap_or(false);
@@ -129,9 +280,7 @@ impl App {
             .filter(|o| {
                 matches!(
                     o.kind,
-                    tpm_core::model::ObjectKind::SigningKey
-                        | tpm_core::model::ObjectKind::StorageKey
-                        | tpm_core::model::ObjectKind::AttestationKey
+                    ObjectKind::SigningKey | ObjectKind::StorageKey | ObjectKind::AttestationKey
                 ) && o.handle_blob.is_none()
             })
             .count();
@@ -150,15 +299,16 @@ impl App {
 
     fn update_command_preview(&mut self) {
         self.command_preview = match self.screen {
-            Screen::ObjectList => self.selected_object().map(|o| {
-                format!("tpm key show {}", o.path)
-            }),
-            Screen::ObjectDetail => self.selected_object().map(|o| {
-                format!("tpm key show {} --format json", o.path)
-            }),
-            Screen::PolicyList => self.policies.get(self.selected_index).map(|p| {
-                format!("tpm policy show {}", p.name)
-            }),
+            Screen::ObjectList => self
+                .selected_object()
+                .map(|o| format!("tpm key show {}", o.path)),
+            Screen::ObjectDetail => self
+                .selected_object()
+                .map(|o| format!("tpm key show {} --format json", o.path)),
+            Screen::PolicyList => self
+                .policies
+                .get(self.selected_index)
+                .map(|p| format!("tpm policy show {}", p.name)),
             Screen::AuditLog => Some("tpm log show".to_string()),
             Screen::Dashboard => Some("tpm status".to_string()),
         };

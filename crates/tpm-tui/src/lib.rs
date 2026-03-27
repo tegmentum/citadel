@@ -16,8 +16,11 @@ use ratatui::Terminal;
 use tpm_core::backend::MockBackend;
 use tpm_core::store::Store;
 
-use app::{App, Screen};
-use event::{key_to_action, poll_key, Action};
+use app::{App, Modal, Screen};
+use event::{
+    key_to_action, key_to_confirm_action, key_to_modal_action, poll_key, Action, ConfirmAction,
+    ModalAction,
+};
 
 fn default_store_path() -> std::path::PathBuf {
     if let Ok(dir) = std::env::var("XDG_DATA_HOME") {
@@ -84,44 +87,68 @@ fn run_loop(
             if app.screen != Screen::ObjectDetail {
                 views::command_preview::render(frame, app, outer[1]);
             }
+
+            // Modal overlay on top
+            views::modal::render(frame, app);
         })?;
 
         if let Some(key) = poll_key(Duration::from_millis(250))? {
-            match key_to_action(key) {
-                Action::Quit => {
-                    app.should_quit = true;
-                    break;
+            // Route input based on modal state
+            match &app.modal {
+                Modal::CreateKey { .. } => match key_to_modal_action(key) {
+                    ModalAction::Cancel => app.modal = Modal::None,
+                    ModalAction::Confirm => app.execute_create_key(store, backend),
+                    ModalAction::Backspace => app.modal_input_backspace(),
+                    ModalAction::Input(c) => app.modal_input_char(c),
+                    ModalAction::None => {}
+                },
+                Modal::ConfirmDelete { .. } => match key_to_confirm_action(key) {
+                    ConfirmAction::Yes => app.execute_delete(store, backend),
+                    ConfirmAction::No => app.modal = Modal::None,
+                    ConfirmAction::None => {}
+                },
+                Modal::Message { .. } => {
+                    // Any key dismisses the message
+                    app.modal = Modal::None;
                 }
-                Action::Back => {
-                    if app.screen == Screen::ObjectDetail {
-                        app.go_back();
-                    } else {
+                Modal::None => match key_to_action(key) {
+                    Action::Quit => {
                         app.should_quit = true;
                         break;
                     }
-                }
-                Action::NextScreen => app.next_screen(),
-                Action::GoToDashboard => {
-                    app.screen = Screen::Dashboard;
-                    app.selected_index = 0;
-                }
-                Action::GoToObjects => {
-                    app.screen = Screen::ObjectList;
-                    app.selected_index = 0;
-                }
-                Action::GoToPolicies => {
-                    app.screen = Screen::PolicyList;
-                    app.selected_index = 0;
-                }
-                Action::GoToAuditLog => {
-                    app.screen = Screen::AuditLog;
-                    app.selected_index = 0;
-                }
-                Action::Enter => app.enter_detail(),
-                Action::Up => app.move_up(),
-                Action::Down => app.move_down(),
-                Action::Refresh => app.refresh(store, backend),
-                Action::None => {}
+                    Action::Back => {
+                        if app.screen == Screen::ObjectDetail {
+                            app.go_back();
+                        } else {
+                            app.should_quit = true;
+                            break;
+                        }
+                    }
+                    Action::NextScreen => app.next_screen(),
+                    Action::GoToDashboard => {
+                        app.screen = Screen::Dashboard;
+                        app.selected_index = 0;
+                    }
+                    Action::GoToObjects => {
+                        app.screen = Screen::ObjectList;
+                        app.selected_index = 0;
+                    }
+                    Action::GoToPolicies => {
+                        app.screen = Screen::PolicyList;
+                        app.selected_index = 0;
+                    }
+                    Action::GoToAuditLog => {
+                        app.screen = Screen::AuditLog;
+                        app.selected_index = 0;
+                    }
+                    Action::Enter => app.enter_detail(),
+                    Action::Up => app.move_up(),
+                    Action::Down => app.move_down(),
+                    Action::Refresh => app.refresh(store, backend),
+                    Action::CreateKey => app.start_create_key(),
+                    Action::DeleteSelected => app.start_delete(),
+                    Action::None => {}
+                },
             }
         }
     }

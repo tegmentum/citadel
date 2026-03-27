@@ -80,8 +80,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let help = Paragraph::new(Line::from(vec![
         Span::styled(" q", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(" quit  "),
-        Span::styled("Tab", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw(" switch view  "),
+        Span::styled("n", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(" new key  "),
+        Span::styled("d", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(" delete  "),
         Span::styled("Enter", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(" detail  "),
         Span::styled("j/k", Style::default().add_modifier(Modifier::BOLD)),
