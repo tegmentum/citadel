@@ -21,6 +21,7 @@ pub fn create(
     algorithm_str: &str,
     policy_name: Option<&str>,
     format: OutputFormat,
+    plan_mode: bool,
 ) -> anyhow::Result<()> {
     let path = ObjectPath::new(path_str).map_err(|e| {
         let err = TpmError::invalid_path(path_str, &e.to_string());
@@ -46,6 +47,23 @@ pub fn create(
     } else {
         None
     };
+
+    if plan_mode {
+        crate::plan::show_plan(&[crate::plan::PlannedAction {
+            action: "create signing key".to_string(),
+            target: Some(path.to_string()),
+            details: vec![
+                ("algorithm".to_string(), algorithm.to_string()),
+                (
+                    "policy".to_string(),
+                    policy_name.unwrap_or("(none)").to_string(),
+                ),
+            ],
+            risk: crate::plan::Risk::Low,
+            reversible: true,
+        }]);
+        return Ok(());
+    }
 
     let handle = backend.create_key(algorithm, &path)?;
 

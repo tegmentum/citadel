@@ -1,5 +1,6 @@
 mod app;
 mod commands;
+mod plan;
 
 use std::io::IsTerminal;
 
@@ -11,7 +12,7 @@ use tpm_core::store::Store;
 use app::{
     AttestCommand, Cli, Command, DaemonCommand, KeyCommand, LogCommand, NvCommand, ObjectCommand,
     PcrBaselineCommand, PcrCommand, PolicyCommand, ProfileCommand, RepairCommand, SecretCommand,
-    TemplateCommand,
+    TemplateCommand, WorkspaceCommand,
 };
 
 fn default_store_path() -> std::path::PathBuf {
@@ -94,6 +95,7 @@ fn main() -> anyhow::Result<()> {
                         &algorithm,
                         policy.as_deref(),
                         cli.format,
+                        cli.plan,
                     ),
                     KeyCommand::List => commands::key::list(&store, cli.format),
                     KeyCommand::Show { path } => commands::key::show(&store, &path, cli.format),
@@ -261,6 +263,14 @@ fn main() -> anyhow::Result<()> {
                     TemplateCommand::List => commands::template::list(cli.format),
                     TemplateCommand::Show { name } => {
                         commands::template::show(&name, cli.format)
+                    }
+                },
+                Command::Workspace(ws_cmd) => match ws_cmd {
+                    WorkspaceCommand::Info => {
+                        commands::workspace::info(&store, &store_path, cli.format)
+                    }
+                    WorkspaceCommand::Export { output } => {
+                        commands::workspace::export(&store, &output, cli.format)
                     }
                 },
                 Command::Explain { concept } => commands::explain::run(&concept),

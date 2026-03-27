@@ -1,3 +1,4 @@
+pub mod audit_log;
 pub mod command_preview;
 pub mod dashboard;
 pub mod object_detail;

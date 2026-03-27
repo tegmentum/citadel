@@ -1,6 +1,6 @@
 use tpm_core::backend::{BackendStatus, TpmBackend};
 use tpm_core::model::{Policy, TpmObject};
-use tpm_core::store::Store;
+use tpm_core::store::{AuditEntry, Store};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -8,6 +8,7 @@ pub enum Screen {
     ObjectList,
     ObjectDetail,
     PolicyList,
+    AuditLog,
 }
 
 pub struct App {
@@ -17,6 +18,7 @@ pub struct App {
     pub status: Option<BackendStatus>,
     pub objects: Vec<TpmObject>,
     pub policies: Vec<Policy>,
+    pub audit_entries: Vec<AuditEntry>,
     pub active_profile: Option<String>,
     pub selected_index: usize,
     pub command_preview: Option<String>,
@@ -31,6 +33,7 @@ impl App {
             status: None,
             objects: Vec::new(),
             policies: Vec::new(),
+            audit_entries: Vec::new(),
             active_profile: None,
             selected_index: 0,
             command_preview: None,
@@ -41,6 +44,7 @@ impl App {
         self.status = backend.status().ok();
         self.objects = store.list_objects().unwrap_or_default();
         self.policies = store.list_policies().unwrap_or_default();
+        self.audit_entries = store.list_audit_log(None, None, 100).unwrap_or_default();
         self.active_profile = store
             .get_active_profile()
             .ok()
@@ -54,7 +58,8 @@ impl App {
         self.screen = match self.screen {
             Screen::Dashboard => Screen::ObjectList,
             Screen::ObjectList => Screen::PolicyList,
-            Screen::PolicyList => Screen::Dashboard,
+            Screen::PolicyList => Screen::AuditLog,
+            Screen::AuditLog => Screen::Dashboard,
             Screen::ObjectDetail => Screen::ObjectList,
         };
         self.selected_index = 0;
@@ -95,6 +100,7 @@ impl App {
         match self.screen {
             Screen::ObjectList | Screen::ObjectDetail => self.objects.len(),
             Screen::PolicyList => self.policies.len(),
+            Screen::AuditLog => self.audit_entries.len(),
             Screen::Dashboard => 0,
         }
     }
@@ -114,6 +120,7 @@ impl App {
             Screen::PolicyList => self.policies.get(self.selected_index).map(|p| {
                 format!("tpm policy show {}", p.name)
             }),
+            Screen::AuditLog => Some("tpm log show".to_string()),
             Screen::Dashboard => Some("tpm status".to_string()),
         };
     }

@@ -77,6 +77,7 @@ fn run_loop(
                 Screen::ObjectList => views::object_list::render(frame, app, outer[0]),
                 Screen::ObjectDetail => views::object_detail::render(frame, app),
                 Screen::PolicyList => views::policy_list::render(frame, app, outer[0]),
+                Screen::AuditLog => views::audit_log::render(frame, app, outer[0]),
             }
 
             // Command preview bar at bottom
@@ -110,6 +111,10 @@ fn run_loop(
                 }
                 Action::GoToPolicies => {
                     app.screen = Screen::PolicyList;
+                    app.selected_index = 0;
+                }
+                Action::GoToAuditLog => {
+                    app.screen = Screen::AuditLog;
                     app.selected_index = 0;
                 }
                 Action::Enter => app.enter_detail(),

@@ -24,6 +24,10 @@ pub struct Cli {
     /// TPM backend to use (mock, device)
     #[arg(long, global = true, default_value = "mock", env = "TPM_BACKEND")]
     pub backend: String,
+
+    /// Dry-run: show what would happen without executing
+    #[arg(long, global = true)]
+    pub plan: bool,
 }
 
 fn parse_output_format(s: &str) -> Result<OutputFormat, String> {
@@ -75,6 +79,9 @@ pub enum Command {
     /// Browse built-in templates
     #[command(subcommand)]
     Template(TemplateCommand),
+    /// Workspace management
+    #[command(subcommand)]
+    Workspace(WorkspaceCommand),
     /// Explain a TPM concept
     Explain {
         /// Concept to explain (pcr, policy, hierarchy, key, seal, attestation, nv, ek, ak, handle, session, dictionary-attack)
@@ -386,6 +393,18 @@ pub enum TemplateCommand {
     Show {
         /// Template name
         name: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum WorkspaceCommand {
+    /// Show workspace summary
+    Info,
+    /// Export workspace metadata to JSON
+    Export {
+        /// Output file path
+        #[arg(long)]
+        output: std::path::PathBuf,
     },
 }
 
