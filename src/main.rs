@@ -9,7 +9,8 @@ use tpm_core::backend::MockBackend;
 use tpm_core::store::Store;
 
 use app::{
-    Cli, Command, DaemonCommand, KeyCommand, ObjectCommand, PolicyCommand, ProfileCommand,
+    Cli, Command, DaemonCommand, KeyCommand, NvCommand, ObjectCommand, PcrBaselineCommand,
+    PcrCommand, PolicyCommand, ProfileCommand, SecretCommand,
 };
 
 fn default_store_path() -> std::path::PathBuf {
@@ -91,6 +92,61 @@ fn main() -> anyhow::Result<()> {
                     KeyCommand::ExportPub { path, key_format } => {
                         commands::key::export_pub(&store, &path, &key_format, cli.format)
                     }
+                },
+                Command::Secret(sec_cmd) => match sec_cmd {
+                    SecretCommand::Seal {
+                        name,
+                        input,
+                        policy,
+                    } => commands::secret::seal(
+                        &store,
+                        &backend,
+                        &name,
+                        &input,
+                        policy.as_deref(),
+                        cli.format,
+                    ),
+                    SecretCommand::Unseal { name, output } => commands::secret::unseal(
+                        &store,
+                        &backend,
+                        &name,
+                        output.as_deref(),
+                        cli.format,
+                    ),
+                    SecretCommand::List => commands::secret::list(&store, cli.format),
+                },
+                Command::Nv(nv_cmd) => match nv_cmd {
+                    NvCommand::Define { name, size } => {
+                        commands::nv::define(&store, &backend, &name, size, cli.format)
+                    }
+                    NvCommand::Write { name, input } => {
+                        commands::nv::write(&store, &backend, &name, &input)
+                    }
+                    NvCommand::Read { name, output } => {
+                        commands::nv::read(&store, &backend, &name, output.as_deref(), cli.format)
+                    }
+                    NvCommand::List => commands::nv::list(&store, cli.format),
+                    NvCommand::Delete { name } => {
+                        commands::nv::delete(&store, &backend, &name)
+                    }
+                },
+                Command::Pcr(pcr_cmd) => match pcr_cmd {
+                    PcrCommand::Show { bank, index } => {
+                        commands::pcr::show(&backend, &bank, &index, cli.format)
+                    }
+                    PcrCommand::Baseline(bl_cmd) => match bl_cmd {
+                        PcrBaselineCommand::Save { name, bank, index } => {
+                            commands::pcr::baseline_save(
+                                &store, &backend, &name, &bank, &index, cli.format,
+                            )
+                        }
+                        PcrBaselineCommand::Diff { name } => {
+                            commands::pcr::baseline_diff(&store, &backend, &name, cli.format)
+                        }
+                        PcrBaselineCommand::List => {
+                            commands::pcr::baseline_list(&store, cli.format)
+                        }
+                    },
                 },
                 Command::Policy(pol_cmd) => match pol_cmd {
                     PolicyCommand::Create {

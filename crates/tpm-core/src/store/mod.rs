@@ -283,6 +283,118 @@ impl Store {
         Ok(count > 0)
     }
 
+    // -- NV Indices --
+
+    pub fn insert_nv_index(&self, name: &str, nv_index: u32, size: usize) -> anyhow::Result<()> {
+        self.conn.execute(
+            "INSERT INTO nv_indices (name, nv_index, size) VALUES (?1, ?2, ?3)",
+            params![name, nv_index, size as i64],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_nv_index(&self, name: &str) -> anyhow::Result<Option<(u32, usize)>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT nv_index, size FROM nv_indices WHERE name = ?1",
+                params![name],
+                |row| {
+                    let idx: u32 = row.get(0)?;
+                    let size: i64 = row.get(1)?;
+                    Ok((idx, size as usize))
+                },
+            )
+            .optional()?)
+    }
+
+    pub fn list_nv_indices(&self) -> anyhow::Result<Vec<(String, u32, usize)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name, nv_index, size FROM nv_indices ORDER BY name")?;
+        let rows = stmt.query_map([], |row| {
+            let name: String = row.get(0)?;
+            let idx: u32 = row.get(1)?;
+            let size: i64 = row.get(2)?;
+            Ok((name, idx, size as usize))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn nv_write_data(&self, name: &str, data: &[u8]) -> anyhow::Result<()> {
+        let count = self.conn.execute(
+            "UPDATE nv_indices SET data = ?2 WHERE name = ?1",
+            params![name, data],
+        )?;
+        if count == 0 {
+            anyhow::bail!("NV index not found: {}", name);
+        }
+        Ok(())
+    }
+
+    pub fn nv_read_data(&self, name: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT data FROM nv_indices WHERE name = ?1",
+                params![name],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn delete_nv_index(&self, name: &str) -> anyhow::Result<bool> {
+        let count = self
+            .conn
+            .execute("DELETE FROM nv_indices WHERE name = ?1", params![name])?;
+        Ok(count > 0)
+    }
+
+    // -- PCR Baselines --
+
+    pub fn save_pcr_baseline(
+        &self,
+        name: &str,
+        bank: &str,
+        values: &serde_json::Value,
+    ) -> anyhow::Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO pcr_baselines (name, bank, pcr_values) VALUES (?1, ?2, ?3)",
+            params![name, bank, values.to_string()],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_pcr_baseline(
+        &self,
+        name: &str,
+    ) -> anyhow::Result<Option<(String, serde_json::Value)>> {
+        self.conn
+            .query_row(
+                "SELECT bank, pcr_values FROM pcr_baselines WHERE name = ?1",
+                params![name],
+                |row| {
+                    let bank: String = row.get(0)?;
+                    let values_str: String = row.get(1)?;
+                    Ok((bank, values_str))
+                },
+            )
+            .optional()?
+            .map(|(bank, values_str)| {
+                let values: serde_json::Value = serde_json::from_str(&values_str)?;
+                Ok((bank, values))
+            })
+            .transpose()
+    }
+
+    pub fn list_pcr_baselines(&self) -> anyhow::Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name FROM pcr_baselines ORDER BY name")?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     // -- Audit --
 
     pub fn log_action(
@@ -296,6 +408,14 @@ impl Store {
             params![action, object_path, details.to_string()],
         )?;
         Ok(())
+    }
+
+    /// Count objects in the store.
+    pub fn object_count(&self) -> anyhow::Result<usize> {
+        let count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM objects", [], |r| r.get(0))?;
+        Ok(count as usize)
     }
 }
 

@@ -40,3 +40,21 @@ CREATE TABLE audit_log (
 CREATE INDEX idx_objects_path ON objects(path);
 CREATE INDEX idx_audit_timestamp ON audit_log(timestamp);
 "#;
+
+/// SQL for migration version 2: PCR baselines and NV index tracking.
+pub const V2: &str = r#"
+CREATE TABLE pcr_baselines (
+    name        TEXT PRIMARY KEY,
+    bank        TEXT NOT NULL,
+    pcr_values  TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE nv_indices (
+    name       TEXT PRIMARY KEY,
+    nv_index   INTEGER NOT NULL UNIQUE,
+    size       INTEGER NOT NULL,
+    data       BLOB,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"#;

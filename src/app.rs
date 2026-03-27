@@ -41,6 +41,15 @@ pub enum Command {
     /// Key management
     #[command(subcommand)]
     Key(KeyCommand),
+    /// Secret sealing and unsealing
+    #[command(subcommand)]
+    Secret(SecretCommand),
+    /// NV (non-volatile) storage management
+    #[command(subcommand)]
+    Nv(NvCommand),
+    /// PCR (Platform Configuration Register) operations
+    #[command(subcommand)]
+    Pcr(PcrCommand),
     /// Policy management
     #[command(subcommand)]
     Policy(PolicyCommand),
@@ -147,6 +156,113 @@ pub enum PolicyCommand {
         /// Policy name
         name: String,
     },
+}
+
+#[derive(Subcommand)]
+pub enum SecretCommand {
+    /// Seal a secret
+    Seal {
+        /// Secret name (e.g. db/password)
+        name: String,
+
+        /// Input file containing the secret
+        #[arg(long)]
+        input: std::path::PathBuf,
+
+        /// Attach a named policy
+        #[arg(long)]
+        policy: Option<String>,
+    },
+    /// Unseal a secret
+    Unseal {
+        /// Secret name
+        name: String,
+
+        /// Output file (if omitted, prints to stdout)
+        #[arg(long)]
+        output: Option<std::path::PathBuf>,
+    },
+    /// List sealed secrets
+    List,
+}
+
+#[derive(Subcommand)]
+pub enum NvCommand {
+    /// Define an NV index
+    Define {
+        /// NV index name (e.g. config/build-id)
+        name: String,
+
+        /// Size in bytes
+        #[arg(long)]
+        size: usize,
+    },
+    /// Write data to an NV index
+    Write {
+        /// NV index name
+        name: String,
+
+        /// Input file
+        #[arg(long)]
+        input: std::path::PathBuf,
+    },
+    /// Read data from an NV index
+    Read {
+        /// NV index name
+        name: String,
+
+        /// Output file (if omitted, prints to stdout)
+        #[arg(long)]
+        output: Option<std::path::PathBuf>,
+    },
+    /// List NV indices
+    List,
+    /// Delete an NV index
+    Delete {
+        /// NV index name
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PcrCommand {
+    /// Show current PCR values
+    Show {
+        /// PCR bank
+        #[arg(long, default_value = "sha256")]
+        bank: String,
+
+        /// PCR indices (comma-separated)
+        #[arg(long, value_delimiter = ',', default_values_t = vec![0, 1, 2, 3, 4, 5, 6, 7])]
+        index: Vec<u32>,
+    },
+    /// PCR baseline management
+    #[command(subcommand)]
+    Baseline(PcrBaselineCommand),
+}
+
+#[derive(Subcommand)]
+pub enum PcrBaselineCommand {
+    /// Save current PCR state as a named baseline
+    Save {
+        /// Baseline name
+        name: String,
+
+        /// PCR bank
+        #[arg(long, default_value = "sha256")]
+        bank: String,
+
+        /// PCR indices (comma-separated)
+        #[arg(long, value_delimiter = ',', default_values_t = vec![0, 1, 2, 3, 4, 5, 6, 7])]
+        index: Vec<u32>,
+    },
+    /// Compare current PCR state against a saved baseline
+    Diff {
+        /// Baseline name
+        name: String,
+    },
+    /// List saved baselines
+    List,
 }
 
 #[derive(Subcommand)]
