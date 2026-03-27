@@ -410,6 +410,49 @@ impl Store {
         Ok(())
     }
 
+    pub fn list_audit_log(
+        &self,
+        filter_object: Option<&str>,
+        filter_action: Option<&str>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<AuditEntry>> {
+        let mut sql = String::from(
+            "SELECT id, timestamp, action, object_path, details FROM audit_log WHERE 1=1",
+        );
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        if let Some(obj) = filter_object {
+            sql.push_str(" AND object_path = ?");
+            param_values.push(Box::new(obj.to_string()));
+        }
+        if let Some(act) = filter_action {
+            sql.push_str(" AND action LIKE ?");
+            param_values.push(Box::new(format!("%{}%", act)));
+        }
+        sql.push_str(" ORDER BY id DESC LIMIT ?");
+        param_values.push(Box::new(limit as i64));
+
+        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|p| p.as_ref()).collect();
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_ref.as_slice(), |row| {
+            Ok(AuditEntry {
+                id: row.get(0)?,
+                timestamp: row.get(1)?,
+                action: row.get(2)?,
+                object_path: row.get(3)?,
+                details: row.get(4)?,
+            })
+        })?;
+
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row?);
+        }
+        Ok(entries)
+    }
+
     /// Count objects in the store.
     pub fn object_count(&self) -> anyhow::Result<usize> {
         let count: i64 = self
@@ -417,6 +460,16 @@ impl Store {
             .query_row("SELECT COUNT(*) FROM objects", [], |r| r.get(0))?;
         Ok(count as usize)
     }
+}
+
+/// An entry from the audit log.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AuditEntry {
+    pub id: i64,
+    pub timestamp: String,
+    pub action: String,
+    pub object_path: Option<String>,
+    pub details: String,
 }
 
 // Internal row types for deserialization from SQLite

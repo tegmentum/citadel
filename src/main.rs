@@ -9,8 +9,9 @@ use tpm_core::backend::MockBackend;
 use tpm_core::store::Store;
 
 use app::{
-    Cli, Command, DaemonCommand, KeyCommand, NvCommand, ObjectCommand, PcrBaselineCommand,
-    PcrCommand, PolicyCommand, ProfileCommand, RepairCommand, SecretCommand,
+    AttestCommand, Cli, Command, DaemonCommand, KeyCommand, LogCommand, NvCommand, ObjectCommand,
+    PcrBaselineCommand, PcrCommand, PolicyCommand, ProfileCommand, RepairCommand, SecretCommand,
+    TemplateCommand,
 };
 
 fn default_store_path() -> std::path::PathBuf {
@@ -115,6 +116,39 @@ fn main() -> anyhow::Result<()> {
                         commands::key::export_pub(&store, &path, &key_format, cli.format)
                     }
                 },
+                Command::Attest(att_cmd) => match att_cmd {
+                    AttestCommand::AkCreate { name, algorithm } => {
+                        commands::attest::ak_create(
+                            &store,
+                            backend.as_ref(),
+                            &name,
+                            &algorithm,
+                            cli.format,
+                        )
+                    }
+                    AttestCommand::Quote {
+                        ak,
+                        bank,
+                        pcr,
+                        nonce,
+                        output,
+                    } => commands::attest::quote(
+                        &store,
+                        backend.as_ref(),
+                        &ak,
+                        &bank,
+                        &pcr,
+                        nonce.as_deref(),
+                        output.as_deref(),
+                        cli.format,
+                    ),
+                    AttestCommand::Verify { quote, nonce } => commands::attest::verify(
+                        backend.as_ref(),
+                        &quote,
+                        nonce.as_deref(),
+                        cli.format,
+                    ),
+                },
                 Command::Secret(sec_cmd) => match sec_cmd {
                     SecretCommand::Seal {
                         name,
@@ -208,6 +242,25 @@ fn main() -> anyhow::Result<()> {
                     }
                     RepairCommand::Apply => {
                         commands::repair::apply(&store, backend.as_ref(), cli.format)
+                    }
+                },
+                Command::Log(log_cmd) => match log_cmd {
+                    LogCommand::Show {
+                        object,
+                        action,
+                        limit,
+                    } => commands::log::list(
+                        &store,
+                        object.as_deref(),
+                        action.as_deref(),
+                        limit,
+                        cli.format,
+                    ),
+                },
+                Command::Template(tmpl_cmd) => match tmpl_cmd {
+                    TemplateCommand::List => commands::template::list(cli.format),
+                    TemplateCommand::Show { name } => {
+                        commands::template::show(&name, cli.format)
                     }
                 },
                 Command::Explain { concept } => commands::explain::run(&concept),

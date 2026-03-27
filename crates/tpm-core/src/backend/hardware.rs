@@ -164,6 +164,31 @@ impl TpmBackend for HardwareBackend {
         let _ = index;
         anyhow::bail!("hardware NV undefine not yet fully implemented")
     }
+
+    fn create_ak(&self, _algorithm: Algorithm) -> anyhow::Result<KeyHandle> {
+        let _ctx = self.open_context()?;
+        anyhow::bail!("hardware AK creation not yet fully implemented")
+    }
+
+    fn quote(
+        &self,
+        _ak_handle: &KeyHandle,
+        _nonce: &[u8],
+        _pcr_bank: &str,
+        _pcr_indices: &[u32],
+    ) -> anyhow::Result<super::traits::QuoteData> {
+        let _ctx = self.open_context()?;
+        anyhow::bail!("hardware quote not yet fully implemented")
+    }
+
+    fn verify_quote(
+        &self,
+        _quote: &super::traits::QuoteData,
+        _ak_public: &[u8],
+        _nonce: &[u8],
+    ) -> anyhow::Result<super::traits::QuoteVerification> {
+        anyhow::bail!("hardware quote verification not yet fully implemented")
+    }
 }
 
 fn get_tpm_properties(ctx: &mut Context) -> anyhow::Result<(String, String)> {

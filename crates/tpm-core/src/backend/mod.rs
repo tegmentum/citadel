@@ -5,7 +5,10 @@ pub mod traits;
 pub mod hardware;
 
 pub use mock::MockBackend;
-pub use traits::{BackendStatus, KeyHandle, PcrValue, SealedData, TpmBackend};
+pub use traits::{
+    BackendStatus, KeyHandle, PcrMatchResult, PcrValue, QuoteData, QuoteVerification, SealedData,
+    TpmBackend,
+};
 
 #[cfg(feature = "tpm-hw")]
 pub use hardware::HardwareBackend;

@@ -45,6 +45,9 @@ pub enum Command {
     /// Key management
     #[command(subcommand)]
     Key(KeyCommand),
+    /// Remote attestation
+    #[command(subcommand)]
+    Attest(AttestCommand),
     /// Secret sealing and unsealing
     #[command(subcommand)]
     Secret(SecretCommand),
@@ -66,6 +69,12 @@ pub enum Command {
     /// Repair workspace issues
     #[command(subcommand)]
     Repair(RepairCommand),
+    /// View audit log
+    #[command(subcommand)]
+    Log(LogCommand),
+    /// Browse built-in templates
+    #[command(subcommand)]
+    Template(TemplateCommand),
     /// Explain a TPM concept
     Explain {
         /// Concept to explain (pcr, policy, hierarchy, key, seal, attestation, nv, ek, ak, handle, session, dictionary-attack)
@@ -124,6 +133,51 @@ pub enum KeyCommand {
         /// Export format (pem, der, raw)
         #[arg(long, default_value = "pem")]
         key_format: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AttestCommand {
+    /// Create an attestation key
+    AkCreate {
+        /// AK name (e.g. attest/main)
+        name: String,
+
+        /// Algorithm
+        #[arg(long, short, default_value = "ecc-p256")]
+        algorithm: String,
+    },
+    /// Generate a TPM quote (signed PCR attestation)
+    Quote {
+        /// Attestation key name
+        #[arg(long)]
+        ak: String,
+
+        /// PCR bank
+        #[arg(long, default_value = "sha256")]
+        bank: String,
+
+        /// PCR indices (comma-separated)
+        #[arg(long, value_delimiter = ',', default_values_t = vec![0, 7, 11])]
+        pcr: Vec<u32>,
+
+        /// Nonce (challenge from verifier)
+        #[arg(long)]
+        nonce: Option<String>,
+
+        /// Output file for quote JSON
+        #[arg(long)]
+        output: Option<std::path::PathBuf>,
+    },
+    /// Verify a TPM quote
+    Verify {
+        /// Path to quote JSON file
+        #[arg(long)]
+        quote: std::path::PathBuf,
+
+        /// Expected nonce
+        #[arg(long)]
+        nonce: Option<String>,
     },
 }
 
@@ -304,6 +358,35 @@ pub enum RepairCommand {
     Plan,
     /// Apply automatic repairs
     Apply,
+}
+
+#[derive(Subcommand)]
+pub enum LogCommand {
+    /// Show recent audit log entries
+    Show {
+        /// Filter by object path
+        #[arg(long)]
+        object: Option<String>,
+
+        /// Filter by action (substring match)
+        #[arg(long)]
+        action: Option<String>,
+
+        /// Number of entries to show
+        #[arg(long, default_value = "50")]
+        limit: usize,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum TemplateCommand {
+    /// List available templates
+    List,
+    /// Show template details
+    Show {
+        /// Template name
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]

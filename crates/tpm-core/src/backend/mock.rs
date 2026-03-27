@@ -172,4 +172,106 @@ impl TpmBackend for MockBackend {
         }
         Ok(())
     }
+
+    fn create_ak(&self, algorithm: Algorithm) -> anyhow::Result<KeyHandle> {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        "ak".hash(&mut h);
+        algorithm.to_string().hash(&mut h);
+        let id = h.finish().to_le_bytes().to_vec();
+        Ok(KeyHandle {
+            id,
+            path: "(ak)".to_string(),
+        })
+    }
+
+    fn quote(
+        &self,
+        ak_handle: &KeyHandle,
+        nonce: &[u8],
+        pcr_bank: &str,
+        pcr_indices: &[u32],
+    ) -> anyhow::Result<super::traits::QuoteData> {
+        let pcr_values = self.pcr_read(pcr_bank, pcr_indices)?;
+
+        // Mock attestation: hash of PCR values + nonce
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        for v in &pcr_values {
+            v.digest.hash(&mut h);
+        }
+        nonce.hash(&mut h);
+        let attestation = h.finish().to_le_bytes().to_vec();
+
+        // Mock signature: hash of attestation + ak
+        let mut h2 = DefaultHasher::new();
+        attestation.hash(&mut h2);
+        ak_handle.id.hash(&mut h2);
+        let signature = h2.finish().to_le_bytes().to_vec();
+
+        Ok(super::traits::QuoteData {
+            attestation,
+            signature,
+            pcr_values,
+            nonce: nonce.to_vec(),
+            ak_public: ak_handle.id.clone(),
+        })
+    }
+
+    fn verify_quote(
+        &self,
+        quote: &super::traits::QuoteData,
+        ak_public: &[u8],
+        nonce: &[u8],
+    ) -> anyhow::Result<super::traits::QuoteVerification> {
+        // Verify nonce
+        let nonce_matches = quote.nonce == nonce;
+
+        // Verify signature (mock: recompute)
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        quote.attestation.hash(&mut h);
+        ak_public.hash(&mut h);
+        let expected_sig = h.finish().to_le_bytes().to_vec();
+        let signature_valid = quote.signature == expected_sig;
+
+        // Compare PCR values against current state
+        let current_pcrs = if let Some(first) = quote.pcr_values.first() {
+            let indices: Vec<u32> = quote.pcr_values.iter().map(|v| v.index).collect();
+            self.pcr_read(&first.bank, &indices)?
+        } else {
+            Vec::new()
+        };
+
+        let pcr_matches: Vec<super::traits::PcrMatchResult> = quote
+            .pcr_values
+            .iter()
+            .zip(current_pcrs.iter())
+            .map(|(quoted, current)| {
+                let q_hex: String = quoted.digest.iter().map(|b| format!("{:02x}", b)).collect();
+                let c_hex: String =
+                    current.digest.iter().map(|b| format!("{:02x}", b)).collect();
+                super::traits::PcrMatchResult {
+                    index: quoted.index,
+                    bank: quoted.bank.clone(),
+                    expected: q_hex.clone(),
+                    actual: c_hex.clone(),
+                    matches: q_hex == c_hex,
+                }
+            })
+            .collect();
+
+        let all_pcrs_match = pcr_matches.iter().all(|m| m.matches);
+        let verified = signature_valid && nonce_matches && all_pcrs_match;
+
+        Ok(super::traits::QuoteVerification {
+            signature_valid,
+            nonce_matches,
+            pcr_matches,
+            verified,
+        })
+    }
 }

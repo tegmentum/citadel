@@ -29,6 +29,26 @@ pub trait TpmBackend: Send + Sync {
 
     /// Delete an NV index.
     fn nv_undefine(&self, index: u32) -> anyhow::Result<()>;
+
+    /// Create an attestation key.
+    fn create_ak(&self, algorithm: Algorithm) -> anyhow::Result<KeyHandle>;
+
+    /// Generate a TPM quote: sign PCR values with an AK.
+    fn quote(
+        &self,
+        ak_handle: &KeyHandle,
+        nonce: &[u8],
+        pcr_bank: &str,
+        pcr_indices: &[u32],
+    ) -> anyhow::Result<QuoteData>;
+
+    /// Verify a TPM quote against expected PCR values.
+    fn verify_quote(
+        &self,
+        quote: &QuoteData,
+        ak_public: &[u8],
+        nonce: &[u8],
+    ) -> anyhow::Result<QuoteVerification>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,4 +76,39 @@ pub struct PcrValue {
     pub bank: String,
     pub index: u32,
     pub digest: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuoteData {
+    /// The signed attestation statement.
+    pub attestation: Vec<u8>,
+    /// The signature over the attestation.
+    pub signature: Vec<u8>,
+    /// PCR values included in the quote.
+    pub pcr_values: Vec<PcrValue>,
+    /// The nonce used in the quote.
+    pub nonce: Vec<u8>,
+    /// The AK public key material.
+    pub ak_public: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuoteVerification {
+    /// Whether the signature is valid.
+    pub signature_valid: bool,
+    /// Whether the nonce matches.
+    pub nonce_matches: bool,
+    /// Per-PCR comparison results.
+    pub pcr_matches: Vec<PcrMatchResult>,
+    /// Overall verification result.
+    pub verified: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PcrMatchResult {
+    pub index: u32,
+    pub bank: String,
+    pub expected: String,
+    pub actual: String,
+    pub matches: bool,
 }

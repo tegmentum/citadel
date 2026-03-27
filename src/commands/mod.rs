@@ -1,7 +1,9 @@
+pub mod attest;
 pub mod doctor;
 pub mod explain;
 pub mod init;
 pub mod key;
+pub mod log;
 pub mod nv;
 pub mod object;
 pub mod pcr;
@@ -10,3 +12,4 @@ pub mod profile;
 pub mod repair;
 pub mod secret;
 pub mod status;
+pub mod template;
