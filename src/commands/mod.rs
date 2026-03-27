@@ -7,5 +7,6 @@ pub mod object;
 pub mod pcr;
 pub mod policy;
 pub mod profile;
+pub mod repair;
 pub mod secret;
 pub mod status;

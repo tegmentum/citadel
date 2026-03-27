@@ -10,7 +10,7 @@ use tpm_core::store::Store;
 
 use app::{
     Cli, Command, DaemonCommand, KeyCommand, NvCommand, ObjectCommand, PcrBaselineCommand,
-    PcrCommand, PolicyCommand, ProfileCommand, SecretCommand,
+    PcrCommand, PolicyCommand, ProfileCommand, RepairCommand, SecretCommand,
 };
 
 fn default_store_path() -> std::path::PathBuf {
@@ -176,6 +176,17 @@ fn main() -> anyhow::Result<()> {
                         commands::profile::show(&store, name.as_deref(), cli.format)
                     }
                     ProfileCommand::Set { name } => commands::profile::set(&store, &name),
+                },
+                Command::Repair(rep_cmd) => match rep_cmd {
+                    RepairCommand::Scan => {
+                        commands::repair::scan(&store, &backend, cli.format)
+                    }
+                    RepairCommand::Plan => {
+                        commands::repair::plan(&store, &backend, cli.format)
+                    }
+                    RepairCommand::Apply => {
+                        commands::repair::apply(&store, &backend, cli.format)
+                    }
                 },
                 Command::Explain { concept } => commands::explain::run(&concept),
                 Command::Daemon(daemon_cmd) => match daemon_cmd {

@@ -59,6 +59,9 @@ pub enum Command {
     /// Profile management
     #[command(subcommand)]
     Profile(ProfileCommand),
+    /// Repair workspace issues
+    #[command(subcommand)]
+    Repair(RepairCommand),
     /// Explain a TPM concept
     Explain {
         /// Concept to explain (pcr, policy, hierarchy, key, seal, attestation, nv, ek, ak, handle, session, dictionary-attack)
@@ -287,6 +290,16 @@ pub enum ProfileCommand {
         /// Profile name
         name: String,
     },
+}
+
+#[derive(Subcommand)]
+pub enum RepairCommand {
+    /// Scan for workspace issues
+    Scan,
+    /// Show repair plan without applying
+    Plan,
+    /// Apply automatic repairs
+    Apply,
 }
 
 #[derive(Subcommand)]
