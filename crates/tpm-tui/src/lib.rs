@@ -10,6 +10,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::backend::CrosstermBackend;
+use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::Terminal;
 
 use tpm_core::backend::MockBackend;
@@ -66,9 +67,21 @@ fn run_loop(
 ) -> anyhow::Result<()> {
     loop {
         terminal.draw(|frame| {
+            let outer = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(1)])
+                .split(frame.area());
+
             match app.screen {
-                Screen::Dashboard => views::dashboard::render(frame, app),
-                Screen::ObjectList => views::object_list::render(frame, app),
+                Screen::Dashboard => views::dashboard::render(frame, app, outer[0]),
+                Screen::ObjectList => views::object_list::render(frame, app, outer[0]),
+                Screen::ObjectDetail => views::object_detail::render(frame, app),
+                Screen::PolicyList => views::policy_list::render(frame, app, outer[0]),
+            }
+
+            // Command preview bar at bottom
+            if app.screen != Screen::ObjectDetail {
+                views::command_preview::render(frame, app, outer[1]);
             }
         })?;
 
@@ -77,6 +90,14 @@ fn run_loop(
                 Action::Quit => {
                     app.should_quit = true;
                     break;
+                }
+                Action::Back => {
+                    if app.screen == Screen::ObjectDetail {
+                        app.go_back();
+                    } else {
+                        app.should_quit = true;
+                        break;
+                    }
                 }
                 Action::NextScreen => app.next_screen(),
                 Action::GoToDashboard => {
@@ -87,6 +108,11 @@ fn run_loop(
                     app.screen = Screen::ObjectList;
                     app.selected_index = 0;
                 }
+                Action::GoToPolicies => {
+                    app.screen = Screen::PolicyList;
+                    app.selected_index = 0;
+                }
+                Action::Enter => app.enter_detail(),
                 Action::Up => app.move_up(),
                 Action::Down => app.move_down(),
                 Action::Refresh => app.refresh(store, backend),

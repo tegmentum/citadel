@@ -1,2 +1,5 @@
+pub mod command_preview;
 pub mod dashboard;
+pub mod object_detail;
 pub mod object_list;
+pub mod policy_list;

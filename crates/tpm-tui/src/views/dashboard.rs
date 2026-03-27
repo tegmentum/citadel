@@ -1,4 +1,4 @@
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -6,7 +6,7 @@ use ratatui::Frame;
 
 use crate::app::App;
 
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -14,7 +14,7 @@ pub fn render(frame: &mut Frame, app: &App) {
             Constraint::Length(6),
             Constraint::Min(1),
         ])
-        .split(frame.area());
+        .split(area);
 
     // TPM Status block
     let status_lines = if let Some(ref status) = app.status {
@@ -63,11 +63,15 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     let workspace_lines = vec![
         Line::from(vec![
-            Span::styled("  objects:  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  objects:   ", Style::default().fg(Color::DarkGray)),
             Span::raw(app.objects.len().to_string()),
         ]),
         Line::from(vec![
-            Span::styled("  profile:  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  policies:  ", Style::default().fg(Color::DarkGray)),
+            Span::raw(app.policies.len().to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("  profile:   ", Style::default().fg(Color::DarkGray)),
             Span::raw(profile_display),
         ]),
     ];
@@ -90,6 +94,8 @@ pub fn render(frame: &mut Frame, app: &App) {
         Span::raw(" dashboard  "),
         Span::styled("2", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(" objects  "),
+        Span::styled("3", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(" policies  "),
         Span::styled("r", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(" refresh"),
     ]))
