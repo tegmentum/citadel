@@ -73,13 +73,53 @@ fn create_backend(name: &str) -> anyhow::Result<Box<dyn tpm_core::backend::TpmBa
             );
             Ok(Box::new(MockBackend::new()))
         }
+        #[cfg(feature = "vtpm")]
+        "vtpm" => {
+            // Look for the WASM component in standard locations
+            let component_path = std::env::var("TPM_VTPM_COMPONENT")
+                .map(std::path::PathBuf::from)
+                .or_else(|_| {
+                    // Check common locations
+                    let candidates = [
+                        std::path::PathBuf::from("tpm-ephemeral.component.wasm"),
+                        dirs_home().join(".local/share/tpm/tpm-ephemeral.component.wasm"),
+                    ];
+                    candidates
+                        .iter()
+                        .find(|p| p.exists())
+                        .cloned()
+                        .ok_or(())
+                })
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "vTPM WASM component not found.\n\
+                         Set TPM_VTPM_COMPONENT to the path of tpm-ephemeral.component.wasm\n\
+                         or place it in ~/.local/share/tpm/"
+                    )
+                })?;
+            Ok(Box::new(tpm_core::backend::VtpmBackend::new(&component_path)?))
+        }
+        #[cfg(not(feature = "vtpm"))]
+        "vtpm" => {
+            anyhow::bail!(
+                "vTPM backend not available: rebuild with --features vtpm\n\
+                 This embeds a libtpms-based virtual TPM via wasmtime."
+            )
+        }
         other => {
             anyhow::bail!(
-                "unknown backend: '{}'\navailable backends: mock, device, swtpm",
+                "unknown backend: '{}'\navailable backends: mock, device, swtpm, vtpm",
                 other
             )
         }
     }
+}
+
+#[allow(dead_code)]
+fn dirs_home() -> std::path::PathBuf {
+    std::env::var("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
 }
 
 fn main() -> anyhow::Result<()> {

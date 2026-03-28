@@ -8,6 +8,8 @@ default = []
 # Enable real TPM hardware backend via tss-esapi.
 # Requires tpm2-tss system library to be installed.
 tpm-hw = ["tss-esapi"]
+# Enable in-process vTPM via libtpms WASM component.
+vtpm = ["wasmtime", "wasmtime-wasi"]
 
 [dependencies]
 serde.workspace = true
@@ -22,6 +24,10 @@ tracing.workspace = true
 
 # Optional: real TPM backend
 tss-esapi = { version = "8.0.0-alpha.2", optional = true }
+
+# Optional: in-process vTPM via WASM
+wasmtime = { version = "43", optional = true }
+wasmtime-wasi = { version = "43", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

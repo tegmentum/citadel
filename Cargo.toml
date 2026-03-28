@@ -16,6 +16,7 @@ license = "Apache-2.0"
 [features]
 default = []
 tpm-hw = ["tpm-core/tpm-hw"]
+vtpm = ["tpm-core/vtpm"]
 
 [[bin]]
 name = "tpm"
