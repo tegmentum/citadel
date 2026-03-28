@@ -1,0 +1,17 @@
+[package]
+name = "tpm-wasi"
+edition.workspace = true
+version.workspace = true
+description = "TPM operator CLI for WebAssembly (wasi:cli)"
+
+[[bin]]
+name = "tpm-wasi"
+path = "src/main.rs"
+
+[dependencies]
+tpm-core = { path = "../tpm-core", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+uuid.workspace = true

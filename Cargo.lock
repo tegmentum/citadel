@@ -2736,6 +2736,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tpm-wasi"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tpm-core",
+ "uuid",
+]
+
+[[package]]
 name = "tpmd"
 version = "0.1.0"
 dependencies = [

@@ -4,6 +4,7 @@ members = [
     ".",
     "crates/tpm-core",
     "crates/tpm-tui",
+    "crates/tpm-wasi",
     "crates/tpmd",
 ]
 
