@@ -212,6 +212,7 @@ pub fn import(
             default_algorithm: alg,
             default_policy: None,
             is_active: ep.active && existing_profiles.is_empty(),
+            constraints: Default::default(),
         };
         store.insert_profile(&profile)?;
         imported_profiles += 1;

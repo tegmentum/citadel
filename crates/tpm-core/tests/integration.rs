@@ -319,6 +319,7 @@ fn profile_switch() {
             default_algorithm: Algorithm::Rsa2048,
             default_policy: None,
             is_active: false,
+            constraints: Default::default(),
         })
         .unwrap();
 

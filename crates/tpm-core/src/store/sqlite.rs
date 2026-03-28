@@ -551,6 +551,7 @@ impl RawProfileRow {
             ))?,
             default_policy: self.default_policy,
             is_active: self.is_active != 0,
+            constraints: Default::default(),
         })
     }
 }

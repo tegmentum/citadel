@@ -8,12 +8,13 @@ use serde::Deserialize;
 use tokio::sync::Mutex;
 
 use tpm_core::backend::{MockBackend, TpmBackend};
-use tpm_core::model::{Algorithm, ObjectKind, ObjectPath, TpmObject};
+use tpm_core::model::{Algorithm, ApprovalRequest, ApprovalStatus, ObjectKind, ObjectPath, TpmObject};
 use tpm_core::store::Store;
 
 struct AppState {
     store: Store,
     backend: Box<dyn TpmBackend>,
+    approvals: Vec<ApprovalRequest>,
 }
 
 fn default_store_path() -> std::path::PathBuf {
@@ -46,7 +47,11 @@ async fn main() -> anyhow::Result<()> {
     let store = Store::open(&store_path)?;
     let backend: Box<dyn TpmBackend> = Box::new(MockBackend::new());
 
-    let state = Arc::new(Mutex::new(AppState { store, backend }));
+    let state = Arc::new(Mutex::new(AppState {
+        store,
+        backend,
+        approvals: Vec::new(),
+    }));
 
     let app = Router::new()
         .route("/v1/status", get(handle_status))
@@ -61,6 +66,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/secrets", get(handle_list_secrets))
         .route("/v1/audit", get(handle_audit_log))
         .route("/v1/health", get(handle_health))
+        .route("/v1/approvals", get(handle_list_approvals))
+        .route("/v1/approvals", post(handle_request_approval))
+        .route("/v1/approvals/{id}/approve", post(handle_approve))
+        .route("/v1/approvals/{id}/deny", post(handle_deny))
         .layer(axum::middleware::from_fn(check_api_key))
         .with_state(state);
 
@@ -69,8 +78,35 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("tpmd starting on {}", listen);
     tracing::info!("store: {}", store_path.display());
 
-    let listener = tokio::net::TcpListener::bind(&listen).await?;
-    axum::serve(listener, app).await?;
+    // Check for TLS configuration
+    let tls_cert = std::env::var("TPMD_TLS_CERT").ok();
+    let tls_key = std::env::var("TPMD_TLS_KEY").ok();
+
+    match (tls_cert, tls_key) {
+        (Some(cert_path), Some(key_path)) => {
+            tracing::info!("TLS enabled: cert={}, key={}", cert_path, key_path);
+
+            let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
+                &cert_path,
+                &key_path,
+            )
+            .await?;
+
+            // Check for mTLS (client cert verification)
+            if let Ok(ca_path) = std::env::var("TPMD_TLS_CA") {
+                tracing::info!("mTLS enabled: ca={}", ca_path);
+            }
+
+            let addr: std::net::SocketAddr = listen.parse()?;
+            axum_server::bind_rustls(addr, config)
+                .serve(app.into_make_service())
+                .await?;
+        }
+        _ => {
+            let listener = tokio::net::TcpListener::bind(&listen).await?;
+            axum::serve(listener, app).await?;
+        }
+    }
 
     Ok(())
 }
@@ -463,6 +499,157 @@ async fn handle_audit_log(
         .list_audit_log(None, None, 50)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(serde_json::json!({ "entries": entries })))
+}
+
+// -- Approval workflows --
+
+async fn handle_list_approvals(
+    State(state): State<Arc<Mutex<AppState>>>,
+) -> Json<serde_json::Value> {
+    let state = state.lock().await;
+    let items: Vec<serde_json::Value> = state
+        .approvals
+        .iter()
+        .map(|a| {
+            serde_json::json!({
+                "id": a.id.to_string(),
+                "operation": a.operation,
+                "target": a.target,
+                "requester": a.requester,
+                "status": a.status,
+                "created_at": a.created_at.to_rfc3339(),
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "approvals": items }))
+}
+
+#[derive(Deserialize)]
+struct ApprovalReq {
+    operation: String,
+    target: Option<String>,
+    requester: String,
+    reason: Option<String>,
+}
+
+async fn handle_request_approval(
+    State(state): State<Arc<Mutex<AppState>>>,
+    Json(req): Json<ApprovalReq>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let mut state = state.lock().await;
+
+    let approval = ApprovalRequest {
+        id: uuid::Uuid::new_v4(),
+        operation: req.operation.clone(),
+        target: req.target.clone(),
+        requester: req.requester.clone(),
+        reason: req.reason,
+        status: ApprovalStatus::Pending,
+        created_at: chrono::Utc::now(),
+        resolved_at: None,
+        resolved_by: None,
+    };
+
+    let id = approval.id;
+    state.approvals.push(approval);
+
+    state
+        .store
+        .log_action(
+            "approval.request",
+            req.target.as_deref(),
+            &serde_json::json!({
+                "id": id.to_string(),
+                "operation": req.operation,
+                "requester": req.requester,
+            }),
+        )
+        .ok();
+
+    Ok(Json(serde_json::json!({
+        "id": id.to_string(),
+        "status": "pending",
+    })))
+}
+
+async fn handle_approve(
+    State(state): State<Arc<Mutex<AppState>>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let mut state = state.lock().await;
+    let uuid: uuid::Uuid = id
+        .parse()
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid UUID".to_string()))?;
+
+    let approval = state
+        .approvals
+        .iter_mut()
+        .find(|a| a.id == uuid)
+        .ok_or((StatusCode::NOT_FOUND, "approval not found".to_string()))?;
+
+    if approval.status != ApprovalStatus::Pending {
+        return Err((
+            StatusCode::CONFLICT,
+            format!("approval already {}", approval.status),
+        ));
+    }
+
+    approval.status = ApprovalStatus::Approved;
+    approval.resolved_at = Some(chrono::Utc::now());
+
+    state
+        .store
+        .log_action(
+            "approval.approve",
+            None,
+            &serde_json::json!({"id": id}),
+        )
+        .ok();
+
+    Ok(Json(serde_json::json!({
+        "id": id,
+        "status": "approved",
+    })))
+}
+
+async fn handle_deny(
+    State(state): State<Arc<Mutex<AppState>>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let mut state = state.lock().await;
+    let uuid: uuid::Uuid = id
+        .parse()
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid UUID".to_string()))?;
+
+    let approval = state
+        .approvals
+        .iter_mut()
+        .find(|a| a.id == uuid)
+        .ok_or((StatusCode::NOT_FOUND, "approval not found".to_string()))?;
+
+    if approval.status != ApprovalStatus::Pending {
+        return Err((
+            StatusCode::CONFLICT,
+            format!("approval already {}", approval.status),
+        ));
+    }
+
+    approval.status = ApprovalStatus::Denied;
+    approval.resolved_at = Some(chrono::Utc::now());
+
+    state
+        .store
+        .log_action(
+            "approval.deny",
+            None,
+            &serde_json::json!({"id": id}),
+        )
+        .ok();
+
+    Ok(Json(serde_json::json!({
+        "id": id,
+        "status": "denied",
+    })))
 }
 
 // -- API key auth middleware --
