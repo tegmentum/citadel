@@ -4,12 +4,13 @@ edition.workspace = true
 version.workspace = true
 
 [features]
-default = []
+default = ["sqlite"]
+# SQLite-backed persistent store (native targets).
+sqlite = ["dep:rusqlite"]
 # Enable real TPM hardware backend via tss-esapi.
-# Requires tpm2-tss system library to be installed.
-tpm-hw = ["tss-esapi"]
+tpm-hw = ["dep:tss-esapi"]
 # Enable in-process vTPM via libtpms WASM component.
-vtpm = ["wasmtime", "wasmtime-wasi"]
+vtpm = ["dep:wasmtime", "dep:wasmtime-wasi"]
 
 [dependencies]
 serde.workspace = true
@@ -17,10 +18,12 @@ serde_json.workspace = true
 serde_yaml.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
-rusqlite.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 tracing.workspace = true
+
+# Optional: SQLite persistence (native only)
+rusqlite = { workspace = true, optional = true }
 
 # Optional: real TPM backend
 tss-esapi = { version = "8.0.0-alpha.2", optional = true }

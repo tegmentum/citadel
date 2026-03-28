@@ -42,7 +42,8 @@ impl PolicyDefinition {
         serde_yaml::from_str(text)
     }
 
-    /// Parse from a file path.
+    /// Parse from a file path (native only).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn from_file(path: &std::path::Path) -> anyhow::Result<Self> {
         let text = std::fs::read_to_string(path)?;
         Ok(Self::from_yaml(&text)?)
