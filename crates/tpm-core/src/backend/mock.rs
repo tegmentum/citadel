@@ -70,10 +70,9 @@ impl TpmBackend for MockBackend {
     }
 
     fn sign(&self, handle: &KeyHandle, data: &[u8]) -> anyhow::Result<Vec<u8>> {
-        let keys = self.keys.lock().unwrap();
-        if !keys.contains_key(&handle.path) {
-            anyhow::bail!("key not found: {}", handle.path);
-        }
+        // Deterministic signature from handle ID + data.
+        // Does not require the key to be in the in-memory map since
+        // keys persist across invocations via the store's handle_blob.
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         let mut h = DefaultHasher::new();
@@ -129,7 +128,8 @@ impl TpmBackend for MockBackend {
     fn nv_define(&self, index: u32, size: usize) -> anyhow::Result<()> {
         let mut nv = self.nv.lock().unwrap();
         if nv.contains_key(&index) {
-            anyhow::bail!("NV index 0x{:08X} already defined", index);
+            // Already defined in this process — that's fine
+            return Ok(());
         }
         nv.insert(index, NvSlot { size, data: None });
         Ok(())
@@ -167,9 +167,7 @@ impl TpmBackend for MockBackend {
 
     fn nv_undefine(&self, index: u32) -> anyhow::Result<()> {
         let mut nv = self.nv.lock().unwrap();
-        if nv.remove(&index).is_none() {
-            anyhow::bail!("NV index 0x{:08X} not defined", index);
-        }
+        nv.remove(&index);
         Ok(())
     }
 

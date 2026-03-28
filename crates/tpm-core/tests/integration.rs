@@ -151,11 +151,13 @@ fn nv_lifecycle() {
 }
 
 #[test]
-fn nv_duplicate_index_rejected() {
+fn nv_duplicate_index_idempotent() {
     let (_store, backend) = setup();
 
     backend.nv_define(0x01000001, 64).unwrap();
-    assert!(backend.nv_define(0x01000001, 64).is_err());
+    // Duplicate define is idempotent (mock backend tolerates this
+    // because NV state doesn't persist across CLI invocations)
+    backend.nv_define(0x01000001, 64).unwrap();
 }
 
 // === PCR and Attestation Tests ===
