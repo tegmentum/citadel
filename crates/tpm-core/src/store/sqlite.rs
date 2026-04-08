@@ -489,6 +489,127 @@ impl StoreBackend for SqliteStore {
         }
         Ok(entries)
     }
+
+    fn insert_approval(&self, approval: &crate::model::ApprovalRequest) -> anyhow::Result<()> {
+        self.conn.execute(
+            "INSERT INTO approvals (id, operation, target, requester, reason, status, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                approval.id.to_string(),
+                approval.operation,
+                approval.target,
+                approval.requester,
+                approval.reason,
+                approval.status.to_string(),
+                approval.created_at.to_rfc3339(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn get_approval(
+        &self,
+        id: &uuid::Uuid,
+    ) -> anyhow::Result<Option<crate::model::ApprovalRequest>> {
+        self.conn
+            .query_row(
+                "SELECT id, operation, target, requester, reason, status, created_at, resolved_at, resolved_by
+                 FROM approvals WHERE id = ?1",
+                params![id.to_string()],
+                |row| {
+                    Ok(RawApprovalRow {
+                        id: row.get(0)?,
+                        operation: row.get(1)?,
+                        target: row.get(2)?,
+                        requester: row.get(3)?,
+                        reason: row.get(4)?,
+                        status: row.get(5)?,
+                        created_at: row.get(6)?,
+                        resolved_at: row.get(7)?,
+                        resolved_by: row.get(8)?,
+                    })
+                },
+            )
+            .optional()?
+            .map(|r| r.into_approval())
+            .transpose()
+    }
+
+    fn list_approvals(&self) -> anyhow::Result<Vec<crate::model::ApprovalRequest>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, operation, target, requester, reason, status, created_at, resolved_at, resolved_by
+             FROM approvals ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(RawApprovalRow {
+                id: row.get(0)?,
+                operation: row.get(1)?,
+                target: row.get(2)?,
+                requester: row.get(3)?,
+                reason: row.get(4)?,
+                status: row.get(5)?,
+                created_at: row.get(6)?,
+                resolved_at: row.get(7)?,
+                resolved_by: row.get(8)?,
+            })
+        })?;
+        let mut approvals = Vec::new();
+        for row in rows {
+            approvals.push(row?.into_approval()?);
+        }
+        Ok(approvals)
+    }
+
+    fn update_approval_status(
+        &self,
+        id: &uuid::Uuid,
+        status: crate::model::ApprovalStatus,
+        resolved_by: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.conn.execute(
+            "UPDATE approvals SET status = ?2, resolved_at = datetime('now'), resolved_by = ?3 WHERE id = ?1",
+            params![id.to_string(), status.to_string(), resolved_by],
+        )?;
+        Ok(())
+    }
+}
+
+struct RawApprovalRow {
+    id: String,
+    operation: String,
+    target: Option<String>,
+    requester: String,
+    reason: Option<String>,
+    status: String,
+    created_at: String,
+    resolved_at: Option<String>,
+    resolved_by: Option<String>,
+}
+
+impl RawApprovalRow {
+    fn into_approval(self) -> anyhow::Result<crate::model::ApprovalRequest> {
+        let status = match self.status.as_str() {
+            "pending" => crate::model::ApprovalStatus::Pending,
+            "approved" => crate::model::ApprovalStatus::Approved,
+            "denied" => crate::model::ApprovalStatus::Denied,
+            "expired" => crate::model::ApprovalStatus::Expired,
+            _ => crate::model::ApprovalStatus::Pending,
+        };
+        Ok(crate::model::ApprovalRequest {
+            id: self.id.parse()?,
+            operation: self.operation,
+            target: self.target,
+            requester: self.requester,
+            reason: self.reason,
+            status,
+            created_at: chrono::DateTime::parse_from_rfc3339(&self.created_at)?.to_utc(),
+            resolved_at: self
+                .resolved_at
+                .map(|s| chrono::DateTime::parse_from_rfc3339(&s).map(|d| d.to_utc()))
+                .transpose()?,
+            resolved_by: self.resolved_by,
+        })
+    }
 }
 
 // Internal row types for SQLite deserialization

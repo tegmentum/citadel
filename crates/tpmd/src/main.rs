@@ -14,7 +14,6 @@ use tpm_core::store::Store;
 struct AppState {
     store: Store,
     backend: Box<dyn TpmBackend>,
-    approvals: Vec<ApprovalRequest>,
 }
 
 fn default_store_path() -> std::path::PathBuf {
@@ -47,11 +46,7 @@ async fn main() -> anyhow::Result<()> {
     let store = Store::open(&store_path)?;
     let backend: Box<dyn TpmBackend> = Box::new(MockBackend::new());
 
-    let state = Arc::new(Mutex::new(AppState {
-        store,
-        backend,
-        approvals: Vec::new(),
-    }));
+    let state = Arc::new(Mutex::new(AppState { store, backend }));
 
     let app = Router::new()
         .route("/v1/status", get(handle_status))
@@ -505,10 +500,10 @@ async fn handle_audit_log(
 
 async fn handle_list_approvals(
     State(state): State<Arc<Mutex<AppState>>>,
-) -> Json<serde_json::Value> {
+) -> Result<Json<serde_json::Value>, StatusCode> {
     let state = state.lock().await;
-    let items: Vec<serde_json::Value> = state
-        .approvals
+    let approvals = state.store.list_approvals().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let items: Vec<serde_json::Value> = approvals
         .iter()
         .map(|a| {
             serde_json::json!({
@@ -521,7 +516,7 @@ async fn handle_list_approvals(
             })
         })
         .collect();
-    Json(serde_json::json!({ "approvals": items }))
+    Ok(Json(serde_json::json!({ "approvals": items })))
 }
 
 #[derive(Deserialize)]
@@ -536,7 +531,7 @@ async fn handle_request_approval(
     State(state): State<Arc<Mutex<AppState>>>,
     Json(req): Json<ApprovalReq>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let mut state = state.lock().await;
+    let state = state.lock().await;
 
     let approval = ApprovalRequest {
         id: uuid::Uuid::new_v4(),
@@ -551,7 +546,8 @@ async fn handle_request_approval(
     };
 
     let id = approval.id;
-    state.approvals.push(approval);
+    state.store.insert_approval(&approval)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     state
         .store
@@ -576,80 +572,50 @@ async fn handle_approve(
     State(state): State<Arc<Mutex<AppState>>>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let mut state = state.lock().await;
+    let state = state.lock().await;
     let uuid: uuid::Uuid = id
         .parse()
         .map_err(|_| (StatusCode::BAD_REQUEST, "invalid UUID".to_string()))?;
 
-    let approval = state
-        .approvals
-        .iter_mut()
-        .find(|a| a.id == uuid)
+    let approval = state.store.get_approval(&uuid)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or((StatusCode::NOT_FOUND, "approval not found".to_string()))?;
 
     if approval.status != ApprovalStatus::Pending {
-        return Err((
-            StatusCode::CONFLICT,
-            format!("approval already {}", approval.status),
-        ));
+        return Err((StatusCode::CONFLICT, format!("approval already {}", approval.status)));
     }
 
-    approval.status = ApprovalStatus::Approved;
-    approval.resolved_at = Some(chrono::Utc::now());
+    state.store.update_approval_status(&uuid, ApprovalStatus::Approved, None)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    state
-        .store
-        .log_action(
-            "approval.approve",
-            None,
-            &serde_json::json!({"id": id}),
-        )
-        .ok();
+    state.store.log_action("approval.approve", None, &serde_json::json!({"id": id})).ok();
 
-    Ok(Json(serde_json::json!({
-        "id": id,
-        "status": "approved",
-    })))
+    Ok(Json(serde_json::json!({"id": id, "status": "approved"})))
 }
 
 async fn handle_deny(
     State(state): State<Arc<Mutex<AppState>>>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let mut state = state.lock().await;
+    let state = state.lock().await;
     let uuid: uuid::Uuid = id
         .parse()
         .map_err(|_| (StatusCode::BAD_REQUEST, "invalid UUID".to_string()))?;
 
-    let approval = state
-        .approvals
-        .iter_mut()
-        .find(|a| a.id == uuid)
+    let approval = state.store.get_approval(&uuid)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or((StatusCode::NOT_FOUND, "approval not found".to_string()))?;
 
     if approval.status != ApprovalStatus::Pending {
-        return Err((
-            StatusCode::CONFLICT,
-            format!("approval already {}", approval.status),
-        ));
+        return Err((StatusCode::CONFLICT, format!("approval already {}", approval.status)));
     }
 
-    approval.status = ApprovalStatus::Denied;
-    approval.resolved_at = Some(chrono::Utc::now());
+    state.store.update_approval_status(&uuid, ApprovalStatus::Denied, None)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    state
-        .store
-        .log_action(
-            "approval.deny",
-            None,
-            &serde_json::json!({"id": id}),
-        )
-        .ok();
+    state.store.log_action("approval.deny", None, &serde_json::json!({"id": id})).ok();
 
-    Ok(Json(serde_json::json!({
-        "id": id,
-        "status": "denied",
-    })))
+    Ok(Json(serde_json::json!({"id": id, "status": "denied"})))
 }
 
 // -- API key auth middleware --

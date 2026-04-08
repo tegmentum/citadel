@@ -115,6 +115,40 @@ fn create_backend(name: &str) -> anyhow::Result<Box<dyn tpm_core::backend::TpmBa
     }
 }
 
+fn check_constraints(
+    cmd: &Command,
+    constraints: &tpm_core::model::ProfileConstraints,
+) -> anyhow::Result<()> {
+    // Map command to operation name and extract relevant fields
+    let (operation, path, algorithm) = match cmd {
+        Command::Key(KeyCommand::Create { path, algorithm, .. }) => {
+            ("key.create", Some(path.as_str()), Some(algorithm.as_str()))
+        }
+        Command::Key(KeyCommand::Delete { path }) => ("key.delete", Some(path.as_str()), None),
+        Command::Key(KeyCommand::Sign { path, .. }) => ("key.sign", Some(path.as_str()), None),
+        Command::Key(KeyCommand::Rotate { path }) => ("key.rotate", Some(path.as_str()), None),
+        Command::Secret(SecretCommand::Seal { name, .. }) => {
+            ("secret.seal", Some(name.as_str()), None)
+        }
+        _ => return Ok(()),
+    };
+
+    // Check forbidden operations
+    constraints.check_operation(operation).map_err(|e| anyhow::anyhow!(e))?;
+
+    // Check path restrictions
+    if let Some(p) = path {
+        constraints.check_path(p).map_err(|e| anyhow::anyhow!(e))?;
+    }
+
+    // Check algorithm restrictions
+    if let Some(a) = algorithm {
+        constraints.check_algorithm(a).map_err(|e| anyhow::anyhow!(e))?;
+    }
+
+    Ok(())
+}
+
 #[allow(dead_code)]
 fn dirs_home() -> std::path::PathBuf {
     std::env::var("HOME")
@@ -144,6 +178,11 @@ fn main() -> anyhow::Result<()> {
             let store = Store::open(&store_path)?;
             let backend: Box<dyn tpm_core::backend::TpmBackend> =
                 create_backend(&cli.backend)?;
+
+            // Check profile constraints before dispatching
+            if let Some(profile) = store.get_active_profile()? {
+                check_constraints(&cmd, &profile.constraints)?;
+            }
 
             match cmd {
                 Command::Init { profile } => commands::init::run(

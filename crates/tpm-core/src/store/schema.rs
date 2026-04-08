@@ -66,3 +66,18 @@ ALTER TABLE objects ADD COLUMN state TEXT NOT NULL DEFAULT 'active';
 ALTER TABLE objects ADD COLUMN last_used_at TEXT;
 ALTER TABLE audit_log ADD COLUMN correlation_id TEXT;
 "#;
+
+/// SQL for migration version 4: approval requests.
+pub const V4: &str = r#"
+CREATE TABLE approvals (
+    id           TEXT PRIMARY KEY,
+    operation    TEXT NOT NULL,
+    target       TEXT,
+    requester    TEXT NOT NULL,
+    reason       TEXT,
+    status       TEXT NOT NULL DEFAULT 'pending',
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at  TEXT,
+    resolved_by  TEXT
+);
+"#;

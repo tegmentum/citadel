@@ -179,4 +179,27 @@ impl Store {
         self.inner
             .list_audit_log(filter_object, filter_action, limit)
     }
+    pub fn insert_approval(
+        &self,
+        approval: &crate::model::ApprovalRequest,
+    ) -> anyhow::Result<()> {
+        self.inner.insert_approval(approval)
+    }
+    pub fn get_approval(
+        &self,
+        id: &uuid::Uuid,
+    ) -> anyhow::Result<Option<crate::model::ApprovalRequest>> {
+        self.inner.get_approval(id)
+    }
+    pub fn list_approvals(&self) -> anyhow::Result<Vec<crate::model::ApprovalRequest>> {
+        self.inner.list_approvals()
+    }
+    pub fn update_approval_status(
+        &self,
+        id: &uuid::Uuid,
+        status: crate::model::ApprovalStatus,
+        resolved_by: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.inner.update_approval_status(id, status, resolved_by)
+    }
 }

@@ -77,4 +77,15 @@ pub trait StoreBackend: Send {
         filter_action: Option<&str>,
         limit: usize,
     ) -> anyhow::Result<Vec<AuditEntry>>;
+
+    // -- Approvals --
+    fn insert_approval(&self, approval: &crate::model::ApprovalRequest) -> anyhow::Result<()>;
+    fn get_approval(&self, id: &uuid::Uuid) -> anyhow::Result<Option<crate::model::ApprovalRequest>>;
+    fn list_approvals(&self) -> anyhow::Result<Vec<crate::model::ApprovalRequest>>;
+    fn update_approval_status(
+        &self,
+        id: &uuid::Uuid,
+        status: crate::model::ApprovalStatus,
+        resolved_by: Option<&str>,
+    ) -> anyhow::Result<()>;
 }

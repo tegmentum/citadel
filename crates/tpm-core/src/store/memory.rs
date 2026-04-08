@@ -5,7 +5,7 @@
 
 use std::sync::Mutex;
 
-use crate::model::{ObjectPath, Policy, Profile, TpmObject};
+use crate::model::{ApprovalRequest, ApprovalStatus, ObjectPath, Policy, Profile, TpmObject};
 
 use super::traits::{AuditEntry, StoreBackend};
 
@@ -16,6 +16,7 @@ struct Inner {
     nv_indices: Vec<NvSlot>,
     pcr_baselines: Vec<PcrBaseline>,
     audit_log: Vec<AuditEntry>,
+    approvals: Vec<ApprovalRequest>,
     next_audit_id: i64,
 }
 
@@ -47,6 +48,7 @@ impl MemoryStore {
                 nv_indices: Vec::new(),
                 pcr_baselines: Vec::new(),
                 audit_log: Vec::new(),
+                approvals: Vec::new(),
                 next_audit_id: 1,
             }),
         }
@@ -323,5 +325,37 @@ impl StoreBackend for MemoryStore {
             .cloned()
             .collect();
         Ok(filtered)
+    }
+
+    fn insert_approval(&self, approval: &ApprovalRequest) -> anyhow::Result<()> {
+        let mut inner = self.inner.lock().unwrap();
+        inner.approvals.push(approval.clone());
+        Ok(())
+    }
+
+    fn get_approval(&self, id: &uuid::Uuid) -> anyhow::Result<Option<ApprovalRequest>> {
+        let inner = self.inner.lock().unwrap();
+        Ok(inner.approvals.iter().find(|a| a.id == *id).cloned())
+    }
+
+    fn list_approvals(&self) -> anyhow::Result<Vec<ApprovalRequest>> {
+        let inner = self.inner.lock().unwrap();
+        Ok(inner.approvals.clone())
+    }
+
+    fn update_approval_status(
+        &self,
+        id: &uuid::Uuid,
+        status: ApprovalStatus,
+        _resolved_by: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(a) = inner.approvals.iter_mut().find(|a| a.id == *id) {
+            a.status = status;
+            a.resolved_at = Some(chrono::Utc::now());
+            Ok(())
+        } else {
+            anyhow::bail!("approval not found")
+        }
     }
 }
