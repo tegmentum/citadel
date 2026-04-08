@@ -1,99 +1,110 @@
 # tpm
 
-A stateful, operator-friendly TPM platform that transforms TPM usage from low-level command execution into a coherent, inspectable, and safe operational system.
+A stateful, operator-friendly TPM platform. Replaces low-level `tpm2-tools` with a resource-oriented interface built around named objects, declarative policies, explainable errors, and structured output.
 
-## Overview
+## Why
 
-`tpm` replaces the fragmented TPM tooling ecosystem with a unified interface organized around **resources and workflows** rather than TPM command names. It introduces named objects, stored metadata, declarative policies, explainable errors, and structured output.
+The existing TPM toolchain is powerful but hostile. Common workflows require explicit context file management, manual command sequencing, opaque error codes, and deep spec knowledge. This tool makes the TPM feel like a managed object store:
 
-Two binaries:
+- **Named objects** instead of context files and raw handles
+- **Workflow collapsing** — `tpm key create` does the right create/load/persist sequence
+- **Explainable diagnostics** — cause chains, context, actionable next steps
+- **Structured output** — `--json` or `--format yaml` on every command
+- **Declarative policies** — YAML policy files compiled and tested before use
+- **Auto-detection** — finds hardware TPM, vTPM, or falls back to mock
 
-- **`tpm`** -- CLI and TUI for operator interaction
-- **`tpmd`** -- HTTP daemon exposing trust operations as an API
-
-## Quick Start
+## Install
 
 ```bash
-# Build
-cargo build --release
+bash install.sh
+```
 
-# Initialize workspace
+This builds a release binary with vTPM support, installs it to `~/.local/bin/tpm`, copies the libtpms WASM component to `~/.local/share/tpm/`, and sets up shell completions.
+
+### From source (manual)
+
+```bash
+cargo build --release --features vtpm
+cp target/release/tpm ~/.local/bin/
+```
+
+### Shell completions
+
+```bash
+tpm completions zsh  > ~/.zsh/completions/_tpm
+tpm completions bash > ~/.local/share/bash-completion/completions/tpm
+tpm completions fish > ~/.config/fish/completions/tpm.fish
+```
+
+## Quick start
+
+```bash
 tpm init
-
-# Create a signing key
 tpm key create signing/release
-
-# Sign a file
 tpm key sign signing/release --input artifact.tar.gz
-
-# List everything
-tpm object tree
-
-# Launch the TUI
-tpm
+tpm key list
+tpm --json status
+tpm                             # launches TUI
 ```
 
-## Installation
+## Backends
 
-### From source
+The `--backend` flag (or `TPM_BACKEND` env var) selects the TPM backend. Default is `auto`.
 
-```bash
-git clone <repo>
-cd tpm
-cargo install --path .
-```
+| Backend | Description |
+|---------|-------------|
+| `auto` | Probe in order: hardware TPM, vTPM, mock (default) |
+| `device` | Hardware TPM at `/dev/tpmrm0` (requires `--features tpm-hw`) |
+| `vtpm` | In-process libtpms via WASM/wasmtime (requires `--features vtpm`) |
+| `swtpm` | External swtpm simulator process |
+| `mock` | Deterministic in-memory mock for development |
 
-### With hardware TPM support
+Auto-detection checks for `/dev/tpmrm0` first, then looks for the vTPM component at `~/.local/share/tpm/tpm-ephemeral.component.wasm`, and falls back to mock if neither is found.
 
-Requires `tpm2-tss` development libraries.
-
-```bash
-# Debian/Ubuntu
-apt install libtss2-dev
-
-# Fedora
-dnf install tpm2-tss-devel
-
-# Build with hardware support
-cargo install --path . --features tpm-hw
-```
-
-## Command Reference
+## Commands
 
 ### Workspace
 
 ```bash
-tpm init [--profile <name>]       # Initialize workspace
-tpm status                        # Backend and workspace summary with health score
-tpm doctor                        # Diagnostic health checks
-tpm capabilities                  # Show TPM capabilities and supported algorithms
-tpm debug --output bundle.json    # Collect diagnostic bundle
-tpm workspace info                # Workspace summary
-tpm workspace export --output f   # Export metadata to JSON
-tpm workspace import --input f    # Import metadata from JSON
+tpm init [--profile <name>]        # initialize workspace
+tpm status                         # backend + workspace + health score
+tpm doctor                         # diagnostic health checks
+tpm capabilities                   # algorithms, PCR banks, limits
+tpm debug --output bundle.json     # collect diagnostic bundle
+tpm workspace info                 # workspace summary
+tpm workspace export --output f    # export metadata to JSON
+tpm workspace import --input f     # import metadata from JSON
 ```
 
 ### Keys
 
 ```bash
 tpm key create signing/release [--algorithm ecc-p256] [--policy boot-policy]
-tpm key list [--format json]
+tpm key list [--json]
 tpm key show signing/release
 tpm key sign signing/release --input file.bin [--output sig.bin]
 tpm key delete signing/release
 tpm key export-pub signing/release [--export-for openssl|ssh|cosign|pkcs11]
-tpm key rotate signing/release    # Create new key, archive old
+tpm key rotate signing/release
 ```
 
 ### Secrets
 
 ```bash
-tpm secret seal db/password --input secret.txt [--policy boot-policy]
+tpm secret seal db/password --input secret.txt [--policy boot-seal]
 tpm secret unseal db/password [--output recovered.txt]
 tpm secret list
 ```
 
-### NV Storage
+### Remote attestation
+
+```bash
+tpm attest ak-create attest/main
+tpm attest quote --ak attest/main --pcr 0,7,11 --nonce challenge --output quote.json
+tpm attest verify --quote quote.json --nonce challenge
+```
+
+### NV storage
 
 ```bash
 tpm nv define config/build-id --size 64
@@ -103,15 +114,7 @@ tpm nv list
 tpm nv delete config/build-id
 ```
 
-### Remote Attestation
-
-```bash
-tpm attest ak-create attest/main
-tpm attest quote --ak attest/main --pcr 0,7,11 --nonce challenge --output quote.json
-tpm attest verify --quote quote.json --nonce challenge
-```
-
-### PCR Operations
+### PCR operations
 
 ```bash
 tpm pcr show --bank sha256 --index 0,7,11
@@ -124,9 +127,9 @@ tpm pcr baseline list
 
 ```bash
 tpm policy create boot-policy --pcr 7,11 [--password]
-tpm policy compile policy.yaml     # Compile from declarative YAML
-tpm policy test boot-policy        # Check satisfiability
-tpm policy explain boot-policy     # Human-readable explanation
+tpm policy compile policy.yaml
+tpm policy test boot-policy
+tpm policy explain boot-policy
 tpm policy show boot-policy
 tpm policy list
 tpm policy delete boot-policy
@@ -136,7 +139,6 @@ Policy YAML format:
 
 ```yaml
 name: boot-integrity
-description: Ensure expected boot state
 requires:
   pcr:
     - index: 7
@@ -147,15 +149,17 @@ requires:
 ### Objects
 
 ```bash
-tpm object list                   # Tabular listing of all objects
-tpm object tree                   # Tree view grouped by type
-tpm object dependents signing/key # Show what depends on an object
+tpm object list
+tpm object tree
+tpm object dependents signing/key
 tpm object rename old/name new/name
-tpm object retire signing/old     # Mark inactive
-tpm object activate signing/old   # Reactivate
+tpm object retire signing/old
+tpm object activate signing/old
 ```
 
 ### Profiles
+
+Profiles are mutable defaults applied to new operations. They can include constraints that enforce algorithm restrictions, path prefixes, and approval requirements.
 
 ```bash
 tpm profile list
@@ -166,69 +170,49 @@ tpm profile set ci-signer
 ### Maintenance
 
 ```bash
-tpm repair scan                   # Detect workspace issues
-tpm repair plan                   # Preview fixes
-tpm repair apply                  # Apply automatic repairs
-tpm gc plan                       # Show GC candidates
-tpm gc apply                      # Remove stale objects
+tpm repair scan
+tpm repair plan
+tpm repair apply
+tpm gc plan
+tpm gc apply
 tpm log show [--object path] [--action filter] [--limit 50]
 ```
 
 ### Recovery
 
 ```bash
-tpm recover list                  # List recovery playbooks
-tpm recover show tpm-cleared      # Step-by-step recovery guide
+tpm recover list
+tpm recover show tpm-cleared
 ```
 
-Available playbooks: `tpm-cleared`, `handle-mismatch`, `profile-drift`, `boot-change`, `metadata-corruption`, `key-rotation`.
+Playbooks: `tpm-cleared`, `handle-mismatch`, `profile-drift`, `boot-change`, `metadata-corruption`, `key-rotation`.
 
 ### Education
 
 ```bash
-tpm explain pcr                   # Learn about TPM concepts
-tpm template list                 # Browse configuration templates
-tpm template show ci-signer       # Detailed template with example
+tpm explain pcr
+tpm template list
+tpm template show ci-signer
 ```
 
 Topics: `pcr`, `policy`, `hierarchy`, `key`, `seal`, `attestation`, `nv`, `ek`, `ak`, `handle`, `session`, `dictionary-attack`.
 
-### Simulator
-
-```bash
-tpm simulator start               # Start swtpm process
-tpm simulator stop
-tpm simulator status
-```
-
-### Daemon
-
-```bash
-tpm daemon run [--listen 127.0.0.1:7701]
-tpm daemon status
-```
-
-Or run directly:
-
-```bash
-TPMD_LISTEN=127.0.0.1:7701 tpmd
-```
-
-## Global Options
+## Global flags
 
 | Flag | Description |
 |------|-------------|
-| `--format text\|json\|yaml` | Output format (default: text) |
-| `--backend mock\|device\|swtpm` | TPM backend (default: mock) |
+| `--json` | Output as JSON (shorthand for `--format json`) |
+| `--format text\|json\|yaml` | Output format |
+| `--backend auto\|mock\|device\|swtpm\|vtpm` | TPM backend |
 | `--store-path <path>` | Metadata store location |
-| `--plan` | Dry-run mode |
+| `--plan` | Dry-run mode — show what would happen |
 | `--verbose` | Debug logging |
 
-Environment variables: `TPM_STORE_PATH`, `TPM_BACKEND`.
+Environment variables: `TPM_STORE_PATH`, `TPM_BACKEND`, `TPM_VTPM_COMPONENT`.
 
 ## TUI
 
-Running `tpm` with no arguments in an interactive terminal launches the TUI.
+Running `tpm` with no arguments in a terminal launches the interactive TUI.
 
 | Key | Action |
 |-----|--------|
@@ -237,20 +221,31 @@ Running `tpm` with no arguments in an interactive terminal launches the TUI.
 | `j`/`k` | Navigate |
 | `Enter` | Detail view |
 | `n` | Create new key |
-| `d` | Delete selected |
+| `d` | Delete selected object |
 | `r` | Refresh |
 | `q`/`Esc` | Back/quit |
 
-## Daemon API
+The dashboard shows health score, backend status, object counts, and the active profile.
 
-`tpmd` exposes a JSON API on port 7701.
+## Daemon
+
+`tpmd` is an HTTP daemon that exposes TPM operations as a REST API with authentication, approval workflows, and audit logging.
+
+```bash
+tpmd                              # start on 127.0.0.1:7701
+TPMD_LISTEN=0.0.0.0:8443 tpmd    # custom address
+TPMD_API_KEY=secret tpmd          # require X-API-Key header
+TPMD_TLS_CERT=cert.pem TPMD_TLS_KEY=key.pem tpmd  # TLS
+```
+
+### API
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | /v1/status | Backend info |
 | GET | /v1/health | Health posture and score |
 | GET | /v1/keys | List keys |
-| POST | /v1/keys | Create key `{"path":"...","algorithm":"..."}` |
+| POST | /v1/keys | Create key `{"path":"..."}` |
 | GET | /v1/keys/:path | Key details |
 | POST | /v1/sign/:path | Sign data `{"data_hex":"..."}` |
 | POST | /v1/delete/:path | Delete object |
@@ -259,35 +254,16 @@ Running `tpm` with no arguments in an interactive terminal launches the TUI.
 | POST | /v1/policies | Create policy |
 | GET | /v1/secrets | List sealed secrets |
 | GET | /v1/audit | Audit log |
+| GET | /v1/approvals | List approval requests |
+| POST | /v1/approvals | Request approval |
+| POST | /v1/approvals/:id/approve | Approve |
+| POST | /v1/approvals/:id/deny | Deny |
 
-Authentication: set `TPMD_API_KEY` env var; requests require `X-API-Key` header.
-
-## Architecture
-
-```
-tpm (CLI + TUI)          tpmd (HTTP daemon)
-       |                        |
-       v                        v
-  tpm-core (shared library)
-       |
-  +---------+-----------+
-  |         |           |
-Store    Backend    Diagnostics
-(SQLite) (trait)    (27 codes)
-  |         |
-  |    +----+----+
-  |    |    |    |
-  |  Mock  HW  swtpm
-  |       (tss-esapi)
-  v
- objects, policies, profiles,
- audit log, NV indices,
- PCR baselines
-```
+Approvals are persisted to the SQLite store and survive daemon restarts.
 
 ## Diagnostics
 
-Errors follow a Rust-compiler-inspired format with stable codes:
+Errors use stable codes and follow a Rust-compiler-inspired format:
 
 ```
 error[TPM0004]: object not found: signing/missing
@@ -304,24 +280,46 @@ error[TPM0004]: object not found: signing/missing
 
 27 diagnostic codes covering transport, objects, store, backend, policy, NV, attestation, repair, and internal errors.
 
+## Architecture
+
+```
+tpm (CLI + TUI)          tpmd (HTTP daemon)       tpm-wasi (WASM CLI)
+       |                        |                        |
+       v                        v                        v
+                    tpm-core (shared library)
+                         |
+            +------------+------------+
+            |            |            |
+         Store       Backend     Diagnostics
+      (trait-based)   (trait)    (27 codes)
+            |            |
+       +---------+  +----+----+----+
+       |         |  |    |    |    |
+    SQLite   Memory Mock HW  swtpm vtpm
+   (native)  (WASM)     (esapi)   (libtpms)
+```
+
+The store is abstracted behind a `StoreBackend` trait. Native builds use SQLite; WASM builds use an in-memory backend. `tpm-core` compiles to `wasm32-wasip2`:
+
+```bash
+cargo build -p tpm-core --target wasm32-wasip2 --no-default-features
+```
+
 ## Development
 
 ```bash
-# Build
-cargo build --workspace
+cargo build --workspace                    # build all
+cargo test --workspace                     # 75 tests
+cargo build --features vtpm                # with vTPM backend
+cargo build --features tpm-hw              # with hardware TPM
 
-# Test (38 tests)
-cargo test --workspace
+# Run vTPM smoke tests against real libtpms
+TPM_VTPM_COMPONENT=path/to/tpm-ephemeral.component.wasm \
+  cargo test --features vtpm --test vtpm_smoke
 
-# Run with mock backend (default)
-cargo run -- status
-
-# Run with hardware TPM
-cargo run --features tpm-hw -- --backend device status
-
-# Run with swtpm simulator
-tpm simulator start
-cargo run --features tpm-hw -- --backend swtpm status
+# Build WASI CLI
+cargo build -p tpm-wasi --target wasm32-wasip2
+wasmtime run target/wasm32-wasip2/debug/tpm-wasi.wasm status
 ```
 
 ## License
