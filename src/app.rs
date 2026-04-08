@@ -21,7 +21,7 @@ pub struct Cli {
     #[arg(long, global = true, env = "TPM_STORE_PATH")]
     pub store_path: Option<PathBuf>,
 
-    /// TPM backend to use (auto, mock, device, swtpm, vtpm)
+    /// TPM backend to use (auto, mock, device, vtpm)
     #[arg(long, global = true, default_value = "auto", env = "TPM_BACKEND")]
     pub backend: String,
 
@@ -91,9 +91,6 @@ pub enum Command {
     /// Recovery playbooks for common situations
     #[command(subcommand)]
     Recover(RecoverCommand),
-    /// Manage swtpm simulator
-    #[command(subcommand)]
-    Simulator(SimulatorCommand),
     /// View audit log
     #[command(subcommand)]
     Log(LogCommand),
@@ -453,27 +450,6 @@ pub enum RepairCommand {
     Apply,
 }
 
-#[derive(Subcommand)]
-pub enum SimulatorCommand {
-    /// Start the swtpm simulator
-    Start {
-        /// State directory for swtpm
-        #[arg(long)]
-        state_dir: Option<String>,
-    },
-    /// Stop the swtpm simulator
-    Stop {
-        /// State directory for swtpm
-        #[arg(long)]
-        state_dir: Option<String>,
-    },
-    /// Show simulator status
-    Status {
-        /// State directory for swtpm
-        #[arg(long)]
-        state_dir: Option<String>,
-    },
-}
 
 #[derive(Subcommand)]
 pub enum LogCommand {

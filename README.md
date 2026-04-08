@@ -56,7 +56,6 @@ The `--backend` flag (or `TPM_BACKEND` env var) selects the TPM backend. Default
 | `auto` | Probe in order: hardware TPM, vTPM, mock (default) |
 | `device` | Hardware TPM at `/dev/tpmrm0` (requires `--features tpm-hw`) |
 | `vtpm` | In-process libtpms via WASM/wasmtime (requires `--features vtpm`) |
-| `swtpm` | External swtpm simulator process |
 | `mock` | Deterministic in-memory mock for development |
 
 Auto-detection checks for `/dev/tpmrm0` first, then looks for the vTPM component at `~/.local/share/tpm/tpm-ephemeral.component.wasm`, and falls back to mock if neither is found.
@@ -203,7 +202,7 @@ Topics: `pcr`, `policy`, `hierarchy`, `key`, `seal`, `attestation`, `nv`, `ek`, 
 |------|-------------|
 | `--json` | Output as JSON (shorthand for `--format json`) |
 | `--format text\|json\|yaml` | Output format |
-| `--backend auto\|mock\|device\|swtpm\|vtpm` | TPM backend |
+| `--backend auto\|mock\|device\|vtpm` | TPM backend |
 | `--store-path <path>` | Metadata store location |
 | `--plan` | Dry-run mode — show what would happen |
 | `--verbose` | Debug logging |
@@ -295,7 +294,7 @@ tpm (CLI + TUI)          tpmd (HTTP daemon)       tpm-wasi (WASM CLI)
             |            |
        +---------+  +----+----+----+
        |         |  |    |    |    |
-    SQLite   Memory Mock HW  swtpm vtpm
+    SQLite   Memory Mock  HW   vtpm
    (native)  (WASM)     (esapi)   (libtpms)
 ```
 

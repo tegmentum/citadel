@@ -14,7 +14,7 @@ use tpm_core::store::Store;
 use app::{
     AttestCommand, Cli, Command, DaemonCommand, GcCommand, KeyCommand, LogCommand, NvCommand,
     ObjectCommand, PcrBaselineCommand, PcrCommand, PolicyCommand, ProfileCommand, RecoverCommand,
-    RepairCommand, SecretCommand, SimulatorCommand, TemplateCommand, WorkspaceCommand,
+    RepairCommand, SecretCommand, TemplateCommand, WorkspaceCommand,
 };
 
 fn default_store_path() -> std::path::PathBuf {
@@ -43,38 +43,6 @@ fn create_backend(name: &str) -> anyhow::Result<Box<dyn tpm_core::backend::TpmBa
                 "hardware TPM backend not available: rebuild with --features tpm-hw\n\
                  This requires the tpm2-tss development libraries to be installed."
             )
-        }
-        // swtpm uses the hardware backend with socket TCTI when tpm-hw is enabled
-        // Without tpm-hw, it uses mock backend with swtpm status check
-        #[cfg(feature = "tpm-hw")]
-        "swtpm" => {
-            let mgr = tpm_core::backend::SwtpmManager::new(None);
-            if !mgr.is_running() {
-                anyhow::bail!(
-                    "swtpm is not running.\n\
-                     Start it with: tpm simulator start"
-                );
-            }
-            let tcti = tss_esapi::tcti_ldr::TctiNameConf::Swtpm(
-                tss_esapi::tcti_ldr::SwtpmConfig::default(),
-            );
-            Ok(Box::new(tpm_core::backend::HardwareBackend::new_with_tcti(tcti)))
-        }
-        #[cfg(not(feature = "tpm-hw"))]
-        "swtpm" => {
-            // Without tpm-hw, we can still check swtpm status but use mock backend
-            let mgr = tpm_core::backend::SwtpmManager::new(None);
-            if !mgr.is_running() {
-                anyhow::bail!(
-                    "swtpm is not running.\n\
-                     Start it with: tpm simulator start\n\
-                     Note: for full swtpm integration, rebuild with --features tpm-hw"
-                );
-            }
-            eprintln!(
-                "note: using mock backend (for real swtpm operations, rebuild with --features tpm-hw)"
-            );
-            Ok(Box::new(MockBackend::new()))
         }
         #[cfg(feature = "vtpm")]
         "vtpm" => {
@@ -111,7 +79,7 @@ fn create_backend(name: &str) -> anyhow::Result<Box<dyn tpm_core::backend::TpmBa
         }
         other => {
             anyhow::bail!(
-                "unknown backend: '{}'\navailable backends: mock, device, swtpm, vtpm",
+                "unknown backend: '{}'\navailable backends: auto, mock, device, vtpm",
                 other
             )
         }
@@ -497,17 +465,6 @@ fn main() -> anyhow::Result<()> {
                     TemplateCommand::List => commands::template::list(format),
                     TemplateCommand::Show { name } => {
                         commands::template::show(&name, format)
-                    }
-                },
-                Command::Simulator(sim_cmd) => match sim_cmd {
-                    SimulatorCommand::Start { state_dir } => {
-                        commands::simulator::start(state_dir.as_deref(), format)
-                    }
-                    SimulatorCommand::Stop { state_dir } => {
-                        commands::simulator::stop(state_dir.as_deref())
-                    }
-                    SimulatorCommand::Status { state_dir } => {
-                        commands::simulator::status(state_dir.as_deref(), format)
                     }
                 },
                 Command::Workspace(ws_cmd) => match ws_cmd {
