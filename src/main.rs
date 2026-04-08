@@ -2,6 +2,8 @@ mod app;
 mod commands;
 mod plan;
 
+use clap::CommandFactory;
+
 use std::io::IsTerminal;
 
 use clap::Parser;
@@ -149,6 +151,23 @@ fn check_constraints(
     Ok(())
 }
 
+fn generate_completions(shell: &str) -> anyhow::Result<()> {
+    let mut cmd = Cli::command();
+    let shell = match shell.to_lowercase().as_str() {
+        "bash" => clap_complete::Shell::Bash,
+        "zsh" => clap_complete::Shell::Zsh,
+        "fish" => clap_complete::Shell::Fish,
+        "elvish" => clap_complete::Shell::Elvish,
+        "powershell" | "pwsh" => clap_complete::Shell::PowerShell,
+        other => anyhow::bail!(
+            "unknown shell: '{}'\navailable: bash, zsh, fish, elvish, powershell",
+            other
+        ),
+    };
+    clap_complete::generate(shell, &mut cmd, "tpm", &mut std::io::stdout());
+    Ok(())
+}
+
 #[allow(dead_code)]
 fn dirs_home() -> std::path::PathBuf {
     std::env::var("HOME")
@@ -172,7 +191,17 @@ fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
+    // --json is shorthand for --format json
+    let format = if cli.json {
+        tpm_core::output::OutputFormat::Json
+    } else {
+        cli.format
+    };
+
     match cli.command {
+        Some(Command::Completions { shell }) => {
+            return generate_completions(&shell);
+        }
         Some(cmd) => {
             let store_path = cli.store_path.unwrap_or_else(default_store_path);
             let store = Store::open(&store_path)?;
@@ -190,12 +219,12 @@ fn main() -> anyhow::Result<()> {
                     backend.as_ref(),
                     &store_path,
                     profile.as_deref(),
-                    cli.format,
+                    format,
                 ),
-                Command::Status => commands::status::run(&store, backend.as_ref(), cli.format),
-                Command::Doctor => commands::doctor::run(&store, backend.as_ref(), cli.format),
+                Command::Status => commands::status::run(&store, backend.as_ref(), format),
+                Command::Doctor => commands::doctor::run(&store, backend.as_ref(), format),
                 Command::Capabilities => {
-                    commands::capabilities::run(backend.as_ref(), cli.format)
+                    commands::capabilities::run(backend.as_ref(), format)
                 }
                 Command::Debug { output } => commands::capabilities::debug_bundle(
                     backend.as_ref(),
@@ -214,11 +243,11 @@ fn main() -> anyhow::Result<()> {
                         &path,
                         &algorithm,
                         policy.as_deref(),
-                        cli.format,
+                        format,
                         cli.plan,
                     ),
-                    KeyCommand::List => commands::key::list(&store, cli.format),
-                    KeyCommand::Show { path } => commands::key::show(&store, &path, cli.format),
+                    KeyCommand::List => commands::key::list(&store, format),
+                    KeyCommand::Show { path } => commands::key::show(&store, &path, format),
                     KeyCommand::Sign {
                         path,
                         input,
@@ -229,10 +258,10 @@ fn main() -> anyhow::Result<()> {
                         &path,
                         &input,
                         output.as_ref(),
-                        cli.format,
+                        format,
                     ),
                     KeyCommand::Delete { path } => {
-                        commands::key::delete(&store, &path, cli.format)
+                        commands::key::delete(&store, &path, format)
                     }
                     KeyCommand::ExportPub {
                         path,
@@ -243,10 +272,10 @@ fn main() -> anyhow::Result<()> {
                         &path,
                         &key_format,
                         target.as_deref(),
-                        cli.format,
+                        format,
                     ),
                     KeyCommand::Rotate { path } => {
-                        commands::key::rotate(&store, backend.as_ref(), &path, cli.format)
+                        commands::key::rotate(&store, backend.as_ref(), &path, format)
                     }
                 },
                 Command::Attest(att_cmd) => match att_cmd {
@@ -256,7 +285,7 @@ fn main() -> anyhow::Result<()> {
                             backend.as_ref(),
                             &name,
                             &algorithm,
-                            cli.format,
+                            format,
                         )
                     }
                     AttestCommand::Quote {
@@ -273,13 +302,13 @@ fn main() -> anyhow::Result<()> {
                         &pcr,
                         nonce.as_deref(),
                         output.as_deref(),
-                        cli.format,
+                        format,
                     ),
                     AttestCommand::Verify { quote, nonce } => commands::attest::verify(
                         backend.as_ref(),
                         &quote,
                         nonce.as_deref(),
-                        cli.format,
+                        format,
                     ),
                 },
                 Command::Secret(sec_cmd) => match sec_cmd {
@@ -293,47 +322,47 @@ fn main() -> anyhow::Result<()> {
                         &name,
                         &input,
                         policy.as_deref(),
-                        cli.format,
+                        format,
                     ),
                     SecretCommand::Unseal { name, output } => commands::secret::unseal(
                         &store,
                         backend.as_ref(),
                         &name,
                         output.as_deref(),
-                        cli.format,
+                        format,
                     ),
-                    SecretCommand::List => commands::secret::list(&store, cli.format),
+                    SecretCommand::List => commands::secret::list(&store, format),
                 },
                 Command::Nv(nv_cmd) => match nv_cmd {
                     NvCommand::Define { name, size } => {
-                        commands::nv::define(&store, backend.as_ref(), &name, size, cli.format)
+                        commands::nv::define(&store, backend.as_ref(), &name, size, format)
                     }
                     NvCommand::Write { name, input } => {
                         commands::nv::write(&store, backend.as_ref(), &name, &input)
                     }
                     NvCommand::Read { name, output } => {
-                        commands::nv::read(&store, backend.as_ref(), &name, output.as_deref(), cli.format)
+                        commands::nv::read(&store, backend.as_ref(), &name, output.as_deref(), format)
                     }
-                    NvCommand::List => commands::nv::list(&store, cli.format),
+                    NvCommand::List => commands::nv::list(&store, format),
                     NvCommand::Delete { name } => {
                         commands::nv::delete(&store, backend.as_ref(), &name)
                     }
                 },
                 Command::Pcr(pcr_cmd) => match pcr_cmd {
                     PcrCommand::Show { bank, index } => {
-                        commands::pcr::show(backend.as_ref(), &bank, &index, cli.format)
+                        commands::pcr::show(backend.as_ref(), &bank, &index, format)
                     }
                     PcrCommand::Baseline(bl_cmd) => match bl_cmd {
                         PcrBaselineCommand::Save { name, bank, index } => {
                             commands::pcr::baseline_save(
-                                &store, backend.as_ref(), &name, &bank, &index, cli.format,
+                                &store, backend.as_ref(), &name, &bank, &index, format,
                             )
                         }
                         PcrBaselineCommand::Diff { name } => {
-                            commands::pcr::baseline_diff(&store, backend.as_ref(), &name, cli.format)
+                            commands::pcr::baseline_diff(&store, backend.as_ref(), &name, format)
                         }
                         PcrBaselineCommand::List => {
-                            commands::pcr::baseline_list(&store, cli.format)
+                            commands::pcr::baseline_list(&store, format)
                         }
                     },
                 },
@@ -344,31 +373,31 @@ fn main() -> anyhow::Result<()> {
                         pcr_bank,
                         password,
                     } => commands::policy::create(
-                        &store, &name, &pcr, &pcr_bank, password, cli.format,
+                        &store, &name, &pcr, &pcr_bank, password, format,
                     ),
-                    PolicyCommand::List => commands::policy::list(&store, cli.format),
+                    PolicyCommand::List => commands::policy::list(&store, format),
                     PolicyCommand::Show { name } => {
-                        commands::policy::show(&store, &name, cli.format)
+                        commands::policy::show(&store, &name, format)
                     }
                     PolicyCommand::Explain { name } => {
-                        commands::policy::explain(&store, &name, cli.format)
+                        commands::policy::explain(&store, &name, format)
                     }
                     PolicyCommand::Delete { name } => commands::policy::delete(&store, &name),
                     PolicyCommand::Compile { file } => {
-                        commands::policy::compile(&store, &file, cli.format)
+                        commands::policy::compile(&store, &file, format)
                     }
                     PolicyCommand::Test { name } => {
-                        commands::policy::test_policy(&store, backend.as_ref(), &name, cli.format)
+                        commands::policy::test_policy(&store, backend.as_ref(), &name, format)
                     }
                 },
                 Command::Object(obj_cmd) => match obj_cmd {
-                    ObjectCommand::List => commands::object::list(&store, cli.format),
-                    ObjectCommand::Tree => commands::object::tree(&store, cli.format),
+                    ObjectCommand::List => commands::object::list(&store, format),
+                    ObjectCommand::Tree => commands::object::tree(&store, format),
                     ObjectCommand::Dependents { path } => {
-                        commands::object::dependents(&store, &path, cli.format)
+                        commands::object::dependents(&store, &path, format)
                     }
                     ObjectCommand::Rename { from, to } => {
-                        commands::object::rename(&store, &from, &to, cli.format)
+                        commands::object::rename(&store, &from, &to, format)
                     }
                     ObjectCommand::Retire { path } => commands::object::retire(&store, &path),
                     ObjectCommand::Activate { path } => {
@@ -376,31 +405,31 @@ fn main() -> anyhow::Result<()> {
                     }
                 },
                 Command::Gc(gc_cmd) => match gc_cmd {
-                    GcCommand::Plan => commands::object::gc_plan(&store, cli.format),
-                    GcCommand::Apply => commands::object::gc_apply(&store, cli.format),
+                    GcCommand::Plan => commands::object::gc_plan(&store, format),
+                    GcCommand::Apply => commands::object::gc_apply(&store, format),
                 },
                 Command::Recover(rec_cmd) => match rec_cmd {
-                    RecoverCommand::List => commands::recover::list(cli.format),
+                    RecoverCommand::List => commands::recover::list(format),
                     RecoverCommand::Show { name } => {
-                        commands::recover::show(&name, cli.format)
+                        commands::recover::show(&name, format)
                     }
                 },
                 Command::Profile(prof_cmd) => match prof_cmd {
-                    ProfileCommand::List => commands::profile::list(&store, cli.format),
+                    ProfileCommand::List => commands::profile::list(&store, format),
                     ProfileCommand::Show { name } => {
-                        commands::profile::show(&store, name.as_deref(), cli.format)
+                        commands::profile::show(&store, name.as_deref(), format)
                     }
                     ProfileCommand::Set { name } => commands::profile::set(&store, &name),
                 },
                 Command::Repair(rep_cmd) => match rep_cmd {
                     RepairCommand::Scan => {
-                        commands::repair::scan(&store, backend.as_ref(), cli.format)
+                        commands::repair::scan(&store, backend.as_ref(), format)
                     }
                     RepairCommand::Plan => {
-                        commands::repair::plan(&store, backend.as_ref(), cli.format)
+                        commands::repair::plan(&store, backend.as_ref(), format)
                     }
                     RepairCommand::Apply => {
-                        commands::repair::apply(&store, backend.as_ref(), cli.format)
+                        commands::repair::apply(&store, backend.as_ref(), format)
                     }
                 },
                 Command::Log(log_cmd) => match log_cmd {
@@ -413,35 +442,35 @@ fn main() -> anyhow::Result<()> {
                         object.as_deref(),
                         action.as_deref(),
                         limit,
-                        cli.format,
+                        format,
                     ),
                 },
                 Command::Template(tmpl_cmd) => match tmpl_cmd {
-                    TemplateCommand::List => commands::template::list(cli.format),
+                    TemplateCommand::List => commands::template::list(format),
                     TemplateCommand::Show { name } => {
-                        commands::template::show(&name, cli.format)
+                        commands::template::show(&name, format)
                     }
                 },
                 Command::Simulator(sim_cmd) => match sim_cmd {
                     SimulatorCommand::Start { state_dir } => {
-                        commands::simulator::start(state_dir.as_deref(), cli.format)
+                        commands::simulator::start(state_dir.as_deref(), format)
                     }
                     SimulatorCommand::Stop { state_dir } => {
                         commands::simulator::stop(state_dir.as_deref())
                     }
                     SimulatorCommand::Status { state_dir } => {
-                        commands::simulator::status(state_dir.as_deref(), cli.format)
+                        commands::simulator::status(state_dir.as_deref(), format)
                     }
                 },
                 Command::Workspace(ws_cmd) => match ws_cmd {
                     WorkspaceCommand::Info => {
-                        commands::workspace::info(&store, &store_path, cli.format)
+                        commands::workspace::info(&store, &store_path, format)
                     }
                     WorkspaceCommand::Export { output } => {
-                        commands::workspace::export(&store, &output, cli.format)
+                        commands::workspace::export(&store, &output, format)
                     }
                     WorkspaceCommand::Import { input } => {
-                        commands::workspace::import(&store, &input, cli.format)
+                        commands::workspace::import(&store, &input, format)
                     }
                 },
                 Command::Explain { concept } => commands::explain::run(&concept),
@@ -468,6 +497,7 @@ fn main() -> anyhow::Result<()> {
                         Ok(())
                     }
                 },
+                Command::Completions { .. } => unreachable!("handled above"),
             }
         }
         None => {

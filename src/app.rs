@@ -28,6 +28,10 @@ pub struct Cli {
     /// Dry-run: show what would happen without executing
     #[arg(long, global = true)]
     pub plan: bool,
+
+    /// Shorthand for --format json
+    #[arg(long, global = true)]
+    pub json: bool,
 }
 
 fn parse_output_format(s: &str) -> Result<OutputFormat, String> {
@@ -107,6 +111,11 @@ pub enum Command {
     /// Daemon management
     #[command(subcommand)]
     Daemon(DaemonCommand),
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for (bash, zsh, fish, elvish, powershell)
+        shell: String,
+    },
 }
 
 #[derive(Subcommand)]
