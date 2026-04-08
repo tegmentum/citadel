@@ -21,8 +21,8 @@ pub struct Cli {
     #[arg(long, global = true, env = "TPM_STORE_PATH")]
     pub store_path: Option<PathBuf>,
 
-    /// TPM backend to use (mock, device)
-    #[arg(long, global = true, default_value = "mock", env = "TPM_BACKEND")]
+    /// TPM backend to use (auto, mock, device, swtpm, vtpm)
+    #[arg(long, global = true, default_value = "auto", env = "TPM_BACKEND")]
     pub backend: String,
 
     /// Dry-run: show what would happen without executing

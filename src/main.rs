@@ -33,6 +33,7 @@ fn default_store_path() -> std::path::PathBuf {
 
 fn create_backend(name: &str) -> anyhow::Result<Box<dyn tpm_core::backend::TpmBackend>> {
     match name {
+        "auto" => auto_detect_backend(),
         "mock" => Ok(Box::new(MockBackend::new())),
         #[cfg(feature = "tpm-hw")]
         "device" => Ok(Box::new(tpm_core::backend::HardwareBackend::new_device()?)),
@@ -149,6 +150,53 @@ fn check_constraints(
     }
 
     Ok(())
+}
+
+fn auto_detect_backend() -> anyhow::Result<Box<dyn tpm_core::backend::TpmBackend>> {
+    // 1. Try real hardware TPM
+    #[cfg(feature = "tpm-hw")]
+    {
+        if std::path::Path::new("/dev/tpmrm0").exists() {
+            match tpm_core::backend::HardwareBackend::new_device() {
+                Ok(backend) => {
+                    if let Ok(status) = backend.status() {
+                        if status.available {
+                            tracing::info!("auto-detected hardware TPM at /dev/tpmrm0");
+                            return Ok(Box::new(backend));
+                        }
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+    }
+
+    // 2. Try vTPM (libtpms WASM component)
+    #[cfg(feature = "vtpm")]
+    {
+        let candidates = [
+            std::env::var("TPM_VTPM_COMPONENT")
+                .map(std::path::PathBuf::from)
+                .ok(),
+            Some(dirs_home().join(".local/share/tpm/tpm-ephemeral.component.wasm")),
+            Some(std::path::PathBuf::from("tpm-ephemeral.component.wasm")),
+        ];
+        for candidate in candidates.iter().flatten() {
+            if candidate.exists() {
+                match tpm_core::backend::VtpmBackend::new(candidate) {
+                    Ok(backend) => {
+                        tracing::info!("auto-detected vTPM at {}", candidate.display());
+                        return Ok(Box::new(backend));
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+    }
+
+    // 3. Fall back to mock
+    tracing::info!("no TPM detected, using mock backend");
+    Ok(Box::new(MockBackend::new()))
 }
 
 fn generate_completions(shell: &str) -> anyhow::Result<()> {
