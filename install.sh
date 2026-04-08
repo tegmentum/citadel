@@ -3,14 +3,29 @@ set -euo pipefail
 
 INSTALL_DIR="${HOME}/.local/bin"
 
-echo "Building tpm (release)..."
-cargo build --release -p tpm 2>&1 | tail -1
+echo "Building tpm (release, with vtpm)..."
+cargo build --release --features vtpm -p tpm 2>&1 | tail -1
 
 mkdir -p "$INSTALL_DIR"
 cp target/release/tpm "$INSTALL_DIR/tpm"
 chmod +x "$INSTALL_DIR/tpm"
 
 echo "Installed to ${INSTALL_DIR}/tpm"
+
+# Install vTPM component if available
+TPM_DATA_DIR="${HOME}/.local/share/tpm"
+mkdir -p "$TPM_DATA_DIR"
+VTPM_SOURCES=(
+    "../libtpms-wasm/dist/tpm-ephemeral.component.wasm"
+    "${HOME}/git/libtpms-wasm/dist/tpm-ephemeral.component.wasm"
+)
+for src in "${VTPM_SOURCES[@]}"; do
+    if [ -f "$src" ]; then
+        cp "$src" "${TPM_DATA_DIR}/tpm-ephemeral.component.wasm"
+        echo "vTPM component installed to ${TPM_DATA_DIR}/"
+        break
+    fi
+done
 
 # Install shell completions
 SHELL_NAME="$(basename "$SHELL")"
