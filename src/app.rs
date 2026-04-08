@@ -102,7 +102,8 @@ pub enum Command {
     Workspace(WorkspaceCommand),
     /// Explain a TPM concept
     Explain {
-        /// Concept to explain (pcr, policy, hierarchy, key, seal, attestation, nv, ek, ak, handle, session, dictionary-attack)
+        /// Concept to explain
+        #[arg(value_parser = ["pcr", "policy", "hierarchy", "key", "seal", "attestation", "nv", "ek", "ak", "handle", "session", "dictionary-attack"])]
         concept: String,
     },
     /// Daemon management
