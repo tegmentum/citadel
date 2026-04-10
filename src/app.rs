@@ -21,7 +21,7 @@ pub struct Cli {
     #[arg(long, global = true, env = "TPM_STORE_PATH")]
     pub store_path: Option<PathBuf>,
 
-    /// TPM backend to use (auto, mock, device, vtpm)
+    /// TPM backend to use (auto, mock, device, swtpm, vtpm)
     #[arg(long, global = true, default_value = "auto", env = "TPM_BACKEND")]
     pub backend: String,
 
@@ -57,6 +57,21 @@ pub enum Command {
         /// Output file for the bundle
         #[arg(long)]
         output: std::path::PathBuf,
+    },
+    /// Apply a workspace manifest (declarative)
+    Apply {
+        /// Path to manifest YAML file
+        #[arg(long)]
+        file: std::path::PathBuf,
+        /// Force destructive changes (e.g. key rotation on algorithm drift)
+        #[arg(long)]
+        force: bool,
+    },
+    /// Show drift between manifest and current workspace state
+    Diff {
+        /// Path to manifest YAML file
+        #[arg(long)]
+        file: std::path::PathBuf,
     },
     /// Key management
     #[command(subcommand)]
@@ -106,6 +121,14 @@ pub enum Command {
         #[arg(value_parser = ["pcr", "policy", "hierarchy", "key", "seal", "attestation", "nv", "ek", "ak", "handle", "session", "dictionary-attack"])]
         concept: String,
     },
+    /// Identity management (composite: key + policy + usage + cert)
+    #[command(subcommand)]
+    Identity(IdentityCommand),
+    /// Tamper-evident secure log (hash-chained, Merkle-sealed, TPM-signed)
+    #[command(subcommand)]
+    Audit(AuditCommand),
+    /// Render the workspace dependency graph
+    Graph,
     /// Daemon management
     #[command(subcommand)]
     Daemon(DaemonCommand),
@@ -249,6 +272,11 @@ pub enum PolicyCommand {
     },
     /// Explain what a policy requires
     Explain {
+        /// Policy name
+        name: String,
+    },
+    /// Show fragility rating (how likely this policy is to break)
+    Fragility {
         /// Policy name
         name: String,
     },
@@ -496,6 +524,268 @@ pub enum WorkspaceCommand {
         /// Input file path
         #[arg(long)]
         input: std::path::PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AuditCommand {
+    /// Append a new entry to the secure log.
+    Append {
+        /// Event type (e.g. "user.login", "key.sign").
+        #[arg(long)]
+        event: String,
+        /// Severity label.
+        #[arg(long, default_value = "info")]
+        severity: String,
+        /// Producer identifier (e.g. component name).
+        #[arg(long, default_value = "cli")]
+        producer: String,
+        /// Payload bytes read from a file (use `-` for stdin).
+        #[arg(long)]
+        payload_file: Option<std::path::PathBuf>,
+        /// Payload as an inline UTF-8 string.
+        #[arg(long)]
+        payload: Option<String>,
+        /// Target stream.
+        #[arg(long, default_value = "default")]
+        stream: String,
+        /// Encrypt the payload under the master KEK (see `audit key`).
+        #[arg(long)]
+        encrypt: bool,
+    },
+    /// Read a single entry by seqno.
+    Show {
+        seqno: u64,
+        /// Decrypt the payload if it was stored encrypted.
+        #[arg(long)]
+        decrypt: bool,
+    },
+    /// Master KEK management for envelope encryption (Phase 5).
+    #[command(subcommand)]
+    Key(AuditKeyCommand),
+    /// Secure log stream management (multi-stream).
+    #[command(subcommand)]
+    Streams(AuditStreamsCommand),
+    /// Show the current head (highest seqno) for a stream.
+    Head {
+        #[arg(long, default_value = "default")]
+        stream: String,
+    },
+    /// Chain operations.
+    #[command(subcommand)]
+    Chain(AuditChainCommand),
+    /// Segment operations (Merkle-sealed windows).
+    #[command(subcommand)]
+    Segments(AuditSegmentsCommand),
+    /// Build a Merkle inclusion proof for a single entry.
+    Prove {
+        /// Entry sequence number.
+        seqno: u64,
+    },
+    /// Sign a closed segment's checkpoint with a TPM-backed identity.
+    Sign {
+        /// Segment id to sign.
+        segment_id: u64,
+        /// Identity name (see `tpm identity list`).
+        #[arg(long)]
+        identity: String,
+    },
+    /// Verify the full checkpoint chain from genesis to head.
+    Verify {
+        #[arg(long, default_value = "default")]
+        stream: String,
+    },
+    /// Emit the witness submission JSON for a stream's current head.
+    /// POST it to a witness service (e.g. `tpmd /v1/audit/witness`).
+    Publish {
+        #[arg(long, default_value = "default")]
+        stream: String,
+    },
+    /// Check the anti-rollback head file against the live database.
+    Rollback {
+        #[arg(long, default_value = "default")]
+        stream: String,
+    },
+    /// Witness receipt management.
+    #[command(subcommand)]
+    Witness(AuditWitnessCommand),
+}
+
+#[derive(Subcommand)]
+pub enum AuditWitnessCommand {
+    /// List all witness receipts for a stream.
+    List {
+        #[arg(long, default_value = "default")]
+        stream: String,
+    },
+    /// Show the latest witness receipt for a stream.
+    Latest {
+        #[arg(long, default_value = "default")]
+        stream: String,
+    },
+    /// Record a witness receipt from a locally-held submission JSON.
+    ///
+    /// Accepts the JSON output of `tpm audit publish` (piped or from
+    /// a file) and inserts it into the witness log. Useful when
+    /// submitting to an air-gapped or manual witness service.
+    Record {
+        /// Path to the witness submission JSON file (use `-` for stdin).
+        #[arg(long, default_value = "-")]
+        input: String,
+    },
+    /// Garbage-collect old witness receipts, keeping only the most
+    /// recent N receipts per stream (and/or those newer than a cutoff).
+    ///
+    /// At least one of --keep-latest or --older-than must be given.
+    Gc {
+        /// Stream name to GC (or "all" to GC every stream).
+        #[arg(long, default_value = "all")]
+        stream: String,
+        /// Keep at most N most-recent receipts per stream.
+        #[arg(long)]
+        keep_latest: Option<usize>,
+        /// Delete receipts received before this RFC 3339 timestamp
+        /// (e.g. 2026-01-01T00:00:00Z).
+        #[arg(long)]
+        older_than: Option<String>,
+        /// Print what would be deleted without actually deleting.
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AuditStreamsCommand {
+    /// List all declared streams with their confidentiality tiers.
+    List,
+    /// Create a new stream.
+    Create {
+        /// Stream name (alphanumeric + dash/underscore recommended).
+        name: String,
+        /// Confidentiality tier.
+        /// One of: public, protected, highly-restricted.
+        #[arg(long, default_value = "public")]
+        tier: String,
+        /// Optional human-readable description.
+        #[arg(long)]
+        description: Option<String>,
+    },
+    /// Show a single stream's metadata.
+    Show {
+        name: String,
+    },
+    /// Change a stream's confidentiality tier.
+    SetTier {
+        name: String,
+        #[arg(long)]
+        tier: String,
+    },
+    /// Deprecate a stream, preventing new entries from being appended.
+    ///
+    /// Existing entries and segments remain intact and verifiable.
+    /// The stream row is preserved so history and witness records stay accessible.
+    Delete {
+        /// Stream name.
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AuditKeyCommand {
+    /// Generate a new random master KEK and save it to the given path.
+    ///
+    /// By default the key is sealed under a TPM-protected key via
+    /// `backend.seal`; pass `--plaintext` to store it as raw 32 bytes
+    /// with 0600 permissions (useful for mock/test backends).
+    Init {
+        /// Path to write the KEK file to.
+        #[arg(long)]
+        out: std::path::PathBuf,
+        /// Store the KEK unsealed (raw 32 bytes) instead of wrapped
+        /// by the TPM backend.
+        #[arg(long)]
+        plaintext: bool,
+    },
+    /// Show the path used by subsequent audit commands, plus whether
+    /// the on-disk format is sealed or plaintext.
+    Show,
+}
+
+#[derive(Subcommand)]
+pub enum AuditSegmentsCommand {
+    /// Close the currently-open window and build its Merkle root.
+    Close {
+        #[arg(long, default_value = "default")]
+        stream: String,
+    },
+    /// List all closed segments.
+    List {
+        #[arg(long, default_value = "default")]
+        stream: String,
+    },
+    /// Show a single segment by id.
+    Show {
+        segment_id: u64,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AuditChainCommand {
+    /// Walk the hash chain and verify every link.
+    Verify {
+        /// Start seqno (default 1).
+        #[arg(long, default_value = "1")]
+        from: u64,
+        /// End seqno (default: current head).
+        #[arg(long)]
+        to: Option<u64>,
+        /// Target stream.
+        #[arg(long, default_value = "default")]
+        stream: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum IdentityCommand {
+    /// Initialize a new identity (creates backing key)
+    Init {
+        /// Identity name
+        name: String,
+        /// Intended usage (code-signing, tls, ssh, attestation, generic)
+        #[arg(long, default_value = "generic")]
+        usage: String,
+        /// Key algorithm
+        #[arg(long, default_value = "ecc-p256")]
+        algorithm: String,
+        /// Attach a named policy
+        #[arg(long)]
+        policy: Option<String>,
+        /// Certificate subject (e.g. "CN=Release Signer")
+        #[arg(long)]
+        subject: Option<String>,
+        /// Override backing key path (default: signing/<name>)
+        #[arg(long)]
+        key_path: Option<String>,
+    },
+    /// Show identity details
+    Show {
+        /// Identity name
+        name: String,
+    },
+    /// List all identities
+    List,
+    /// Rotate an identity's backing key
+    Rotate {
+        /// Identity name
+        name: String,
+    },
+    /// Delete an identity
+    Delete {
+        /// Identity name
+        name: String,
+        /// Also delete the underlying key object
+        #[arg(long)]
+        cascade: bool,
     },
 }
 

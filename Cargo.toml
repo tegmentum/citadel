@@ -39,6 +39,7 @@ uuid.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 serde_json.workspace = true
+rusqlite.workspace = true
 
 [workspace.package]
 edition = "2021"

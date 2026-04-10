@@ -331,7 +331,7 @@ fn workflow_workspace_portability() {
     // Verify export is valid JSON
     let json = std::fs::read_to_string(&export_file).unwrap();
     let snapshot: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(snapshot["version"], 1);
+    assert_eq!(snapshot["version"], 2);
     assert_eq!(snapshot["objects"].as_array().unwrap().len(), 1);
 
     // Import into new workspace

@@ -13,7 +13,9 @@ use tss_esapi::structures::{
     Public, PublicBuilder, PublicEccParametersBuilder, PublicKeyRsa, RsaExponent,
     RsaScheme, SymmetricDefinitionObject,
 };
-use tss_esapi::tcti_ldr::{DeviceConfig, TctiNameConf};
+use std::str::FromStr;
+
+use tss_esapi::tcti_ldr::{DeviceConfig, ServerAddress, TctiNameConf, TpmSimulatorConfig};
 use tss_esapi::Context;
 
 use crate::model::{Algorithm, ObjectPath};
@@ -36,6 +38,36 @@ impl HardwareBackend {
     /// Connect to a custom TCTI target.
     pub fn new_with_tcti(tcti: TctiNameConf) -> Self {
         Self { tcti }
+    }
+
+    /// Connect to a swtpm TCP server (default host `localhost`, port 2321).
+    pub fn new_swtpm_tcp(host: &str, port: u16) -> anyhow::Result<Self> {
+        let server = ServerAddress::from_str(host)
+            .map_err(|e| anyhow::anyhow!("invalid swtpm host '{}': {}", host, e))?;
+        Ok(Self {
+            tcti: TctiNameConf::Swtpm(TpmSimulatorConfig::Tcp { host: server, port }),
+        })
+    }
+
+    /// Connect to a swtpm over a Unix domain socket.
+    pub fn new_swtpm_unix(path: &str) -> Self {
+        Self {
+            tcti: TctiNameConf::Swtpm(TpmSimulatorConfig::Unix {
+                path: path.to_string(),
+            }),
+        }
+    }
+
+    /// Build a `HardwareBackend` from a TCTI configuration string.
+    ///
+    /// Accepts any syntax understood by `tss-esapi`, e.g.
+    /// `"device"`, `"device:/dev/tpmrm0"`, `"swtpm"`,
+    /// `"swtpm:host=localhost,port=2321"`, `"swtpm:path=/tmp/swtpm.sock"`,
+    /// `"mssim:port=2321"`, `"tabrmd"`.
+    pub fn new_from_tcti_str(s: &str) -> anyhow::Result<Self> {
+        let tcti = TctiNameConf::from_str(s)
+            .map_err(|e| anyhow::anyhow!("invalid TCTI spec '{}': {}", s, e))?;
+        Ok(Self { tcti })
     }
 
     fn open_context(&self) -> anyhow::Result<Context> {
@@ -138,6 +170,19 @@ impl HardwareBackend {
     }
 }
 
+impl HardwareBackend {
+    fn tcti_label(&self) -> &'static str {
+        match self.tcti {
+            TctiNameConf::Device(..) => "hardware",
+            TctiNameConf::Swtpm(..) => "swtpm",
+            TctiNameConf::Mssim(..) => "mssim",
+            TctiNameConf::Tabrmd(..) => "tabrmd",
+            TctiNameConf::LibTpms { .. } => "libtpms",
+            TctiNameConf::Tbs => "tbs",
+        }
+    }
+}
+
 impl TpmBackend for HardwareBackend {
     fn status(&self) -> anyhow::Result<BackendStatus> {
         let mut ctx = self.open_context()?;
@@ -145,7 +190,7 @@ impl TpmBackend for HardwareBackend {
             .unwrap_or(("unknown".to_string(), "unknown".to_string()));
 
         Ok(BackendStatus {
-            backend_type: "hardware".to_string(),
+            backend_type: self.tcti_label().to_string(),
             manufacturer,
             firmware_version: firmware,
             available: true,

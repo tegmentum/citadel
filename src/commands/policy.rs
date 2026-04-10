@@ -3,7 +3,6 @@ use uuid::Uuid;
 use tpm_core::model::{Policy, PolicyRule};
 use tpm_core::output::format::{render, TextRenderable};
 use tpm_core::output::OutputFormat;
-use tpm_core::policy::PolicyDefinition;
 use tpm_core::store::Store;
 
 use serde::Serialize;
@@ -273,7 +272,17 @@ pub fn compile(
     file: &std::path::Path,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
-    let def = PolicyDefinition::from_file(file)?;
+    let text = std::fs::read_to_string(file)?;
+    let parsed = tpm_core::policy::from_any_yaml(&text)?;
+    let def = match parsed {
+        tpm_core::policy::ParsedPolicyDocument::Single(d) => d,
+        tpm_core::policy::ParsedPolicyDocument::Manifest(_) => {
+            anyhow::bail!(
+                "this file is a Workspace Manifest — use `tpm apply --file {}` instead",
+                file.display()
+            );
+        }
+    };
 
     // Validate
     let issues = def.validate();
@@ -456,6 +465,80 @@ impl TextRenderable for TestReport {
                 "SOME REQUIREMENTS CANNOT BE SATISFIED"
             }
         ));
+        out
+    }
+}
+
+// -- policy fragility --
+
+pub fn fragility(store: &Store, name: &str, format: OutputFormat) -> anyhow::Result<()> {
+    let policy = store
+        .get_policy(name)?
+        .ok_or_else(|| anyhow::anyhow!("policy not found: {}", name))?;
+
+    let report = tpm_core::service::rate_policy(&policy);
+
+    let out = FragilityOutput {
+        policy: name.to_string(),
+        overall: report.overall.to_string(),
+        per_pcr: report
+            .per_pcr
+            .iter()
+            .map(|p| PcrFragilityOut {
+                bank: p.bank.clone(),
+                index: p.index,
+                rating: p.rating.to_string(),
+                reason: p.reason.clone(),
+            })
+            .collect(),
+        notes: report.notes.clone(),
+    };
+
+    println!("{}", render(&out, format));
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct FragilityOutput {
+    policy: String,
+    overall: String,
+    per_pcr: Vec<PcrFragilityOut>,
+    notes: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct PcrFragilityOut {
+    bank: String,
+    index: u32,
+    rating: String,
+    reason: String,
+}
+
+impl TextRenderable for FragilityOutput {
+    fn render_text(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("policy: {}\n", self.policy));
+        out.push_str(&format!("overall: {}\n\n", self.overall));
+
+        if self.per_pcr.is_empty() {
+            out.push_str("  (no PCR requirements)\n");
+        } else {
+            out.push_str("per-PCR:\n");
+            for p in &self.per_pcr {
+                out.push_str(&format!(
+                    "  {}:{:<3} [{:<6}] {}\n",
+                    p.bank, p.index, p.rating, p.reason
+                ));
+            }
+        }
+
+        if !self.notes.is_empty() {
+            out.push_str("\nnotes:\n");
+            for note in &self.notes {
+                out.push_str(&format!("  - {}\n", note));
+            }
+        }
+
         out
     }
 }

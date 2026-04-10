@@ -86,6 +86,7 @@ impl TextRenderable for ObjectListing {
 pub fn tree(store: &Store, format: OutputFormat) -> anyhow::Result<()> {
     let objects = store.list_objects()?;
     let policies = store.list_policies()?;
+    let identities = store.list_identities()?;
 
     let tree = ObjectTree {
         keys: objects
@@ -111,6 +112,10 @@ pub fn tree(store: &Store, format: OutputFormat) -> anyhow::Result<()> {
             .map(|o| o.path.to_string())
             .collect(),
         policies: policies.iter().map(|p| p.name.clone()).collect(),
+        identities: identities
+            .iter()
+            .map(|i| format!("{} [{}]", i.name, i.usage))
+            .collect(),
     };
 
     println!("{}", render(&tree, format));
@@ -123,6 +128,7 @@ struct ObjectTree {
     secrets: Vec<String>,
     nv_indices: Vec<String>,
     policies: Vec<String>,
+    identities: Vec<String>,
 }
 
 impl TextRenderable for ObjectTree {
@@ -178,10 +184,23 @@ impl TextRenderable for ObjectTree {
             }
         }
 
+        if !self.identities.is_empty() {
+            out.push_str("  identities/\n");
+            for (i, id) in self.identities.iter().enumerate() {
+                let connector = if i == self.identities.len() - 1 {
+                    "└──"
+                } else {
+                    "├──"
+                };
+                out.push_str(&format!("    {} {}\n", connector, id));
+            }
+        }
+
         if self.keys.is_empty()
             && self.secrets.is_empty()
             && self.nv_indices.is_empty()
             && self.policies.is_empty()
+            && self.identities.is_empty()
         {
             out.push_str("  (empty)\n");
         }
@@ -232,12 +251,20 @@ pub fn dependents(store: &Store, path_str: &str, format: OutputFormat) -> anyhow
         .map(|o| o.path.to_string())
         .collect();
 
+    // Find identities that reference this object as their backing key
+    let linked_identities: Vec<String> = store
+        .get_identity_by_key(&target.id)?
+        .into_iter()
+        .map(|i| i.name)
+        .collect();
+
     let result = DependentsResult {
         path: path_str.to_string(),
         kind: target.kind.to_string(),
         shared_policy,
         attached_policies,
         rotation_history,
+        linked_identities,
     };
 
     println!("{}", render(&result, format));
@@ -251,12 +278,20 @@ struct DependentsResult {
     shared_policy: Vec<String>,
     attached_policies: Vec<String>,
     rotation_history: Vec<String>,
+    linked_identities: Vec<String>,
 }
 
 impl TextRenderable for DependentsResult {
     fn render_text(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!("dependents of: {} ({})\n\n", self.path, self.kind));
+
+        if !self.linked_identities.is_empty() {
+            out.push_str("  linked identities:\n");
+            for i in &self.linked_identities {
+                out.push_str(&format!("    - {}\n", i));
+            }
+        }
 
         if !self.attached_policies.is_empty() {
             out.push_str("  attached policies:\n");
@@ -282,6 +317,7 @@ impl TextRenderable for DependentsResult {
         if self.attached_policies.is_empty()
             && self.shared_policy.is_empty()
             && self.rotation_history.is_empty()
+            && self.linked_identities.is_empty()
         {
             out.push_str("  no dependents found\n");
         }

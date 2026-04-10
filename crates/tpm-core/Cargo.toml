@@ -11,6 +11,9 @@ sqlite = ["dep:rusqlite"]
 tpm-hw = ["dep:tss-esapi"]
 # Enable in-process vTPM via libtpms WASM component.
 vtpm = ["dep:wasmtime", "dep:wasmtime-wasi"]
+# Enable loading external WASM components that implement
+# wit/secure-log.wit (pluggable encoder / log backend).
+secure-log-wasm = ["dep:wasmtime", "dep:wasmtime-wasi"]
 
 [dependencies]
 serde.workspace = true
@@ -22,15 +25,40 @@ chrono.workspace = true
 uuid.workspace = true
 tracing.workspace = true
 
+# Cryptographic primitives for the secure log subsystem.
+# sha2 is the frozen hash for the WIT contract; ciborium provides
+# deterministic CBOR encoding per RFC 8949 §4.2.1.
+sha2 = "0.10"
+ciborium = "0.2"
+# Envelope encryption for Phase 5 secure-log payloads.
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc", "getrandom"] }
+hkdf = "0.12"
+zeroize = { version = "1", features = ["zeroize_derive"] }
+rand = { version = "0.8", default-features = false, features = ["getrandom"] }
+
 # Optional: SQLite persistence (native only)
 rusqlite = { workspace = true, optional = true }
-
-# Optional: real TPM backend
-tss-esapi = { version = "8.0.0-alpha.2", optional = true }
 
 # Optional: in-process vTPM via WASM
 wasmtime = { version = "43", optional = true }
 wasmtime-wasi = { version = "43", optional = true }
+
+# Optional: real TPM backend (tss-esapi).
+#
+# tss-esapi-sys ships pre-generated bindings only for a whitelist of
+# (arch, os) tuples. macOS arm64 is not on that list, so we enable
+# `generate-bindings` there — this runs bindgen against the tpm2-tss
+# headers at build time and requires libclang (present by default
+# with Xcode Command Line Tools).
+#
+# System prerequisites for --features tpm-hw:
+#   Linux:  install libtss2-dev (Debian/Ubuntu) or tpm2-tss-devel (Fedora)
+#   macOS:  brew install tpm2-tss  (provides both headers and libraries)
+[target.'cfg(target_os = "macos")'.dependencies]
+tss-esapi = { version = "8.0.0-alpha.2", optional = true, features = ["generate-bindings"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+tss-esapi = { version = "8.0.0-alpha.2", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

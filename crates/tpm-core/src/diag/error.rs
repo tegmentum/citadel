@@ -135,6 +135,38 @@ impl TpmError {
         )
     }
 
+    pub fn identity_not_found(name: &str) -> Self {
+        Self::new(
+            Diagnostic::error(DiagCode::E0900, format!("identity not found: {}", name))
+                .with_suggestion("run `tpm identity list` to see available identities")
+                .with_suggestion(format!(
+                    "create it with `tpm identity init {} --usage generic`",
+                    name
+                ))
+                .with_context("identity", name),
+        )
+    }
+
+    pub fn identity_missing_key(name: &str, key_id: &str) -> Self {
+        Self::new(
+            Diagnostic::error(
+                DiagCode::E0901,
+                format!("identity '{}' references missing key", name),
+            )
+            .with_cause(format!(
+                "the underlying key object (id={}) is no longer in the store",
+                key_id
+            ))
+            .with_suggestion("run `tpm repair scan` to detect orphan identities")
+            .with_suggestion(format!(
+                "rotate the identity with `tpm identity rotate {}` to regenerate its key",
+                name
+            ))
+            .with_context("identity", name)
+            .with_context("key_id", key_id),
+        )
+    }
+
     pub fn backend_failed(operation: &str, cause: &str) -> Self {
         Self::new(
             Diagnostic::error(

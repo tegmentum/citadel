@@ -7,6 +7,31 @@ pub trait TpmBackend: Send + Sync {
     fn status(&self) -> anyhow::Result<BackendStatus>;
     fn create_key(&self, algorithm: Algorithm, path: &ObjectPath) -> anyhow::Result<KeyHandle>;
     fn sign(&self, handle: &KeyHandle, data: &[u8]) -> anyhow::Result<Vec<u8>>;
+
+    /// Verify a previously-produced signature over `data` using the
+    /// public component of `handle`.
+    ///
+    /// Default implementation uses symmetric re-sign comparison:
+    /// re-run `sign` and check that the output matches. This is
+    /// correct for deterministic signatures (like the `MockBackend`
+    /// and TPM quotes with null scheme) but *not* for real
+    /// ECDSA/RSA-PSS where the same input can produce many valid
+    /// signatures. Hardware-backed implementations override this
+    /// with a proper public-key verification call.
+    ///
+    /// The secure log checkpoint verifier uses this in place of
+    /// re-signing so that swapping in a real backend gives real
+    /// cryptographic verification automatically.
+    fn verify_signature(
+        &self,
+        handle: &KeyHandle,
+        data: &[u8],
+        signature: &[u8],
+    ) -> anyhow::Result<bool> {
+        let recomputed = self.sign(handle, data)?;
+        Ok(recomputed == signature)
+    }
+
     fn list_handles(&self) -> anyhow::Result<Vec<KeyHandle>>;
 
     /// Seal data under a policy. Returns an opaque sealed blob.

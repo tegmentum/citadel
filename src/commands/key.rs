@@ -23,37 +23,22 @@ pub fn create(
     format: OutputFormat,
     plan_mode: bool,
 ) -> anyhow::Result<()> {
-    let path = ObjectPath::new(path_str).map_err(|e| {
-        let err = TpmError::invalid_path(path_str, &e.to_string());
-        err.emit();
-        e
-    })?;
-
-    // Check if already exists
-    if store.get_object(&path)?.is_some() {
-        let err = TpmError::object_already_exists(path_str);
-        err.emit();
-        return Err(err.into());
-    }
-
-    let algorithm: Algorithm = algorithm_str.parse().map_err(|e: String| anyhow::anyhow!(e))?;
-
-    // Resolve policy if specified
-    let policy_id = if let Some(pname) = policy_name {
-        let policy = store
-            .get_policy(pname)?
-            .ok_or_else(|| anyhow::anyhow!("policy not found: {}", pname))?;
-        Some(policy.id)
-    } else {
-        None
-    };
-
     if plan_mode {
+        // Validate the inputs enough to show a meaningful plan without
+        // performing any store writes.
+        let _ = ObjectPath::new(path_str).map_err(|e| {
+            let err = TpmError::invalid_path(path_str, &e.to_string());
+            err.emit();
+            e
+        })?;
+        let _algorithm: Algorithm = algorithm_str
+            .parse()
+            .map_err(|e: String| anyhow::anyhow!(e))?;
         crate::plan::show_plan(&[crate::plan::PlannedAction {
             action: "create signing key".to_string(),
-            target: Some(path.to_string()),
+            target: Some(path_str.to_string()),
             details: vec![
-                ("algorithm".to_string(), algorithm.to_string()),
+                ("algorithm".to_string(), algorithm_str.to_string()),
                 (
                     "policy".to_string(),
                     policy_name.unwrap_or("(none)").to_string(),
@@ -65,29 +50,26 @@ pub fn create(
         return Ok(());
     }
 
-    let handle = backend.create_key(algorithm, &path)?;
-
-    let obj = TpmObject {
-        id: Uuid::new_v4(),
-        path: path.clone(),
-        kind: ObjectKind::SigningKey,
-        algorithm,
-        policy_id,
-        handle_blob: Some(handle.id),
-        created_at: Utc::now(),
-        metadata: serde_json::json!({}),
-    };
-
-    store.insert_object(&obj)?;
-    store.log_action(
-        "key.create",
-        Some(path.as_str()),
-        &serde_json::json!({"algorithm": algorithm.to_string()}),
-    )?;
+    let obj = tpm_core::service::create_key(
+        store,
+        backend,
+        tpm_core::service::CreateKeySpec {
+            path: path_str,
+            algorithm: algorithm_str,
+            policy_name,
+        },
+    )
+    .map_err(|e| {
+        // Best-effort: if it's a TpmError, emit the structured diagnostic.
+        if let Some(tpm_err) = e.downcast_ref::<TpmError>() {
+            tpm_err.emit();
+        }
+        e
+    })?;
 
     let summary = KeyCreated {
-        path: path.to_string(),
-        algorithm: algorithm.to_string(),
+        path: obj.path.to_string(),
+        algorithm: obj.algorithm.to_string(),
         id: obj.id.to_string(),
     };
 

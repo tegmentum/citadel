@@ -1,7 +1,11 @@
+pub mod apply;
 pub mod attest;
+pub mod audit;
 pub mod capabilities;
 pub mod doctor;
 pub mod explain;
+pub mod graph;
+pub mod identity;
 pub mod init;
 pub mod key;
 pub mod log;

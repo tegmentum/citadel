@@ -48,6 +48,8 @@ pub enum DiagCode {
     E0400,
     /// Unsatisfiable policy.
     E0401,
+    /// Policy is fragile under expected boot events.
+    E0402,
 
     // NV (0500-0599)
     /// NV index already defined.
@@ -68,6 +70,30 @@ pub enum DiagCode {
     // Repair (0700-0799)
     /// Workspace drift detected.
     E0700,
+    /// Reconciliation required.
+    E0701,
+    /// Dependency cycle detected.
+    E0702,
+
+    // Manifest (0800-0899)
+    /// Manifest parse error.
+    E0800,
+    /// Manifest drift detected.
+    E0801,
+    /// Unsupported manifest apiVersion.
+    E0802,
+    /// Unsupported workspace snapshot version.
+    E0803,
+    /// Import conflict: resource already exists.
+    E0804,
+
+    // Identity (0900-0999)
+    /// Identity not found.
+    E0900,
+    /// Identity references missing key.
+    E0901,
+    /// Identity rotation failed.
+    E0902,
 
     // Internal (9000-9999)
     /// Internal invariant violation.
@@ -96,6 +122,7 @@ impl DiagCode {
             Self::E0301 => "TPM0301",
             Self::E0400 => "TPM0400",
             Self::E0401 => "TPM0401",
+            Self::E0402 => "TPM0402",
             Self::E0500 => "TPM0500",
             Self::E0501 => "TPM0501",
             Self::E0502 => "TPM0502",
@@ -103,6 +130,16 @@ impl DiagCode {
             Self::E0600 => "TPM0600",
             Self::E0601 => "TPM0601",
             Self::E0700 => "TPM0700",
+            Self::E0701 => "TPM0701",
+            Self::E0702 => "TPM0702",
+            Self::E0800 => "TPM0800",
+            Self::E0801 => "TPM0801",
+            Self::E0802 => "TPM0802",
+            Self::E0803 => "TPM0803",
+            Self::E0804 => "TPM0804",
+            Self::E0900 => "TPM0900",
+            Self::E0901 => "TPM0901",
+            Self::E0902 => "TPM0902",
             Self::E9001 => "TPM9001",
         }
     }
@@ -128,6 +165,7 @@ impl DiagCode {
             Self::E0301 => "unsupported algorithm",
             Self::E0400 => "policy not found",
             Self::E0401 => "unsatisfiable policy",
+            Self::E0402 => "policy is fragile under expected boot events",
             Self::E0500 => "NV index already defined",
             Self::E0501 => "NV index not found",
             Self::E0502 => "NV data exceeds index size",
@@ -135,6 +173,16 @@ impl DiagCode {
             Self::E0600 => "PCR mismatch",
             Self::E0601 => "baseline not found",
             Self::E0700 => "workspace drift detected",
+            Self::E0701 => "reconciliation required",
+            Self::E0702 => "dependency cycle detected",
+            Self::E0800 => "manifest parse error",
+            Self::E0801 => "manifest drift detected",
+            Self::E0802 => "unsupported manifest apiVersion",
+            Self::E0803 => "unsupported workspace snapshot version",
+            Self::E0804 => "import conflict: resource already exists",
+            Self::E0900 => "identity not found",
+            Self::E0901 => "identity references missing key",
+            Self::E0902 => "identity rotation failed",
             Self::E9001 => "internal invariant violation",
         }
     }
@@ -148,7 +196,12 @@ impl DiagCode {
     pub fn default_severity(&self) -> super::Severity {
         match self {
             Self::E9001 => super::Severity::Error,
-            Self::E0700 | Self::E0503 => super::Severity::Warning,
+            Self::E0700
+            | Self::E0701
+            | Self::E0503
+            | Self::E0402
+            | Self::E0801
+            | Self::E0804 => super::Severity::Warning,
             _ => super::Severity::Error,
         }
     }

@@ -1,28 +1,6 @@
-/// Describes a planned operation for --plan mode.
-pub struct PlannedAction {
-    pub action: String,
-    pub target: Option<String>,
-    pub details: Vec<(String, String)>,
-    pub risk: Risk,
-    pub reversible: bool,
-}
+//! CLI-side plan renderer. Types live in tpm_core::service::plan.
 
-#[allow(dead_code)]
-pub enum Risk {
-    Low,
-    Medium,
-    High,
-}
-
-impl std::fmt::Display for Risk {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Low => write!(f, "low"),
-            Self::Medium => write!(f, "medium"),
-            Self::High => write!(f, "high"),
-        }
-    }
-}
+pub use tpm_core::service::plan::{PlannedAction, Risk};
 
 /// Print a plan instead of executing.
 pub fn show_plan(actions: &[PlannedAction]) {

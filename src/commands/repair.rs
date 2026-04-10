@@ -263,6 +263,54 @@ fn detect_issues(store: &Store, backend: &dyn TpmBackend) -> anyhow::Result<Vec<
         }
     }
 
+    // Check 6: orphan identities (identity references a key that doesn't exist)
+    let identities = store.list_identities()?;
+    for ident in &identities {
+        let key_exists = objects.iter().any(|o| o.id == ident.key_object_id);
+        if !key_exists {
+            issues.push(Issue {
+                severity: "error".to_string(),
+                code: "REPAIR006".to_string(),
+                message: format!(
+                    "identity '{}' references missing key (id={})",
+                    ident.name, ident.key_object_id
+                ),
+                object: Some(format!("identity:{}", ident.name)),
+                remediation: format!(
+                    "rotate with `tpm identity rotate {}` or delete with `tpm identity delete {}`",
+                    ident.name, ident.name
+                ),
+                reversible: false,
+                fix_action: FixAction::NoAutoFix,
+            });
+        }
+    }
+
+    // Check 7: fragile policies (PCR 0-7 boot-sensitive)
+    for policy in store.list_policies()? {
+        let report = tpm_core::service::rate_policy(&policy);
+        if matches!(
+            report.overall,
+            tpm_core::service::FragilityRating::High
+        ) {
+            issues.push(Issue {
+                severity: "warning".to_string(),
+                code: "REPAIR007".to_string(),
+                message: format!(
+                    "policy '{}' is fragile under expected boot events",
+                    policy.name
+                ),
+                object: Some(format!("policy:{}", policy.name)),
+                remediation: format!(
+                    "run `tpm policy fragility {}` for details; consider using higher PCR indices",
+                    policy.name
+                ),
+                reversible: true,
+                fix_action: FixAction::NoAutoFix,
+            });
+        }
+    }
+
     Ok(issues)
 }
 

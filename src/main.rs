@@ -12,9 +12,12 @@ use tpm_core::backend::MockBackend;
 use tpm_core::store::Store;
 
 use app::{
-    AttestCommand, Cli, Command, DaemonCommand, GcCommand, KeyCommand, LogCommand, NvCommand,
-    ObjectCommand, PcrBaselineCommand, PcrCommand, PolicyCommand, ProfileCommand, RecoverCommand,
-    RepairCommand, SecretCommand, TemplateCommand, WorkspaceCommand,
+    AttestCommand, AuditChainCommand, AuditCommand, AuditKeyCommand, AuditSegmentsCommand,
+    AuditStreamsCommand, AuditWitnessCommand, Cli, Command, DaemonCommand, GcCommand,
+    IdentityCommand, KeyCommand,
+    LogCommand, NvCommand, ObjectCommand, PcrBaselineCommand, PcrCommand, PolicyCommand,
+    ProfileCommand, RecoverCommand, RepairCommand, SecretCommand, TemplateCommand,
+    WorkspaceCommand,
 };
 
 fn default_store_path() -> std::path::PathBuf {
@@ -42,6 +45,35 @@ fn create_backend(name: &str) -> anyhow::Result<Box<dyn tpm_core::backend::TpmBa
             anyhow::bail!(
                 "hardware TPM backend not available: rebuild with --features tpm-hw\n\
                  This requires the tpm2-tss development libraries to be installed."
+            )
+        }
+        #[cfg(feature = "tpm-hw")]
+        "swtpm" => {
+            // Honor TPM_SWTPM_TCTI for full flexibility (e.g.
+            //   swtpm:host=localhost,port=2321
+            //   swtpm:path=/tmp/swtpm.sock
+            // ). Otherwise use the swtpm default (TCP on localhost:2321).
+            let backend = if let Ok(tcti) = std::env::var("TPM_SWTPM_TCTI") {
+                tpm_core::backend::HardwareBackend::new_from_tcti_str(&tcti)?
+            } else if let Ok(path) = std::env::var("TPM_SWTPM_SOCKET") {
+                tpm_core::backend::HardwareBackend::new_swtpm_unix(&path)
+            } else {
+                let host = std::env::var("TPM_SWTPM_HOST")
+                    .unwrap_or_else(|_| "localhost".to_string());
+                let port = std::env::var("TPM_SWTPM_PORT")
+                    .ok()
+                    .and_then(|p| p.parse::<u16>().ok())
+                    .unwrap_or(2321);
+                tpm_core::backend::HardwareBackend::new_swtpm_tcp(&host, port)?
+            };
+            Ok(Box::new(backend))
+        }
+        #[cfg(not(feature = "tpm-hw"))]
+        "swtpm" => {
+            anyhow::bail!(
+                "swtpm backend not available: rebuild with --features tpm-hw\n\
+                 swtpm support uses the same tss-esapi client as the hardware backend.\n\
+                 Set TPM_SWTPM_TCTI, TPM_SWTPM_SOCKET, or TPM_SWTPM_HOST/PORT to configure."
             )
         }
         #[cfg(feature = "vtpm")]
@@ -79,7 +111,7 @@ fn create_backend(name: &str) -> anyhow::Result<Box<dyn tpm_core::backend::TpmBa
         }
         other => {
             anyhow::bail!(
-                "unknown backend: '{}'\navailable backends: auto, mock, device, vtpm",
+                "unknown backend: '{}'\navailable backends: auto, mock, device, swtpm, vtpm",
                 other
             )
         }
@@ -139,7 +171,48 @@ fn auto_detect_backend() -> anyhow::Result<Box<dyn tpm_core::backend::TpmBackend
         }
     }
 
-    // 2. Try vTPM (libtpms WASM component)
+    // 2. Try swtpm (explicit opt-in via env vars, or default TCP socket)
+    #[cfg(feature = "tpm-hw")]
+    {
+        use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+        use std::time::Duration;
+
+        // Explicit config: always honor if set.
+        let explicit = std::env::var("TPM_SWTPM_TCTI")
+            .ok()
+            .or_else(|| std::env::var("TPM_SWTPM_SOCKET").ok())
+            .or_else(|| std::env::var("TPM_SWTPM_HOST").ok())
+            .or_else(|| std::env::var("TPM_SWTPM_PORT").ok());
+
+        let should_probe = explicit.is_some() || {
+            // Otherwise probe localhost:2321 with a short timeout so we
+            // don't slow down the default (no-swtpm) path noticeably.
+            "localhost:2321"
+                .to_socket_addrs()
+                .ok()
+                .and_then(|mut it| it.next())
+                .and_then(|addr: SocketAddr| {
+                    TcpStream::connect_timeout(&addr, Duration::from_millis(75)).ok()
+                })
+                .is_some()
+        };
+
+        if should_probe {
+            match create_backend("swtpm") {
+                Ok(backend) => {
+                    if let Ok(status) = backend.status() {
+                        if status.available {
+                            tracing::info!("auto-detected swtpm");
+                            return Ok(backend);
+                        }
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+    }
+
+    // 3. Try vTPM (libtpms WASM component)
     #[cfg(feature = "vtpm")]
     {
         let candidates = [
@@ -248,6 +321,17 @@ fn main() -> anyhow::Result<()> {
                     &store_path,
                     &output,
                 ),
+                Command::Apply { file, force } => commands::apply::apply_cmd(
+                    &store,
+                    backend.as_ref(),
+                    &file,
+                    force,
+                    cli.plan,
+                    format,
+                ),
+                Command::Diff { file } => {
+                    commands::apply::diff_cmd(&store, &file, format)
+                }
                 Command::Key(key_cmd) => match key_cmd {
                     KeyCommand::Create {
                         path,
@@ -405,6 +489,9 @@ fn main() -> anyhow::Result<()> {
                     PolicyCommand::Test { name } => {
                         commands::policy::test_policy(&store, backend.as_ref(), &name, format)
                     }
+                    PolicyCommand::Fragility { name } => {
+                        commands::policy::fragility(&store, &name, format)
+                    }
                 },
                 Command::Object(obj_cmd) => match obj_cmd {
                     ObjectCommand::List => commands::object::list(&store, format),
@@ -475,10 +562,179 @@ fn main() -> anyhow::Result<()> {
                         commands::workspace::export(&store, &output, format)
                     }
                     WorkspaceCommand::Import { input } => {
-                        commands::workspace::import(&store, &input, format)
+                        commands::workspace::import(&store, backend.as_ref(), &input, format)
                     }
                 },
                 Command::Explain { concept } => commands::explain::run(&concept),
+                Command::Audit(audit_cmd) => match audit_cmd {
+                    AuditCommand::Append {
+                        event,
+                        severity,
+                        producer,
+                        payload_file,
+                        payload,
+                        stream,
+                        encrypt,
+                    } => commands::audit::append(
+                        &store_path,
+                        backend.as_ref(),
+                        &stream,
+                        &event,
+                        &severity,
+                        &producer,
+                        payload.as_deref(),
+                        payload_file.as_deref(),
+                        encrypt,
+                        format,
+                    ),
+                    AuditCommand::Show { seqno, decrypt } => commands::audit::show(
+                        &store_path,
+                        backend.as_ref(),
+                        seqno,
+                        decrypt,
+                        format,
+                    ),
+                    AuditCommand::Key(key_cmd) => match key_cmd {
+                        AuditKeyCommand::Init { out, plaintext } => {
+                            commands::audit::key_init(
+                                &store_path,
+                                backend.as_ref(),
+                                Some(&out),
+                                plaintext,
+                            )
+                        }
+                        AuditKeyCommand::Show => commands::audit::key_show(&store_path),
+                    },
+                    AuditCommand::Streams(streams_cmd) => match streams_cmd {
+                        AuditStreamsCommand::List => {
+                            commands::audit::streams_list(&store_path, format)
+                        }
+                        AuditStreamsCommand::Create {
+                            name,
+                            tier,
+                            description,
+                        } => commands::audit::streams_create(
+                            &store_path,
+                            &name,
+                            &tier,
+                            description.as_deref(),
+                            format,
+                        ),
+                        AuditStreamsCommand::Show { name } => {
+                            commands::audit::streams_show(&store_path, &name, format)
+                        }
+                        AuditStreamsCommand::SetTier { name, tier } => {
+                            commands::audit::streams_set_tier(
+                                &store_path,
+                                &name,
+                                &tier,
+                                format,
+                            )
+                        }
+                        AuditStreamsCommand::Delete { name } => {
+                            commands::audit::streams_delete(&store_path, &name, format)
+                        }
+                    },
+                    AuditCommand::Head { stream } => {
+                        commands::audit::head(&store_path, &stream, format)
+                    }
+                    AuditCommand::Chain(chain_cmd) => match chain_cmd {
+                        AuditChainCommand::Verify { from, to, stream } => {
+                            commands::audit::chain_verify(&store_path, &stream, from, to, format)
+                        }
+                    },
+                    AuditCommand::Segments(seg_cmd) => match seg_cmd {
+                        AuditSegmentsCommand::Close { stream } => {
+                            commands::audit::segments_close(&store_path, &stream, format)
+                        }
+                        AuditSegmentsCommand::List { stream } => {
+                            commands::audit::segments_list(&store_path, &stream, format)
+                        }
+                        AuditSegmentsCommand::Show { segment_id } => {
+                            commands::audit::segments_show(&store_path, segment_id, format)
+                        }
+                    },
+                    AuditCommand::Prove { seqno } => {
+                        commands::audit::prove(&store_path, seqno, format)
+                    }
+                    AuditCommand::Sign {
+                        segment_id,
+                        identity,
+                    } => commands::audit::sign(
+                        &store_path,
+                        backend.as_ref(),
+                        segment_id,
+                        &identity,
+                        format,
+                    ),
+                    AuditCommand::Verify { stream } => {
+                        commands::audit::verify(&store_path, backend.as_ref(), &stream, format)
+                    }
+                    AuditCommand::Publish { stream } => {
+                        commands::audit::publish(&store_path, &stream, format)
+                    }
+                    AuditCommand::Rollback { stream } => commands::audit::rollback_check(
+                        &store_path,
+                        backend.as_ref(),
+                        &stream,
+                        format,
+                    ),
+                    AuditCommand::Witness(w_cmd) => match w_cmd {
+                        AuditWitnessCommand::List { stream } => {
+                            commands::audit::witness_list(&store_path, &stream, format)
+                        }
+                        AuditWitnessCommand::Latest { stream } => {
+                            commands::audit::witness_latest(&store_path, &stream, format)
+                        }
+                        AuditWitnessCommand::Record { input } => {
+                            commands::audit::witness_record(&store_path, &input, format)
+                        }
+                        AuditWitnessCommand::Gc {
+                            stream,
+                            keep_latest,
+                            older_than,
+                            dry_run,
+                        } => commands::audit::witness_gc(
+                            &store_path,
+                            &stream,
+                            keep_latest,
+                            older_than.as_deref(),
+                            dry_run,
+                            format,
+                        ),
+                    },
+                },
+                Command::Graph => commands::graph::show(&store, format),
+                Command::Identity(id_cmd) => match id_cmd {
+                    IdentityCommand::Init {
+                        name,
+                        usage,
+                        algorithm,
+                        policy,
+                        subject,
+                        key_path,
+                    } => commands::identity::init(
+                        &store,
+                        backend.as_ref(),
+                        &name,
+                        &usage,
+                        &algorithm,
+                        policy.as_deref(),
+                        subject.as_deref(),
+                        key_path.as_deref(),
+                        format,
+                    ),
+                    IdentityCommand::Show { name } => {
+                        commands::identity::show(&store, &name, format)
+                    }
+                    IdentityCommand::List => commands::identity::list(&store, format),
+                    IdentityCommand::Rotate { name } => {
+                        commands::identity::rotate(&store, backend.as_ref(), &name, format)
+                    }
+                    IdentityCommand::Delete { name, cascade } => {
+                        commands::identity::delete(&store, &name, cascade)
+                    }
+                },
                 Command::Daemon(daemon_cmd) => match daemon_cmd {
                     DaemonCommand::Run { listen } => {
                         println!("starting tpmd on {}...", listen);

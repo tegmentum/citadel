@@ -17,3 +17,8 @@ tracing-subscriber.workspace = true
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 rustls = "0.23"
 rustls-pemfile = "2"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
