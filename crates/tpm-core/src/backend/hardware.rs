@@ -171,6 +171,34 @@ impl HardwareBackend {
 }
 
 impl HardwareBackend {
+    /// Verify a raw signature produced by a key whose public area is given by
+    /// `ak_public_bytes` (TPM2B_PUBLIC). Used by vTPM credential verification —
+    /// the message is hashed with SHA-256 and validated against `signature`
+    /// (a marshalled `TPMT_SIGNATURE`).
+    pub fn verify_signature(
+        &self,
+        ak_public_bytes: &[u8],
+        message: &[u8],
+        signature: &[u8],
+    ) -> anyhow::Result<bool> {
+        let mut ctx = self.open_context()?;
+        let ak_public = tss_esapi::structures::Public::unmarshall(ak_public_bytes)?;
+        let sig = tss_esapi::structures::Signature::unmarshall(signature)?;
+
+        let digest = ctx.hash(
+            MaxBuffer::try_from(message)?,
+            HashingAlgorithm::Sha256,
+            Hierarchy::Null,
+        )?;
+
+        let ak_handle = ctx.load_external_public(ak_public, Hierarchy::Null)?;
+        let result = ctx
+            .verify_signature(ak_handle.into(), digest.0, sig)
+            .is_ok();
+        ctx.flush_context(ak_handle.into())?;
+        Ok(result)
+    }
+
     fn tcti_label(&self) -> &'static str {
         match self.tcti {
             TctiNameConf::Device(..) => "hardware",

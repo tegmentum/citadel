@@ -1,6 +1,8 @@
 mod app;
 mod commands;
 mod plan;
+#[cfg(feature = "vtpm")]
+mod vtpm_bridge;
 
 use clap::CommandFactory;
 
@@ -17,7 +19,7 @@ use app::{
     IdentityCommand, KeyCommand,
     LogCommand, NvCommand, ObjectCommand, PcrBaselineCommand, PcrCommand, PolicyCommand,
     ProfileCommand, RecoverCommand, RepairCommand, SecretCommand, TemplateCommand,
-    WorkspaceCommand,
+    VtpmCommand, VtpmCredentialCommand, WorkspaceCommand,
 };
 
 fn default_store_path() -> std::path::PathBuf {
@@ -100,7 +102,7 @@ fn create_backend(name: &str) -> anyhow::Result<Box<dyn tpm_core::backend::TpmBa
                          or place it in ~/.local/share/tpm/"
                     )
                 })?;
-            Ok(Box::new(tpm_core::backend::VtpmBackend::new(&component_path)?))
+            Ok(Box::new(vtpm_bridge::VtpmBackend::new(&component_path)?))
         }
         #[cfg(not(feature = "vtpm"))]
         "vtpm" => {
@@ -224,7 +226,7 @@ fn auto_detect_backend() -> anyhow::Result<Box<dyn tpm_core::backend::TpmBackend
         ];
         for candidate in candidates.iter().flatten() {
             if candidate.exists() {
-                match tpm_core::backend::VtpmBackend::new(candidate) {
+                match vtpm_bridge::VtpmBackend::new(candidate) {
                     Ok(backend) => {
                         tracing::info!("auto-detected vTPM at {}", candidate.display());
                         return Ok(Box::new(backend));
@@ -734,6 +736,26 @@ fn main() -> anyhow::Result<()> {
                     IdentityCommand::Delete { name, cascade } => {
                         commands::identity::delete(&store, &name, cascade)
                     }
+                },
+                Command::Vtpm(vtpm_cmd) => match vtpm_cmd {
+                    VtpmCommand::Provision {
+                        hw_backend,
+                        out,
+                        label,
+                    } => commands::vtpm::provision(
+                        &hw_backend,
+                        out.as_deref(),
+                        label.as_deref(),
+                        format,
+                    ),
+                    VtpmCommand::Credential(cred_cmd) => match cred_cmd {
+                        VtpmCredentialCommand::Show { path } => {
+                            commands::vtpm::show(path.as_deref(), format)
+                        }
+                        VtpmCredentialCommand::Verify { hw_backend, path } => {
+                            commands::vtpm::verify(&hw_backend, path.as_deref(), format)
+                        }
+                    },
                 },
                 Command::Daemon(daemon_cmd) => match daemon_cmd {
                     DaemonCommand::Run { listen } => {

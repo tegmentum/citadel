@@ -19,4 +19,5 @@ pub mod repair;
 pub mod secret;
 pub mod status;
 pub mod template;
+pub mod vtpm;
 pub mod workspace;

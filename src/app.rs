@@ -132,6 +132,9 @@ pub enum Command {
     /// Daemon management
     #[command(subcommand)]
     Daemon(DaemonCommand),
+    /// vTPM endorsement (provision a hardware-rooted credential the vTPM can carry offline)
+    #[command(subcommand)]
+    Vtpm(VtpmCommand),
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for (bash, zsh, fish, elvish, powershell)
@@ -799,4 +802,42 @@ pub enum DaemonCommand {
     },
     /// Show daemon status
     Status,
+}
+
+#[derive(Subcommand)]
+pub enum VtpmCommand {
+    /// Provision a credential: hw-TPM signs an endorsement statement for the vTPM
+    Provision {
+        /// Hardware backend to provision against (`device` or `swtpm`)
+        #[arg(long, default_value = "device")]
+        hw_backend: String,
+        /// Path to write the credential file (defaults to $XDG_DATA_HOME/tpm/vtpm-credential.json)
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+        /// Free-form vTPM label baked into the signed identity
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Inspect or verify an existing credential
+    #[command(subcommand)]
+    Credential(VtpmCredentialCommand),
+}
+
+#[derive(Subcommand)]
+pub enum VtpmCredentialCommand {
+    /// Print credential metadata (offline)
+    Show {
+        /// Path to the credential file
+        #[arg(long)]
+        path: Option<std::path::PathBuf>,
+    },
+    /// Verify the credential signature against the hardware TPM
+    Verify {
+        /// Hardware backend to verify against (`device` or `swtpm`)
+        #[arg(long, default_value = "device")]
+        hw_backend: String,
+        /// Path to the credential file
+        #[arg(long)]
+        path: Option<std::path::PathBuf>,
+    },
 }
