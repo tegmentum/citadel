@@ -17,7 +17,7 @@ license = "Apache-2.0"
 [features]
 default = []
 tpm-hw = ["tpm-core/tpm-hw"]
-vtpm = ["tpm-core/vtpm"]
+vtpm = ["dep:vtpm-wasm"]
 
 [[bin]]
 name = "tpm"
@@ -26,6 +26,8 @@ path = "src/main.rs"
 [dependencies]
 tpm-core.workspace = true
 tpm-tui.workspace = true
+secure-log-sqlite = { path = "../secure-log/crates/secure-log-sqlite" }
+vtpm-wasm = { path = "../vtpm-wasm", optional = true }
 clap.workspace = true
 clap_complete.workspace = true
 serde.workspace = true

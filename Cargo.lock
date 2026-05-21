@@ -2615,6 +2615,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "secure-log"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chacha20poly1305",
+ "chrono",
+ "ciborium",
+ "hkdf",
+ "rand",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tracing",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "secure-log-sqlite"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rusqlite",
+ "secure-log",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "semver"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3147,6 +3176,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "rusqlite",
+ "secure-log-sqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -3155,6 +3185,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "vtpm-wasm",
 ]
 
 [[package]]
@@ -3162,24 +3193,19 @@ name = "tpm-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "chacha20poly1305",
  "chrono",
  "ciborium",
- "hkdf",
- "rand",
  "rusqlite",
+ "secure-log",
+ "secure-log-sqlite",
  "serde",
  "serde_json",
  "serde_yaml",
- "sha2",
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
  "tss-esapi",
  "uuid",
- "wasmtime",
- "wasmtime-wasi",
- "zeroize",
 ]
 
 [[package]]
@@ -3455,6 +3481,14 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vtpm-wasm"
+version = "0.1.0"
+dependencies = [
+ "wasmtime",
+ "wasmtime-wasi",
+]
 
 [[package]]
 name = "wasi"

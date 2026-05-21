@@ -22,7 +22,9 @@ use tpm_core::secure_log::{
     crypto::SecretKey, hash::hex, verify_inclusion_proof, witness::WitnessSubmission,
     CborEncoder, EntryFields, InclusionProof, NativeSecureLog, SecureLog, SegmentInfo,
 };
+use tpm_core::secure_log_signer::TpmCheckpointSigner;
 use tpm_core::store::Store;
+use secure_log_sqlite::SqliteSecureLogStore;
 
 /// Open a fresh secure-log instance backed by the given store path.
 /// The session id is freshly generated each invocation so CLI calls
@@ -36,9 +38,9 @@ use tpm_core::store::Store;
 /// on stores that contain encrypted entries — chain verification
 /// operates on stored bytes and does not care about decryption.
 fn open_log(store_path: &Path) -> anyhow::Result<NativeSecureLog> {
-    let store = Store::open(store_path)?;
+    let store = SqliteSecureLogStore::open(store_path)?;
     let head_path = tpm_core::secure_log::witness::HeadFile::path_for_store(store_path);
-    let mut log = NativeSecureLog::new(store, Box::new(CborEncoder::new()))
+    let mut log = NativeSecureLog::new(Box::new(store), Box::new(CborEncoder::new()))
         .with_head_file(head_path);
     // Best effort: only load the master key if it's in the
     // plaintext format. Sealed keys require a backend, which
@@ -57,9 +59,9 @@ fn open_log_with_backend(
     store_path: &Path,
     backend: &dyn TpmBackend,
 ) -> anyhow::Result<NativeSecureLog> {
-    let store = Store::open(store_path)?;
+    let store = SqliteSecureLogStore::open(store_path)?;
     let head_path = tpm_core::secure_log::witness::HeadFile::path_for_store(store_path);
-    let mut log = NativeSecureLog::new(store, Box::new(CborEncoder::new()))
+    let mut log = NativeSecureLog::new(Box::new(store), Box::new(CborEncoder::new()))
         .with_head_file(head_path);
     if let Some(key) = try_load_master_key_with_backend(store_path, backend)? {
         log = log.with_master_key(key);
@@ -972,8 +974,12 @@ pub fn sign(
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     let log = open_log(store_path)?;
+    // Identity resolution still needs the citadel Store; secure-log's
+    // store doesn't know about the identity tables.
+    let id_store = Store::open(store_path)?;
+    let signer = TpmCheckpointSigner::new(backend, &id_store);
     let (ckpt_hash, sig) = log
-        .sign_segment(backend, identity, segment_id)
+        .sign_segment(&signer, identity, segment_id)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     let out = SignOutput {
         segment_id,
@@ -1015,7 +1021,9 @@ pub fn verify(
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     let log = open_log(store_path)?;
-    match log.verify_checkpoint_chain(backend, stream) {
+    let id_store = Store::open(store_path)?;
+    let signer = TpmCheckpointSigner::new(backend, &id_store);
+    match log.verify_checkpoint_chain(&signer, stream) {
         Ok(count) => {
             let out = ChainVerifyOutput {
                 stream: stream.to_string(),
@@ -1103,7 +1111,9 @@ pub fn rollback_check(
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     let log = open_log(store_path)?;
-    match log.check_rollback(backend, stream) {
+    let id_store = Store::open(store_path)?;
+    let signer = TpmCheckpointSigner::new(backend, &id_store);
+    match log.check_rollback(&signer, stream) {
         Ok(()) => {
             let rec = log.head_record(stream).ok().flatten();
             let out = RollbackOutput {

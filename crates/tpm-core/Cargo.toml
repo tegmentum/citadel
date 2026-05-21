@@ -9,11 +9,6 @@ default = ["sqlite"]
 sqlite = ["dep:rusqlite"]
 # Enable real TPM hardware backend via tss-esapi.
 tpm-hw = ["dep:tss-esapi"]
-# Enable in-process vTPM via libtpms WASM component.
-vtpm = ["dep:wasmtime", "dep:wasmtime-wasi"]
-# Enable loading external WASM components that implement
-# wit/secure-log.wit (pluggable encoder / log backend).
-secure-log-wasm = ["dep:wasmtime", "dep:wasmtime-wasi"]
 
 [dependencies]
 serde.workspace = true
@@ -25,23 +20,18 @@ chrono.workspace = true
 uuid.workspace = true
 tracing.workspace = true
 
-# Cryptographic primitives for the secure log subsystem.
-# sha2 is the frozen hash for the WIT contract; ciborium provides
-# deterministic CBOR encoding per RFC 8949 §4.2.1.
-sha2 = "0.10"
+# Tamper-evident audit log: extracted to its own repo so other
+# projects can reuse it. tpm-core re-exports its public surface
+# and provides a TPM-backed CheckpointSigner.
+secure-log = { path = "../../../secure-log/crates/secure-log" }
+secure-log-sqlite = { path = "../../../secure-log/crates/secure-log-sqlite" }
+
+# Used by vtpm_credential.rs for canonical CBOR serialization of
+# vTPM credentials. Independent of secure-log's CBOR encoder.
 ciborium = "0.2"
-# Envelope encryption for Phase 5 secure-log payloads.
-chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc", "getrandom"] }
-hkdf = "0.12"
-zeroize = { version = "1", features = ["zeroize_derive"] }
-rand = { version = "0.8", default-features = false, features = ["getrandom"] }
 
 # Optional: SQLite persistence (native only)
 rusqlite = { workspace = true, optional = true }
-
-# Optional: in-process vTPM via WASM
-wasmtime = { version = "43", optional = true }
-wasmtime-wasi = { version = "43", optional = true }
 
 # Optional: real TPM backend (tss-esapi).
 #

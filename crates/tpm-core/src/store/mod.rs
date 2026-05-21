@@ -9,13 +9,20 @@ pub mod schema;
 pub mod sqlite;
 
 pub use memory::MemoryStore;
-pub use traits::{
-    AuditEntry, SecureLogRow, SecureLogSegmentRow, SecureLogStreamRow, StoreBackend,
-    WitnessLogRow,
-};
+pub use traits::{AuditEntry, StoreBackend};
 
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteStore;
+
+// Re-export the secure-log row types from the extracted crate so
+// existing `use tpm_core::store::{SecureLogRow, ...}` import paths
+// keep working.
+pub use ::secure_log::{
+    SecureLogRow, SecureLogSegmentRow, SecureLogStore, SecureLogStreamRow, WitnessLogRow,
+};
+
+#[cfg(feature = "sqlite")]
+use secure_log_sqlite::SqliteSecureLogStore;
 
 use crate::model::{Identity, ObjectPath, Policy, Profile, TpmObject};
 
@@ -24,36 +31,66 @@ use crate::model::{Identity, ObjectPath, Policy, Profile, TpmObject};
 /// Wraps a `StoreBackend` implementation. On native targets with the
 /// `sqlite` feature (default), use `Store::open()` for SQLite persistence.
 /// On WASM or for tests, use `Store::memory()` for an in-memory backend.
+///
+/// SQLite-backed stores additionally hold a sibling
+/// [`SqliteSecureLogStore`] connection for the tamper-evident audit
+/// log, exposed via the `secure_log_*` / `witness_log_*` delegation
+/// methods. Memory-backed stores do not provide secure-log
+/// functionality — those methods will panic if called on a memory
+/// store. This matches the prior contract, where the secure-log
+/// tables only existed under the SQLite schema.
 pub struct Store {
     inner: Box<dyn StoreBackend>,
+    #[cfg(feature = "sqlite")]
+    secure_log: Option<SqliteSecureLogStore>,
 }
 
 impl Store {
     /// Create a store backed by the given backend.
+    ///
+    /// The secure-log side is left disabled; use `Store::open()` for
+    /// a fully-functional SQLite-backed store.
     pub fn new(backend: Box<dyn StoreBackend>) -> Self {
-        Self { inner: backend }
+        Self {
+            inner: backend,
+            #[cfg(feature = "sqlite")]
+            secure_log: None,
+        }
     }
 
     /// Create an in-memory store (works everywhere, including WASM).
+    ///
+    /// Memory stores do not provide secure-log functionality.
     pub fn memory() -> Self {
         Self {
             inner: Box::new(MemoryStore::new()),
+            #[cfg(feature = "sqlite")]
+            secure_log: None,
         }
     }
 
     /// Open a SQLite-backed store at the given path.
     #[cfg(feature = "sqlite")]
     pub fn open(path: &std::path::Path) -> anyhow::Result<Self> {
+        let inner: Box<dyn StoreBackend> = Box::new(SqliteStore::open(path)?);
+        let secure_log = SqliteSecureLogStore::open(path)?;
         Ok(Self {
-            inner: Box::new(SqliteStore::open(path)?),
+            inner,
+            secure_log: Some(secure_log),
         })
     }
 
     /// Open an in-memory SQLite store (for tests that need SQL semantics).
+    ///
+    /// Note: the secure-log side opens its own separate in-memory
+    /// database, so the two will not see each other's rows. For
+    /// tests that need both to share data, use `Store::open()` with
+    /// a tempfile.
     #[cfg(feature = "sqlite")]
     pub fn open_memory() -> anyhow::Result<Self> {
         Ok(Self {
             inner: Box::new(SqliteStore::open_memory()?),
+            secure_log: Some(SqliteSecureLogStore::open_in_memory()?),
         })
     }
 
@@ -61,6 +98,18 @@ impl Store {
     #[cfg(not(feature = "sqlite"))]
     pub fn open_memory() -> anyhow::Result<Self> {
         Ok(Self::memory())
+    }
+
+    /// Borrow the sibling secure-log store.
+    ///
+    /// Panics if this `Store` was created without a SQLite backend
+    /// (i.e. via `Store::new` with a custom backend or via
+    /// `Store::memory()`).
+    #[cfg(feature = "sqlite")]
+    pub fn secure_log_store(&self) -> &SqliteSecureLogStore {
+        self.secure_log
+            .as_ref()
+            .expect("secure-log store is only available on SQLite-backed Store instances")
     }
 
     // -- Delegation --
@@ -242,110 +291,145 @@ impl Store {
         self.inner.delete_identity(name)
     }
 
-    // -- Secure log --
+    // -- Secure log delegation --
+    //
+    // All methods below forward to the sibling SqliteSecureLogStore
+    // owned by this Store, panicking if it was constructed without a
+    // SQLite backend. The extracted `secure-log` crate is the
+    // authoritative implementation; these methods are kept on Store
+    // for backward compatibility with existing call sites.
 
+    #[cfg(feature = "sqlite")]
     pub fn secure_log_insert(&self, row: &SecureLogRow) -> anyhow::Result<u64> {
-        self.inner.secure_log_insert(row)
+        self.secure_log_store().secure_log_insert(row)
     }
+    #[cfg(feature = "sqlite")]
     pub fn secure_log_global_head(&self) -> anyhow::Result<Option<u64>> {
-        self.inner.secure_log_global_head()
+        self.secure_log_store().secure_log_global_head()
     }
+    #[cfg(feature = "sqlite")]
     pub fn secure_log_get(&self, seqno: u64) -> anyhow::Result<Option<SecureLogRow>> {
-        self.inner.secure_log_get(seqno)
+        self.secure_log_store().secure_log_get(seqno)
     }
+    #[cfg(feature = "sqlite")]
     pub fn secure_log_range(
         &self,
         stream_id: &str,
         from: u64,
         to: u64,
     ) -> anyhow::Result<Vec<SecureLogRow>> {
-        self.inner.secure_log_range(stream_id, from, to)
+        self.secure_log_store().secure_log_range(stream_id, from, to)
     }
+    #[cfg(feature = "sqlite")]
     pub fn secure_log_head(&self, stream_id: &str) -> anyhow::Result<Option<u64>> {
-        self.inner.secure_log_head(stream_id)
+        self.secure_log_store().secure_log_head(stream_id)
     }
+    #[cfg(feature = "sqlite")]
     pub fn secure_log_last(&self, stream_id: &str) -> anyhow::Result<Option<SecureLogRow>> {
-        self.inner.secure_log_last(stream_id)
+        self.secure_log_store().secure_log_last(stream_id)
     }
+    #[cfg(feature = "sqlite")]
     pub fn secure_log_segment_insert(
         &self,
         row: &SecureLogSegmentRow,
         entries: &[(u64, u64)],
     ) -> anyhow::Result<u64> {
-        self.inner.secure_log_segment_insert(row, entries)
+        self.secure_log_store().secure_log_segment_insert(row, entries)
     }
+    #[cfg(feature = "sqlite")]
     pub fn secure_log_segment_get(
         &self,
         segment_id: u64,
     ) -> anyhow::Result<Option<SecureLogSegmentRow>> {
-        self.inner.secure_log_segment_get(segment_id)
+        self.secure_log_store().secure_log_segment_get(segment_id)
     }
+    #[cfg(feature = "sqlite")]
     pub fn secure_log_segments_list(
         &self,
         stream_id: &str,
     ) -> anyhow::Result<Vec<SecureLogSegmentRow>> {
-        self.inner.secure_log_segments_list(stream_id)
+        self.secure_log_store().secure_log_segments_list(stream_id)
     }
-    pub fn secure_log_segment_last_seqno(&self, stream_id: &str) -> anyhow::Result<Option<u64>> {
-        self.inner.secure_log_segment_last_seqno(stream_id)
+    #[cfg(feature = "sqlite")]
+    pub fn secure_log_segment_last_seqno(
+        &self,
+        stream_id: &str,
+    ) -> anyhow::Result<Option<u64>> {
+        self.secure_log_store().secure_log_segment_last_seqno(stream_id)
     }
-    pub fn secure_log_segment_entry_seqnos(&self, segment_id: u64) -> anyhow::Result<Vec<u64>> {
-        self.inner.secure_log_segment_entry_seqnos(segment_id)
+    #[cfg(feature = "sqlite")]
+    pub fn secure_log_segment_entry_seqnos(
+        &self,
+        segment_id: u64,
+    ) -> anyhow::Result<Vec<u64>> {
+        self.secure_log_store().secure_log_segment_entry_seqnos(segment_id)
     }
+    #[cfg(feature = "sqlite")]
     pub fn secure_log_segment_for_seqno(&self, seqno: u64) -> anyhow::Result<Option<u64>> {
-        self.inner.secure_log_segment_for_seqno(seqno)
+        self.secure_log_store().secure_log_segment_for_seqno(seqno)
     }
+    #[cfg(feature = "sqlite")]
     pub fn secure_log_segment_set_signature(
         &self,
         segment_id: u64,
         signature: &[u8],
         signer_identity: &str,
     ) -> anyhow::Result<()> {
-        self.inner
+        self.secure_log_store()
             .secure_log_segment_set_signature(segment_id, signature, signer_identity)
     }
+    #[cfg(feature = "sqlite")]
     pub fn witness_log_insert(&self, row: &WitnessLogRow) -> anyhow::Result<u64> {
-        self.inner.witness_log_insert(row)
+        self.secure_log_store().witness_log_insert(row)
     }
+    #[cfg(feature = "sqlite")]
     pub fn witness_log_latest(&self, stream_id: &str) -> anyhow::Result<Option<WitnessLogRow>> {
-        self.inner.witness_log_latest(stream_id)
+        self.secure_log_store().witness_log_latest(stream_id)
     }
+    #[cfg(feature = "sqlite")]
     pub fn witness_log_list(&self, stream_id: &str) -> anyhow::Result<Vec<WitnessLogRow>> {
-        self.inner.witness_log_list(stream_id)
+        self.secure_log_store().witness_log_list(stream_id)
     }
+    #[cfg(feature = "sqlite")]
     pub fn witness_log_stream_ids(&self) -> anyhow::Result<Vec<String>> {
-        self.inner.witness_log_stream_ids()
+        self.secure_log_store().witness_log_stream_ids()
     }
+    #[cfg(feature = "sqlite")]
     pub fn witness_log_gc(
         &self,
         stream_id: Option<&str>,
         keep_latest: Option<usize>,
         older_than_rfc3339: Option<&str>,
     ) -> anyhow::Result<usize> {
-        self.inner
+        self.secure_log_store()
             .witness_log_gc(stream_id, keep_latest, older_than_rfc3339)
     }
+    #[cfg(feature = "sqlite")]
     pub fn secure_log_stream_upsert(&self, row: &SecureLogStreamRow) -> anyhow::Result<()> {
-        self.inner.secure_log_stream_upsert(row)
+        self.secure_log_store().secure_log_stream_upsert(row)
     }
+    #[cfg(feature = "sqlite")]
     pub fn secure_log_stream_get(
         &self,
         name: &str,
     ) -> anyhow::Result<Option<SecureLogStreamRow>> {
-        self.inner.secure_log_stream_get(name)
+        self.secure_log_store().secure_log_stream_get(name)
     }
+    #[cfg(feature = "sqlite")]
     pub fn secure_log_stream_list(&self) -> anyhow::Result<Vec<SecureLogStreamRow>> {
-        self.inner.secure_log_stream_list()
+        self.secure_log_store().secure_log_stream_list()
     }
+    #[cfg(feature = "sqlite")]
     pub fn secure_log_stream_set_tier(&self, name: &str, tier: &str) -> anyhow::Result<()> {
-        self.inner.secure_log_stream_set_tier(name, tier)
+        self.secure_log_store().secure_log_stream_set_tier(name, tier)
     }
+    #[cfg(feature = "sqlite")]
     pub fn secure_log_stream_deprecate(
         &self,
         name: &str,
         deprecated_at_rfc3339: &str,
     ) -> anyhow::Result<()> {
-        self.inner
+        self.secure_log_store()
             .secure_log_stream_deprecate(name, deprecated_at_rfc3339)
     }
 }
