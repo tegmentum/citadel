@@ -38,6 +38,16 @@ impl SqliteStore {
         Ok(store)
     }
 
+    /// Build a store from an existing connection. The caller owns any
+    /// PRAGMA configuration; migrations run automatically. Used to back
+    /// the store with a shared-cache in-memory database it co-inhabits
+    /// with the secure-log store (see `Store::open_memory`).
+    pub fn from_connection(conn: Connection) -> anyhow::Result<Self> {
+        let store = Self { conn };
+        store.migrate()?;
+        Ok(store)
+    }
+
     fn migrate(&self) -> anyhow::Result<()> {
         self.conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS migrations (
