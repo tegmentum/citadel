@@ -17,7 +17,8 @@ use app::{
     AttestCommand, AuditChainCommand, AuditCommand, AuditKeyCommand, AuditSegmentsCommand,
     AuditStreamsCommand, AuditWitnessCommand, Cli, Command, DaemonCommand, GcCommand,
     IdentityCommand, KeyCommand,
-    LogCommand, NvCommand, ObjectCommand, PcrBaselineCommand, PcrCommand, PolicyCommand,
+    LogCommand, MeasureCommand, NvCommand, ObjectCommand, PcrBaselineCommand, PcrCommand,
+    PolicyCommand,
     ProfileCommand, RecoverCommand, RepairCommand, SecretCommand, TemplateCommand,
     VtpmCommand, VtpmCredentialCommand, WorkspaceCommand,
 };
@@ -718,6 +719,45 @@ fn main() -> anyhow::Result<()> {
                             format,
                         ),
                     },
+                },
+                Command::Measure(measure_cmd) => match measure_cmd {
+                    MeasureCommand::File {
+                        artifact,
+                        kind,
+                        bank,
+                        pcr,
+                    } => commands::measure::file(
+                        &store_path,
+                        backend.as_ref(),
+                        &artifact,
+                        &kind,
+                        &bank,
+                        pcr,
+                        format,
+                    ),
+                    MeasureCommand::Ima { from } => commands::measure::ima(
+                        &store_path,
+                        backend.as_ref(),
+                        from.as_deref(),
+                        format,
+                    ),
+                    MeasureCommand::Checkpoint => {
+                        commands::measure::checkpoint(&store_path, format)
+                    }
+                    MeasureCommand::Sign {
+                        segment_id,
+                        identity,
+                    } => commands::measure::sign(
+                        &store_path,
+                        backend.as_ref(),
+                        segment_id,
+                        &identity,
+                        format,
+                    ),
+                    MeasureCommand::Verify { seqno } => {
+                        commands::measure::verify(&store_path, seqno, format)
+                    }
+                    MeasureCommand::List => commands::measure::list(&store_path, format),
                 },
                 Command::Graph => commands::graph::show(&store, format),
                 Command::Identity(id_cmd) => match id_cmd {

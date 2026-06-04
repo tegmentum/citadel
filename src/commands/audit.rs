@@ -486,6 +486,36 @@ pub fn key_show(store_path: &Path) -> anyhow::Result<()> {
 
 // -- append --
 
+/// Append an entry with raw payload bytes and return the assigned
+/// seqno, without printing. Shared core used by `append` and by the
+/// `tpm measure` commands (which build structured payloads).
+#[allow(clippy::too_many_arguments)]
+pub fn append_value(
+    store_path: &Path,
+    backend: &dyn TpmBackend,
+    stream: &str,
+    event: &str,
+    severity: &str,
+    producer: &str,
+    payload: &[u8],
+    encrypt: bool,
+) -> anyhow::Result<u64> {
+    let effective_encrypt = {
+        let store = Store::open(store_path)?;
+        effective_encryption(&store, stream, encrypt)?
+    };
+    let result = if effective_encrypt {
+        let log = open_log_with_backend(store_path, backend)?;
+        log.append_encrypted(stream, event, severity, producer, payload)
+            .map_err(|e| anyhow::anyhow!("{}", e))?
+    } else {
+        let log = open_log(store_path)?;
+        log.append(stream, event, severity, producer, payload)
+            .map_err(|e| anyhow::anyhow!("{}", e))?
+    };
+    Ok(result.seqno)
+}
+
 pub fn append(
     store_path: &Path,
     backend: &dyn TpmBackend,

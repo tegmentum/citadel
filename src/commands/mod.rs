@@ -9,6 +9,7 @@ pub mod identity;
 pub mod init;
 pub mod key;
 pub mod log;
+pub mod measure;
 pub mod nv;
 pub mod object;
 pub mod pcr;

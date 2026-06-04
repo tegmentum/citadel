@@ -127,6 +127,9 @@ pub enum Command {
     /// Tamper-evident secure log (hash-chained, Merkle-sealed, TPM-signed)
     #[command(subcommand)]
     Audit(AuditCommand),
+    /// Measure artifacts/applications into the Merkle-anchored log
+    #[command(subcommand)]
+    Measure(MeasureCommand),
     /// Render the workspace dependency graph
     Graph,
     /// Daemon management
@@ -398,6 +401,52 @@ pub enum PcrCommand {
     /// PCR baseline management
     #[command(subcommand)]
     Baseline(PcrBaselineCommand),
+}
+
+#[derive(Subcommand)]
+pub enum MeasureCommand {
+    /// Measure an artifact directly (citadel hashes it)
+    File {
+        /// Path to the artifact to measure
+        artifact: std::path::PathBuf,
+
+        /// Logical kind of the artifact
+        #[arg(long, default_value = "binary")]
+        kind: String,
+
+        /// Hash bank
+        #[arg(long, default_value = "sha256")]
+        bank: String,
+
+        /// Also extend this PCR index with the measurement digest
+        #[arg(long)]
+        pcr: Option<u32>,
+    },
+    /// Ingest the kernel IMA runtime measurement list (delegated source)
+    Ima {
+        /// Read IMA measurements from this file instead of the default
+        /// /sys/kernel/security/ima/ascii_runtime_measurements
+        #[arg(long)]
+        from: Option<std::path::PathBuf>,
+    },
+    /// Seal a Merkle segment over pending measurements (the tree root)
+    Checkpoint,
+    /// Sign a sealed segment's root with a TPM-backed identity
+    Sign {
+        /// Segment id to sign
+        segment_id: u64,
+
+        /// Identity name (see `tpm identity list`)
+        #[arg(long)]
+        identity: String,
+    },
+    /// Prove a measurement (by seqno) is included under a sealed root
+    Verify {
+        /// Measurement entry seqno
+        seqno: u64,
+    },
+    /// List sealed measurement segments (Merkle roots)
+    List,
 }
 
 #[derive(Subcommand)]
