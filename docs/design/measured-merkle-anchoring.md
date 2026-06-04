@@ -1,6 +1,6 @@
 # Design: Measured Merkle Anchoring, Measurement, and Sealing
 
-Status: Draft
+Status: Phases 0–2 implemented (see Progress below)
 Audience: citadel maintainers
 Related: `crates/tpm-core/src/backend/traits.rs`, `secure-log` (sibling repo), `src/commands/{pcr,secret,attest,policy,identity,audit}.rs`
 
@@ -216,6 +216,28 @@ makes the existing `policy create --pcr` path real end-to-end.
 - Anti-rollback: reuse the secure-log head file; consider a TPM NV monotonic
   counter for the checkpoint sequence (defense against head-file rollback).
 
+## Progress
+
+- **Phase 0 — DONE** (`feat(pcr): add pcr_extend ...`): `TpmBackend::pcr_extend`
+  + `hash_for_bank`/`bank_digest_size`/`pcr_fold`; mock (tested), vTPM
+  (`TPM2_CC_PCR_Extend`), hardware (tss-esapi, compile-unverified — no system
+  tpm2-tss in CI); `tpm pcr extend` command.
+- **Phase 1 — DONE** (`feat(secret): genuine PCR-policy sealing ...`):
+  `TpmBackend::pcr_policy_digest` (default method computing the standard sha256
+  PolicyPCR digest); `secret seal`/`unseal` bind to and enforce it; replaces the
+  UUID placeholder. Tested: bound secret unseals then is refused after the bound
+  PCR is extended.
+- **Phase 2 — DONE** (`feat(measure): Merkle-anchored measurement log ...`):
+  `tpm measure file` (direct), `tpm measure ima` (delegated — both sourcing
+  modes supported per decision on open question #1), `checkpoint`/`sign`/
+  `verify`/`list` over a dedicated `measurement` secure-log stream. End-to-end
+  validated on mock.
+- **Phases 3–5 — TODO** (see plan + refinement notes below).
+
+Open-question decisions taken:
+- #1 (who hashes): support **both** — direct (`measure file`) and IMA delegation
+  (`measure ima`). Implemented.
+
 ## 6. Phased implementation plan
 
 **Phase 0 — PCR extend primitive.**
@@ -239,6 +261,16 @@ Create the measurement-signing identity with a PCR policy over the TCB PCRs
 (`identity init --policy`). Verify the key is unusable when PCRs differ (mock by
 forcing a mismatch). Document the bootstrap (how citadel's own measurement gets
 into a TCB PCR — IMA-appraisal or a measured launcher).
+
+Refinement needed: enforcing "key usable only in the expected measured state"
+requires *expected* PCR values, not just *which* PCRs. The `PolicyRule::PcrMatch`
+model names indices but not golden values. Plan: bind the signing identity to a
+named `pcr baseline` (citadel already has `pcr baseline save`), and have the
+checkpoint signer verify `current PCRs == baseline` (via `pcr_policy_digest`)
+before signing — mirroring the Phase 1 unseal gate. Real TPM-enforced policy-
+session signing (StartAuthSession + PolicyPCR + sign under session) is the
+stronger follow-on, but needs raw policy-session marshalling in the vTPM/hardware
+backends and on-hardware validation.
 
 **Phase 4 — Attestation integration.**
 Extend `attest quote` to include the latest signed measurement checkpoint
