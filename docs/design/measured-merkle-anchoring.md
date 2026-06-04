@@ -1,6 +1,6 @@
 # Design: Measured Merkle Anchoring, Measurement, and Sealing
 
-Status: Phases 0–4 implemented (see Progress below)
+Status: Phases 0–5 implemented (Part 5 partial — see Progress below)
 Audience: citadel maintainers
 Related: `crates/tpm-core/src/backend/traits.rs`, `secure-log` (sibling repo), `src/commands/{pcr,secret,attest,policy,identity,audit}.rs`
 
@@ -245,8 +245,18 @@ makes the existing `policy create --pcr` path real end-to-end.
   quote and the bundled checkpoint's signature chain
   (`audit::verify_checkpoint_chain`). Bare quotes remain backward compatible.
   Validated end-to-end on mock.
-- **Phase 5 — TODO** (optional root-in-PCR for seal-to-attested-set; NV
-  monotonic anti-rollback counter; real TPM-enforced policy-session signing).
+- **Phase 5 — PARTIAL** (`feat(measure): root-in-PCR ...`):
+  - *Done:* `measure checkpoint --extend-pcr <index>` anchors the Merkle root
+    into a PCR so secrets can be sealed to the attested set; capstone test
+    (`seal_to_attested_set_breaks_when_the_measured_set_changes`) exercises
+    Phases 0/1/2/5 together. `TpmBackend::nv_increment` monotonic-counter
+    primitive (mock-tested) + `measure anchor-counter`.
+  - *Remaining:* (a) bind the NV counter value into the signed checkpoint so a
+    verifier can detect rollback — needs secure-log support; (b) vTPM/hardware
+    `nv_increment` via `TPM2_NV_Increment` incl. counter-NV provisioning;
+    (c) real TPM-enforced policy-session signing (StartAuthSession + PolicyPCR +
+    sign-under-session) — replaces the citadel-side measured-state gate with
+    hardware enforcement. All of (b)/(c) need on-hardware validation.
 
 Open-question decisions taken:
 - #1 (who hashes): support **both** — direct (`measure file`) and IMA delegation
