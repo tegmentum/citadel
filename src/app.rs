@@ -234,6 +234,12 @@ pub enum AttestCommand {
         #[arg(long)]
         nonce: Option<String>,
 
+        /// Bundle the latest signed measurement checkpoint from this
+        /// stream (defaults to "measurement" when the flag is given
+        /// without a value)
+        #[arg(long, num_args = 0..=1, default_missing_value = "measurement")]
+        with_measurements: Option<String>,
+
         /// Output file for quote JSON
         #[arg(long)]
         output: Option<std::path::PathBuf>,

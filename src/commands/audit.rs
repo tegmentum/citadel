@@ -996,6 +996,37 @@ impl TextRenderable for ProofOutput {
 
 // -- sign / verify --
 
+/// Return the most recent *signed* segment for a stream, if any.
+/// Used by attestation to bundle the latest measurement checkpoint.
+pub fn latest_signed_segment(
+    store_path: &Path,
+    stream: &str,
+) -> anyhow::Result<Option<SegmentInfo>> {
+    let log = open_log(store_path)?;
+    let segs = log
+        .list_segments(stream)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    Ok(segs
+        .into_iter()
+        .filter(|s| !s.signature.is_empty())
+        .max_by_key(|s| s.segment_id))
+}
+
+/// Verify the checkpoint signature chain for a stream, returning the
+/// number of segments verified. Non-printing core shared by the audit
+/// verify command and attestation.
+pub fn verify_checkpoint_chain(
+    store_path: &Path,
+    backend: &dyn TpmBackend,
+    stream: &str,
+) -> anyhow::Result<usize> {
+    let log = open_log(store_path)?;
+    let id_store = Store::open(store_path)?;
+    let signer = TpmCheckpointSigner::new(backend, &id_store);
+    log.verify_checkpoint_chain(&signer, stream)
+        .map_err(|e| anyhow::anyhow!("{}", e))
+}
+
 /// Build a measured-state guard from a saved PCR baseline: the expected
 /// PolicyPCR digest over the baseline's recorded values.
 fn build_pcr_guard(store: &Store, baseline_name: &str) -> anyhow::Result<PcrGuard> {
