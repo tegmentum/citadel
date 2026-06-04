@@ -3,7 +3,18 @@ set -euo pipefail
 
 INSTALL_DIR="${HOME}/.local/bin"
 
-echo "Building tpm (release, with vtpm)..."
+echo "Building tpm (release, with vtpm) from published git dependencies..."
+
+# The build depends on secure-log / vtpm-wasm as git dependencies. If a
+# local development override is present (a gitignored .cargo/config.toml
+# that [patch]es those deps to sibling working copies), set it aside for
+# the release build so install.sh always builds against the published git
+# dependencies. It is restored when the script exits (success or failure).
+if [ -f .cargo/config.toml ]; then
+    mv .cargo/config.toml .cargo/config.toml.install-bak
+    trap 'mv .cargo/config.toml.install-bak .cargo/config.toml' EXIT
+fi
+
 cargo build --release --features vtpm -p tpm 2>&1 | tail -1
 
 mkdir -p "$INSTALL_DIR"
