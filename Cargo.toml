@@ -26,8 +26,8 @@ path = "src/main.rs"
 [dependencies]
 tpm-core.workspace = true
 tpm-tui.workspace = true
-secure-log-sqlite = { path = "../secure-log/crates/secure-log-sqlite" }
-vtpm-wasm = { path = "../vtpm-wasm", optional = true }
+secure-log-sqlite = { git = "https://github.com/tegmentum/secure-log.git", branch = "main" }
+vtpm-wasm = { git = "https://github.com/tegmentum/vtpm-wasm.git", branch = "main", optional = true }
 clap.workspace = true
 clap_complete.workspace = true
 serde.workspace = true

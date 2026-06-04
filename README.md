@@ -1,4 +1,4 @@
-# tpm
+# Citadel
 
 A stateful, operator-friendly TPM platform. Replaces low-level `tpm2-tools` with a resource-oriented interface built around named objects, declarative policies, explainable errors, and structured output.
 

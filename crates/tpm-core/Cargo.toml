@@ -23,8 +23,8 @@ tracing.workspace = true
 # Tamper-evident audit log: extracted to its own repo so other
 # projects can reuse it. tpm-core re-exports its public surface
 # and provides a TPM-backed CheckpointSigner.
-secure-log = { path = "../../../secure-log/crates/secure-log" }
-secure-log-sqlite = { path = "../../../secure-log/crates/secure-log-sqlite" }
+secure-log = { git = "https://github.com/tegmentum/secure-log.git", branch = "main" }
+secure-log-sqlite = { git = "https://github.com/tegmentum/secure-log.git", branch = "main" }
 
 # Used by vtpm_credential.rs for canonical CBOR serialization of
 # vTPM credentials. Independent of secure-log's CBOR encoder.
