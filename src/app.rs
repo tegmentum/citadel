@@ -378,6 +378,23 @@ pub enum PcrCommand {
         #[arg(long, value_delimiter = ',', default_values_t = vec![0, 1, 2, 3, 4, 5, 6, 7])]
         index: Vec<u32>,
     },
+    /// Extend a PCR with a measurement: PCR = H(PCR || digest)
+    Extend {
+        /// PCR bank
+        #[arg(long, default_value = "sha256")]
+        bank: String,
+
+        /// PCR index to extend
+        index: u32,
+
+        /// Hash a file's contents and extend with the resulting digest
+        #[arg(long, conflicts_with = "value")]
+        input: Option<std::path::PathBuf>,
+
+        /// Extend with this raw digest (hex), must match the bank size
+        #[arg(long, conflicts_with = "input")]
+        value: Option<String>,
+    },
     /// PCR baseline management
     #[command(subcommand)]
     Baseline(PcrBaselineCommand),

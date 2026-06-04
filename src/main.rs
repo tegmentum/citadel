@@ -454,6 +454,19 @@ fn main() -> anyhow::Result<()> {
                     PcrCommand::Show { bank, index } => {
                         commands::pcr::show(backend.as_ref(), &bank, &index, format)
                     }
+                    PcrCommand::Extend {
+                        bank,
+                        index,
+                        input,
+                        value,
+                    } => commands::pcr::extend(
+                        backend.as_ref(),
+                        &bank,
+                        index,
+                        input.as_deref(),
+                        value.as_deref(),
+                        format,
+                    ),
                     PcrCommand::Baseline(bl_cmd) => match bl_cmd {
                         PcrBaselineCommand::Save { name, bank, index } => {
                             commands::pcr::baseline_save(

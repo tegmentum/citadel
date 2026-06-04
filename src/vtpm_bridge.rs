@@ -23,6 +23,7 @@ const TPM2_CC_SIGN: u32 = 0x0000015D;
 const TPM2_CC_FLUSH_CONTEXT: u32 = 0x00000165;
 const TPM2_CC_GET_RANDOM: u32 = 0x0000017B;
 const TPM2_CC_PCR_READ: u32 = 0x0000017E;
+const TPM2_CC_PCR_EXTEND: u32 = 0x00000182;
 
 const TPM_RH_OWNER: u32 = 0x40000001;
 const TPM_RS_PW: u32 = 0x40000009;
@@ -263,6 +264,32 @@ impl TpmBackend for VtpmBackend {
         }
     }
 
+    fn pcr_extend(&self, bank: &str, index: u32, digest: &[u8]) -> anyhow::Result<()> {
+        let hash_alg: u16 = match bank {
+            "sha256" => 0x000B,
+            "sha384" => 0x000C,
+            "sha1" => 0x0004,
+            _ => anyhow::bail!("unsupported bank: {}", bank),
+        };
+        let expected = match bank {
+            "sha256" => 32,
+            "sha384" => 48,
+            "sha1" => 20,
+            _ => 32,
+        };
+        if digest.len() != expected {
+            anyhow::bail!(
+                "pcr_extend: digest is {} bytes, expected {} for bank '{}'",
+                digest.len(),
+                expected,
+                bank
+            );
+        }
+        let mut engine = self.engine.lock().unwrap();
+        send_command(&mut engine, &build_pcr_extend_cmd(hash_alg, index, digest))?;
+        Ok(())
+    }
+
     fn pcr_read(&self, bank: &str, indices: &[u32]) -> anyhow::Result<Vec<PcrValue>> {
         let mut engine = self.engine.lock().unwrap();
         let hash_alg: u16 = match bank {
@@ -426,6 +453,30 @@ fn build_pcr_read_cmd(hash_alg: u16, pcr_index: u32) -> Vec<u8> {
         sel[(pcr_index / 8) as usize] = 1 << (pcr_index % 8);
     }
     c.extend_from_slice(&sel);
+    let size = c.len() as u32;
+    c[2..6].copy_from_slice(&size.to_be_bytes());
+    c
+}
+
+fn build_pcr_extend_cmd(hash_alg: u16, pcr_index: u32, digest: &[u8]) -> Vec<u8> {
+    let mut c = Vec::new();
+    c.extend_from_slice(&TPM_ST_SESSIONS.to_be_bytes());
+    c.extend_from_slice(&0u32.to_be_bytes()); // size placeholder
+    c.extend_from_slice(&TPM2_CC_PCR_EXTEND.to_be_bytes());
+    // pcrHandle: the PCR index is its own handle (0..23).
+    c.extend_from_slice(&pcr_index.to_be_bytes());
+    // Authorization area: empty password session (TPM_RS_PW).
+    let mut auth = Vec::new();
+    auth.extend_from_slice(&TPM_RS_PW.to_be_bytes());
+    auth.extend_from_slice(&0u16.to_be_bytes()); // nonce (empty)
+    auth.push(0x00); // sessionAttributes
+    auth.extend_from_slice(&0u16.to_be_bytes()); // hmac/password (empty)
+    c.extend_from_slice(&(auth.len() as u32).to_be_bytes());
+    c.extend_from_slice(&auth);
+    // digests: TPML_DIGEST_VALUES { count, [TPMT_HA{ hashAlg, digest }] }
+    c.extend_from_slice(&1u32.to_be_bytes());
+    c.extend_from_slice(&hash_alg.to_be_bytes());
+    c.extend_from_slice(digest);
     let size = c.len() as u32;
     c[2..6].copy_from_slice(&size.to_be_bytes());
     c

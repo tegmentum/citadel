@@ -43,6 +43,13 @@ pub trait TpmBackend: Send + Sync {
     /// Read PCR values for the given bank and indices.
     fn pcr_read(&self, bank: &str, indices: &[u32]) -> anyhow::Result<Vec<PcrValue>>;
 
+    /// Extend PCR `index` of `bank` with `digest`: `PCR = H(PCR ‖ digest)`.
+    ///
+    /// `digest` must be the bank's hash size (e.g. 32 bytes for sha256);
+    /// it is the already-hashed measurement, matching TPM2_PCR_Extend
+    /// semantics. Use [`hash_for_bank`] to derive a digest from raw bytes.
+    fn pcr_extend(&self, bank: &str, index: u32, digest: &[u8]) -> anyhow::Result<()>;
+
     /// Define an NV index with the given size.
     fn nv_define(&self, index: u32, size: usize) -> anyhow::Result<()>;
 
@@ -136,4 +143,41 @@ pub struct PcrMatchResult {
     pub expected: String,
     pub actual: String,
     pub matches: bool,
+}
+
+/// Digest size in bytes for a named PCR/hash bank.
+pub fn bank_digest_size(bank: &str) -> anyhow::Result<usize> {
+    match bank {
+        "sha256" => Ok(32),
+        "sha384" => Ok(48),
+        "sha1" => Ok(20),
+        other => anyhow::bail!("unsupported PCR bank: {other}"),
+    }
+}
+
+/// Hash raw bytes to a digest in the given bank, for feeding into
+/// [`TpmBackend::pcr_extend`] or as a Merkle-log measurement leaf.
+///
+/// Only `sha256` is implemented today (the default citadel bank);
+/// `sha384`/`sha1` are recognized by [`bank_digest_size`] for read/quote
+/// paths but cannot be produced here yet.
+pub fn hash_for_bank(bank: &str, data: &[u8]) -> anyhow::Result<Vec<u8>> {
+    match bank {
+        "sha256" => {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(data);
+            Ok(h.finalize().to_vec())
+        }
+        other => anyhow::bail!("hashing for bank '{other}' is not supported (use sha256)"),
+    }
+}
+
+/// Fold a measurement into a PCR value in software: `H(pcr ‖ digest)`.
+/// Used by software/mock backends to mirror TPM2_PCR_Extend.
+pub fn pcr_fold(bank: &str, current: &[u8], digest: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let mut buf = Vec::with_capacity(current.len() + digest.len());
+    buf.extend_from_slice(current);
+    buf.extend_from_slice(digest);
+    hash_for_bank(bank, &buf)
 }

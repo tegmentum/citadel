@@ -29,6 +29,59 @@ pub fn show(
     Ok(())
 }
 
+// -- pcr extend --
+
+pub fn extend(
+    backend: &dyn TpmBackend,
+    bank: &str,
+    index: u32,
+    input: Option<&std::path::Path>,
+    value: Option<&str>,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let digest = match (input, value) {
+        (Some(path), None) => {
+            let data = std::fs::read(path)?;
+            tpm_core::backend::hash_for_bank(bank, &data)?
+        }
+        (None, Some(hex)) => hex_decode(hex)?,
+        _ => anyhow::bail!("provide exactly one of --input <file> or --value <hex>"),
+    };
+
+    backend.pcr_extend(bank, index, &digest)?;
+    let after = backend.pcr_read(bank, &[index])?;
+    let new_value = after
+        .first()
+        .map(|v| hex_encode(&v.digest))
+        .unwrap_or_default();
+
+    let result = PcrExtendResult {
+        bank: bank.to_string(),
+        index,
+        extended_with: hex_encode(&digest),
+        new_value,
+    };
+    println!("{}", render(&result, format));
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct PcrExtendResult {
+    bank: String,
+    index: u32,
+    extended_with: String,
+    new_value: String,
+}
+
+impl TextRenderable for PcrExtendResult {
+    fn render_text(&self) -> String {
+        format!(
+            "extended PCR {}[{}]\n  with:      {}\n  new value: {}\n",
+            self.bank, self.index, self.extended_with, self.new_value
+        )
+    }
+}
+
 #[derive(Serialize)]
 struct PcrShowResult {
     bank: String,
@@ -228,4 +281,18 @@ impl TextRenderable for BaselineListing {
 
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+fn hex_decode(s: &str) -> anyhow::Result<Vec<u8>> {
+    let s = s.trim();
+    if s.len() % 2 != 0 {
+        anyhow::bail!("hex string has odd length");
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&s[i..i + 2], 16)
+                .map_err(|e| anyhow::anyhow!("invalid hex: {e}"))
+        })
+        .collect()
 }

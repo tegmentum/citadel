@@ -3,12 +3,18 @@ use std::sync::Mutex;
 
 use crate::model::{Algorithm, ObjectPath};
 
-use super::traits::{BackendStatus, KeyHandle, PcrValue, SealedData, TpmBackend};
+use super::traits::{
+    bank_digest_size, pcr_fold, BackendStatus, KeyHandle, PcrValue, SealedData, TpmBackend,
+};
 
 /// Deterministic mock backend for development and testing.
 pub struct MockBackend {
     keys: Mutex<HashMap<String, MockKey>>,
     nv: Mutex<HashMap<u32, NvSlot>>,
+    /// PCR values that have been extended this session, keyed by
+    /// (bank, index). Indices absent here read back as their
+    /// deterministic default (see `pcr_default`).
+    pcrs: Mutex<HashMap<(String, u32), Vec<u8>>>,
 }
 
 struct MockKey {
@@ -27,7 +33,19 @@ impl MockBackend {
         Self {
             keys: Mutex::new(HashMap::new()),
             nv: Mutex::new(HashMap::new()),
+            pcrs: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Deterministic per-index default value for a not-yet-extended PCR.
+    /// Preserves the historical mock pattern so existing read/quote
+    /// behavior is unchanged until an explicit `pcr_extend`.
+    fn pcr_default(index: u32) -> Vec<u8> {
+        let mut digest = vec![0u8; 32];
+        digest[0] = index as u8;
+        digest[1] = 0xAB;
+        digest[31] = index as u8;
+        digest
     }
 }
 
@@ -107,15 +125,16 @@ impl TpmBackend for MockBackend {
     }
 
     fn pcr_read(&self, bank: &str, indices: &[u32]) -> anyhow::Result<Vec<PcrValue>> {
-        // Mock: return deterministic PCR values
+        let pcrs = self.pcrs.lock().unwrap();
         Ok(indices
             .iter()
             .map(|&idx| {
-                let mut digest = vec![0u8; 32];
-                // Deterministic: each PCR has a unique pattern
-                digest[0] = idx as u8;
-                digest[1] = 0xAB;
-                digest[31] = idx as u8;
+                // Return the extended value if present, else the
+                // deterministic default for this index.
+                let digest = pcrs
+                    .get(&(bank.to_string(), idx))
+                    .cloned()
+                    .unwrap_or_else(|| Self::pcr_default(idx));
                 PcrValue {
                     bank: bank.to_string(),
                     index: idx,
@@ -123,6 +142,27 @@ impl TpmBackend for MockBackend {
                 }
             })
             .collect())
+    }
+
+    fn pcr_extend(&self, bank: &str, index: u32, digest: &[u8]) -> anyhow::Result<()> {
+        let expected = bank_digest_size(bank)?;
+        if digest.len() != expected {
+            anyhow::bail!(
+                "pcr_extend: digest is {} bytes, expected {} for bank '{}'",
+                digest.len(),
+                expected,
+                bank
+            );
+        }
+        let mut pcrs = self.pcrs.lock().unwrap();
+        let key = (bank.to_string(), index);
+        let current = pcrs
+            .get(&key)
+            .cloned()
+            .unwrap_or_else(|| Self::pcr_default(index));
+        let folded = pcr_fold(bank, &current, digest)?;
+        pcrs.insert(key, folded);
+        Ok(())
     }
 
     fn nv_define(&self, index: u32, size: usize) -> anyhow::Result<()> {
@@ -271,5 +311,63 @@ impl TpmBackend for MockBackend {
             pcr_matches,
             verified,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn d(byte: u8) -> Vec<u8> {
+        vec![byte; 32]
+    }
+
+    #[test]
+    fn extend_changes_pcr_and_is_deterministic() {
+        let a = MockBackend::new();
+        let before = a.pcr_read("sha256", &[10]).unwrap()[0].digest.clone();
+        a.pcr_extend("sha256", 10, &d(0x11)).unwrap();
+        let after = a.pcr_read("sha256", &[10]).unwrap()[0].digest.clone();
+        assert_ne!(before, after, "extend must change the PCR value");
+
+        // Same sequence on a fresh backend yields the same value.
+        let b = MockBackend::new();
+        b.pcr_extend("sha256", 10, &d(0x11)).unwrap();
+        assert_eq!(after, b.pcr_read("sha256", &[10]).unwrap()[0].digest);
+    }
+
+    #[test]
+    fn extend_is_order_dependent() {
+        let a = MockBackend::new();
+        a.pcr_extend("sha256", 0, &d(0x01)).unwrap();
+        a.pcr_extend("sha256", 0, &d(0x02)).unwrap();
+
+        let b = MockBackend::new();
+        b.pcr_extend("sha256", 0, &d(0x02)).unwrap();
+        b.pcr_extend("sha256", 0, &d(0x01)).unwrap();
+
+        assert_ne!(
+            a.pcr_read("sha256", &[0]).unwrap()[0].digest,
+            b.pcr_read("sha256", &[0]).unwrap()[0].digest,
+            "PCR extend must be order-dependent"
+        );
+    }
+
+    #[test]
+    fn extend_rejects_wrong_digest_size() {
+        let a = MockBackend::new();
+        assert!(a.pcr_extend("sha256", 0, &[0u8; 16]).is_err());
+    }
+
+    #[test]
+    fn extend_isolated_per_index() {
+        let a = MockBackend::new();
+        let untouched = a.pcr_read("sha256", &[5]).unwrap()[0].digest.clone();
+        a.pcr_extend("sha256", 0, &d(0xFF)).unwrap();
+        assert_eq!(
+            untouched,
+            a.pcr_read("sha256", &[5]).unwrap()[0].digest,
+            "extending PCR 0 must not affect PCR 5"
+        );
     }
 }

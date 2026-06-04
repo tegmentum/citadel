@@ -19,6 +19,7 @@ anyhow.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 tracing.workspace = true
+sha2 = "0.10"
 
 # Tamper-evident audit log: extracted to its own repo so other
 # projects can reuse it. tpm-core re-exports its public surface

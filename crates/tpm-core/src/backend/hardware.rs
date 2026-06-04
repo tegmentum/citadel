@@ -388,6 +388,31 @@ impl TpmBackend for HardwareBackend {
         Ok(values)
     }
 
+    fn pcr_extend(&self, bank: &str, index: u32, digest: &[u8]) -> anyhow::Result<()> {
+        use std::collections::HashMap;
+        use tss_esapi::handles::PcrHandle;
+        use tss_esapi::structures::{Digest, DigestValues};
+
+        let mut ctx = self.open_context()?;
+
+        let hash_alg = match bank {
+            "sha256" => HashingAlgorithm::Sha256,
+            "sha384" => HashingAlgorithm::Sha384,
+            "sha1" => HashingAlgorithm::Sha1,
+            _ => anyhow::bail!("unsupported PCR bank: {}", bank),
+        };
+
+        let pcr_handle = PcrHandle::try_from(index as usize)
+            .map_err(|e| anyhow::anyhow!("invalid PCR index {}: {:?}", index, e))?;
+
+        let mut map: HashMap<HashingAlgorithm, Digest> = HashMap::new();
+        map.insert(hash_alg, Digest::try_from(digest.to_vec())?);
+        let digests = DigestValues::try_from(map)?;
+
+        ctx.pcr_extend(pcr_handle, digests)?;
+        Ok(())
+    }
+
     fn nv_define(&self, index: u32, size: usize) -> anyhow::Result<()> {
         let _ctx = self.open_context()?;
         tracing::info!("hardware: nv_define 0x{:08X} size {}", index, size);
