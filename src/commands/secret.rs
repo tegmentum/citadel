@@ -32,17 +32,36 @@ pub fn seal(
 
     let data = std::fs::read(input)?;
 
-    let policy_id = if let Some(pname) = policy_name {
+    // Resolve the policy and, if it carries a PCR rule, compute the
+    // real TPM2 PolicyPCR digest over the *current* PCR values. This
+    // is what gates unsealing (replacing the previous placeholder that
+    // sealed under the policy's UUID and never actually bound PCRs).
+    let mut policy_id = None;
+    let mut policy_digest: Option<Vec<u8>> = None;
+    let mut pcr_binding: Option<(String, Vec<u32>)> = None;
+    if let Some(pname) = policy_name {
         let policy = store
             .get_policy(pname)?
             .ok_or_else(|| anyhow::anyhow!("policy not found: {}", pname))?;
-        Some(policy.id)
-    } else {
-        None
-    };
+        policy_id = Some(policy.id);
+        for rule in &policy.rules {
+            if let tpm_core::model::PolicyRule::PcrMatch { bank, indices } = rule {
+                policy_digest = Some(backend.pcr_policy_digest(bank, indices)?);
+                pcr_binding = Some((bank.clone(), indices.clone()));
+            }
+        }
+    }
 
-    let policy_digest: Option<Vec<u8>> = policy_id.map(|id| id.as_bytes().to_vec());
     let sealed = backend.seal(&data, policy_digest.as_deref())?;
+
+    let mut metadata = serde_json::json!({
+        "original_size": data.len(),
+        "input": input.display().to_string(),
+    });
+    if let Some((bank, indices)) = &pcr_binding {
+        // Record the binding so unseal can re-evaluate the policy.
+        metadata["pcr_policy"] = serde_json::json!({ "bank": bank, "indices": indices });
+    }
 
     let obj = TpmObject {
         id: Uuid::new_v4(),
@@ -52,10 +71,7 @@ pub fn seal(
         policy_id,
         handle_blob: Some(serde_json::to_vec(&sealed)?),
         created_at: Utc::now(),
-        metadata: serde_json::json!({
-            "original_size": data.len(),
-            "input": input.display().to_string(),
-        }),
+        metadata,
     };
 
     store.insert_object(&obj)?;
@@ -122,6 +138,40 @@ pub fn unseal(
         .ok_or_else(|| anyhow::anyhow!("sealed blob missing for: {}", name))?;
 
     let sealed: tpm_core::backend::SealedData = serde_json::from_slice(&blob)?;
+
+    // Enforce a PCR policy if one was bound at seal time: recompute the
+    // PolicyPCR digest over the current PCRs and require it to match the
+    // digest the secret was sealed under. A real TPM also enforces this
+    // internally at unseal; this gate makes the requirement explicit and
+    // gives genuine PCR-gating on the mock/in-process backends.
+    if let Some(pcr_policy) = obj.metadata.get("pcr_policy") {
+        let bank = pcr_policy
+            .get("bank")
+            .and_then(|b| b.as_str())
+            .ok_or_else(|| anyhow::anyhow!("malformed pcr_policy binding on {}", name))?;
+        let indices: Vec<u32> = pcr_policy
+            .get("indices")
+            .and_then(|i| i.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_u64().map(|n| n as u32)).collect())
+            .unwrap_or_default();
+
+        let current = backend.pcr_policy_digest(bank, &indices)?;
+        let sealed_digest = sealed.policy_digest.clone().unwrap_or_default();
+        if current != sealed_digest {
+            let diag = Diagnostic::error(
+                DiagCode::E0004,
+                format!("unseal refused: PCR policy not satisfied for {}", name),
+            )
+            .with_suggestion(format!(
+                "the secret is bound to {} PCR {:?}; those PCRs differ from their sealed values",
+                bank, indices
+            ))
+            .with_suggestion("re-seal against the current state, or restore the expected PCR state");
+            eprintln!("{}", diag.render_text());
+            anyhow::bail!("unseal refused: PCR policy not satisfied for {}", name);
+        }
+    }
+
     let plaintext = backend.unseal(&sealed)?;
 
     if let Some(out_path) = output {
@@ -241,5 +291,72 @@ impl TextRenderable for SecretListing {
             ));
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tpm_core::backend::MockBackend;
+    use tpm_core::model::{Policy, PolicyRule};
+
+    fn pcr_policy(name: &str, index: u32) -> Policy {
+        Policy {
+            id: Uuid::new_v4(),
+            name: name.to_string(),
+            rules: vec![PolicyRule::PcrMatch {
+                bank: "sha256".to_string(),
+                indices: vec![index],
+            }],
+        }
+    }
+
+    #[test]
+    fn pcr_sealed_secret_unseals_then_refuses_after_extend() {
+        let store = Store::open_memory().unwrap();
+        let backend = MockBackend::new();
+        store.insert_policy(&pcr_policy("boot0", 0)).unwrap();
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"top-secret").unwrap();
+
+        // Seal under the PCR-0 policy at the current PCR state.
+        seal(
+            &store,
+            &backend,
+            "secret/db",
+            tmp.path(),
+            Some("boot0"),
+            OutputFormat::Json,
+        )
+        .unwrap();
+
+        // Unseal succeeds while PCR 0 is unchanged.
+        unseal(&store, &backend, "secret/db", None, OutputFormat::Json)
+            .expect("unseal should succeed before the bound PCR changes");
+
+        // Extend PCR 0 — the bound state no longer holds.
+        backend.pcr_extend("sha256", 0, &[0x42u8; 32]).unwrap();
+
+        // Unseal must now be refused.
+        let err = unseal(&store, &backend, "secret/db", None, OutputFormat::Json)
+            .expect_err("unseal must be refused after the bound PCR is extended");
+        assert!(
+            err.to_string().contains("PCR policy not satisfied"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn unbound_secret_unseals_regardless_of_pcrs() {
+        let store = Store::open_memory().unwrap();
+        let backend = MockBackend::new();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"no-policy").unwrap();
+
+        seal(&store, &backend, "secret/plain", tmp.path(), None, OutputFormat::Json).unwrap();
+        backend.pcr_extend("sha256", 0, &[0x42u8; 32]).unwrap();
+        unseal(&store, &backend, "secret/plain", None, OutputFormat::Json)
+            .expect("a secret with no PCR policy is unaffected by PCR changes");
     }
 }

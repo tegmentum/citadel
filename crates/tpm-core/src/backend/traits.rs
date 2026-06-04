@@ -50,6 +50,59 @@ pub trait TpmBackend: Send + Sync {
     /// semantics. Use [`hash_for_bank`] to derive a digest from raw bytes.
     fn pcr_extend(&self, bank: &str, index: u32, digest: &[u8]) -> anyhow::Result<()>;
 
+    /// Compute the TPM2 `PolicyPCR` authorization digest binding the
+    /// given PCRs at their *current* values. Sealing data under this
+    /// digest gates unsealing on those PCRs being unchanged.
+    ///
+    /// The default reads current PCRs and computes the standard
+    /// sha256 PolicyPCR digest:
+    ///   `H( 0^32 ‖ TPM_CC_PolicyPCR ‖ pcrSelection ‖ H(concat PCR values) )`
+    /// which is what a real TPM derives for a PolicyPCR session, so it
+    /// is consistent whether the backend is mock, vTPM, or hardware.
+    fn pcr_policy_digest(&self, bank: &str, indices: &[u32]) -> anyhow::Result<Vec<u8>> {
+        use sha2::{Digest, Sha256};
+        const TPM_CC_POLICY_PCR: u32 = 0x0000_017F;
+        let alg_id: u16 = match bank {
+            "sha256" => 0x000B,
+            "sha384" => 0x000C,
+            "sha1" => 0x0004,
+            other => anyhow::bail!("unsupported PCR bank: {other}"),
+        };
+
+        // pcrDigest = H(concat of selected PCR digests, ascending index)
+        let mut values = self.pcr_read(bank, indices)?;
+        values.sort_by_key(|v| v.index);
+        let mut concat = Vec::new();
+        for v in &values {
+            concat.extend_from_slice(&v.digest);
+        }
+        let pcr_digest = {
+            let mut h = Sha256::new();
+            h.update(&concat);
+            h.finalize().to_vec()
+        };
+
+        // TPML_PCR_SELECTION { count, [TPMS_PCR_SELECTION{ hash, size=3, bitmap }] }
+        let mut sel = Vec::new();
+        sel.extend_from_slice(&1u32.to_be_bytes());
+        sel.extend_from_slice(&alg_id.to_be_bytes());
+        sel.push(3);
+        let mut bitmap = [0u8; 3];
+        for &i in indices {
+            if i < 24 {
+                bitmap[(i / 8) as usize] |= 1 << (i % 8);
+            }
+        }
+        sel.extend_from_slice(&bitmap);
+
+        let mut h = Sha256::new();
+        h.update([0u8; 32]);
+        h.update(TPM_CC_POLICY_PCR.to_be_bytes());
+        h.update(&sel);
+        h.update(&pcr_digest);
+        Ok(h.finalize().to_vec())
+    }
+
     /// Define an NV index with the given size.
     fn nv_define(&self, index: u32, size: usize) -> anyhow::Result<()>;
 
