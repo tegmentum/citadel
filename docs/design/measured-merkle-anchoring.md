@@ -1,6 +1,6 @@
 # Design: Measured Merkle Anchoring, Measurement, and Sealing
 
-Status: Phases 0–2 implemented (see Progress below)
+Status: Phases 0–3 implemented (see Progress below)
 Audience: citadel maintainers
 Related: `crates/tpm-core/src/backend/traits.rs`, `secure-log` (sibling repo), `src/commands/{pcr,secret,attest,policy,identity,audit}.rs`
 
@@ -232,7 +232,14 @@ makes the existing `policy create --pcr` path real end-to-end.
   modes supported per decision on open question #1), `checkpoint`/`sign`/
   `verify`/`list` over a dedicated `measurement` secure-log stream. End-to-end
   validated on mock.
-- **Phases 3–5 — TODO** (see plan + refinement notes below).
+- **Phase 3 — DONE** (`feat(measure): bind checkpoint-signing key ...`):
+  `TpmCheckpointSigner::with_pcr_guard` refuses to sign unless live PCRs match a
+  saved baseline's PolicyPCR digest; `backend::pcr_policy_digest_from` derives the
+  expected digest from baseline values; `audit/measure sign --require-baseline
+  <name>`. Tested in-process (passes on match, blocks after a bound PCR is
+  extended) and at the CLI (positive path). Followed the baseline-binding
+  refinement; TPM-enforced policy-session signing remains the stronger follow-on.
+- **Phases 4–5 — TODO** (attestation integration; root-in-PCR + NV anti-rollback).
 
 Open-question decisions taken:
 - #1 (who hashes): support **both** — direct (`measure file`) and IMA delegation
