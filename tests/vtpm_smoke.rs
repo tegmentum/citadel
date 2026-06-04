@@ -4,8 +4,14 @@
 //! - Build with `--features vtpm`
 //! - TPM_VTPM_COMPONENT env var pointing to tpm-ephemeral.component.wasm
 //!
+//! Get the component from a local libtpms-wasm build
+//! (`~/git/libtpms-wasm/dist/tpm-ephemeral.component.wasm`) or download
+//! the published one:
+//!   curl -fsSL -o /tmp/tpm-ephemeral.component.wasm \
+//!     https://github.com/tegmentum/libtpms-wasm/releases/latest/download/tpm-ephemeral.component.wasm
+//!
 //! Run:
-//!   TPM_VTPM_COMPONENT=~/git/libtpms-wasm/dist/tpm-ephemeral.component.wasm \
+//!   TPM_VTPM_COMPONENT=/tmp/tpm-ephemeral.component.wasm \
 //!     cargo test --features vtpm --test vtpm_smoke
 
 use std::process::Command;

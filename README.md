@@ -19,7 +19,7 @@ The existing TPM toolchain is powerful but hostile. Common workflows require exp
 bash install.sh
 ```
 
-This builds a release binary with vTPM support, installs it to `~/.local/bin/tpm`, copies the libtpms WASM component to `~/.local/share/tpm/`, and sets up shell completions.
+This builds a release binary with vTPM support, installs it to `~/.local/bin/tpm`, installs the libtpms WASM component to `~/.local/share/tpm/` (from a local libtpms-wasm build if present, otherwise downloaded from the [libtpms-wasm](https://github.com/tegmentum/libtpms-wasm) release), and sets up shell completions.
 
 ### From source (manual)
 

@@ -23,20 +23,38 @@ chmod +x "$INSTALL_DIR/tpm"
 
 echo "Installed to ${INSTALL_DIR}/tpm"
 
-# Install vTPM component if available
+# Install the vTPM component (libtpms compiled to a WASM component).
+# Prefer a local build from a sibling libtpms-wasm checkout (fast during
+# development); otherwise download the published component from the
+# libtpms-wasm GitHub release.
 TPM_DATA_DIR="${HOME}/.local/share/tpm"
 mkdir -p "$TPM_DATA_DIR"
-VTPM_SOURCES=(
+VTPM_DEST="${TPM_DATA_DIR}/tpm-ephemeral.component.wasm"
+VTPM_RELEASE_URL="https://github.com/tegmentum/libtpms-wasm/releases/latest/download/tpm-ephemeral.component.wasm"
+VTPM_LOCAL_SOURCES=(
     "../libtpms-wasm/dist/tpm-ephemeral.component.wasm"
     "${HOME}/git/libtpms-wasm/dist/tpm-ephemeral.component.wasm"
 )
-for src in "${VTPM_SOURCES[@]}"; do
+vtpm_installed=0
+for src in "${VTPM_LOCAL_SOURCES[@]}"; do
     if [ -f "$src" ]; then
-        cp "$src" "${TPM_DATA_DIR}/tpm-ephemeral.component.wasm"
-        echo "vTPM component installed to ${TPM_DATA_DIR}/"
+        cp "$src" "$VTPM_DEST"
+        echo "vTPM component installed from ${src}"
+        vtpm_installed=1
         break
     fi
 done
+if [ "$vtpm_installed" -eq 0 ]; then
+    echo "Downloading vTPM component from libtpms-wasm releases..."
+    if curl -fsSL "$VTPM_RELEASE_URL" -o "$VTPM_DEST"; then
+        echo "vTPM component installed to ${TPM_DATA_DIR}/"
+    else
+        rm -f "$VTPM_DEST"
+        echo "Warning: could not fetch the vTPM component."
+        echo "  Build it from https://github.com/tegmentum/libtpms-wasm (make all)"
+        echo "  and copy dist/tpm-ephemeral.component.wasm to ${VTPM_DEST}"
+    fi
+fi
 
 # Install shell completions
 SHELL_NAME="$(basename "$SHELL")"
