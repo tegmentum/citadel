@@ -166,6 +166,40 @@ tpm profile show [name]
 tpm profile set ci-signer
 ```
 
+### Identities
+
+An identity bundles a backing key, an intended usage, an optional policy, and certificate metadata into one named object. Audit checkpoint signing references identities by name.
+
+```bash
+tpm identity init auditor [--usage code-signing] [--algorithm ecc-p256] [--policy boot-policy]
+tpm identity show auditor
+tpm identity list
+tpm identity rotate auditor
+tpm identity delete auditor
+```
+
+### Secure audit log
+
+`tpm audit` is a tamper-evident secure log: entries are hash-chained, sealed into Merkle-rooted segments, and checkpoint-signed by a TPM-backed identity. An anti-rollback head file guards against truncation, payloads can be envelope-encrypted under a master KEK, and segment heads can be co-signed by an external witness. Multiple independent streams (each with a confidentiality tier) are supported.
+
+```bash
+tpm audit append --event user.login --payload "session opened"   # append a hash-chained entry
+tpm audit head                                  # highest seqno for a stream
+tpm audit show 1                                # read an entry by seqno
+tpm audit chain verify                          # verify the hash chain
+tpm audit segments close                        # seal the open window into a Merkle segment
+tpm audit sign --identity auditor 1             # TPM-sign a closed segment's checkpoint
+tpm audit verify                                # verify the checkpoint chain from genesis to head
+tpm audit prove 1                               # build a Merkle inclusion proof for an entry
+tpm audit rollback                              # check the anti-rollback head file vs the database
+tpm audit publish                               # emit witness-submission JSON for the current head
+tpm audit witness list                          # manage witness receipts
+tpm audit streams list                          # multi-stream management
+tpm audit key ...                               # master KEK for envelope-encrypted payloads
+```
+
+The implementation lives in the standalone `secure-log` workspace (a sibling repo, reused across projects) and is re-exported as `tpm_core::secure_log`; `tpm audit` and the `tpmd` witness endpoint persist to a `secure-log-sqlite` store alongside the metadata database.
+
 ### Maintenance
 
 ```bash
@@ -253,6 +287,7 @@ TPMD_TLS_CERT=cert.pem TPMD_TLS_KEY=key.pem tpmd  # TLS
 | POST | /v1/policies | Create policy |
 | GET | /v1/secrets | List sealed secrets |
 | GET | /v1/audit | Audit log |
+| POST | /v1/audit/witness | Submit a secure-log witness co-signature |
 | GET | /v1/approvals | List approval requests |
 | POST | /v1/approvals | Request approval |
 | POST | /v1/approvals/:id/approve | Approve |
@@ -304,11 +339,13 @@ The store is abstracted behind a `StoreBackend` trait. Native builds use SQLite;
 cargo build -p tpm-core --target wasm32-wasip2 --no-default-features
 ```
 
+The tamper-evident secure log lives outside this tree in the standalone `secure-log` workspace (sibling repo), so it can be reused by other projects. `tpm-core` path-depends on its `secure-log` / `secure-log-sqlite` crates and re-exports them as `tpm_core::secure_log`; a `TpmCheckpointSigner` adapts the TPM backend and identity store to the crate's `CheckpointSigner` trait for checkpoint signing.
+
 ## Development
 
 ```bash
 cargo build --workspace                    # build all
-cargo test --workspace                     # 75 tests
+cargo test --workspace                     # 171 tests
 cargo build --features vtpm                # with vTPM backend
 cargo build --features tpm-hw              # with hardware TPM
 
