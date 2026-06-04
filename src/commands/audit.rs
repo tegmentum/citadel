@@ -22,7 +22,7 @@ use tpm_core::secure_log::{
     crypto::SecretKey, hash::hex, verify_inclusion_proof, witness::WitnessSubmission,
     CborEncoder, EntryFields, InclusionProof, NativeSecureLog, SecureLog, SegmentInfo,
 };
-use tpm_core::secure_log_signer::TpmCheckpointSigner;
+use tpm_core::secure_log_signer::{PcrGuard, TpmCheckpointSigner};
 use tpm_core::store::Store;
 use secure_log_sqlite::SqliteSecureLogStore;
 
@@ -996,18 +996,72 @@ impl TextRenderable for ProofOutput {
 
 // -- sign / verify --
 
+/// Build a measured-state guard from a saved PCR baseline: the expected
+/// PolicyPCR digest over the baseline's recorded values.
+fn build_pcr_guard(store: &Store, baseline_name: &str) -> anyhow::Result<PcrGuard> {
+    let (bank, values_json) = store
+        .get_pcr_baseline(baseline_name)?
+        .ok_or_else(|| anyhow::anyhow!("PCR baseline not found: {baseline_name}"))?;
+    let arr = values_json
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("malformed baseline '{baseline_name}'"))?;
+
+    let mut values = Vec::new();
+    let mut indices = Vec::new();
+    for v in arr {
+        let index = v
+            .get("index")
+            .and_then(|i| i.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("baseline entry missing index"))? as u32;
+        let digest_hex = v
+            .get("digest")
+            .and_then(|d| d.as_str())
+            .ok_or_else(|| anyhow::anyhow!("baseline entry missing digest"))?;
+        let digest = decode_hex(digest_hex)?;
+        indices.push(index);
+        values.push(tpm_core::backend::PcrValue {
+            bank: bank.clone(),
+            index,
+            digest,
+        });
+    }
+    let expected_digest = tpm_core::backend::pcr_policy_digest_from(&bank, &values)?;
+    Ok(PcrGuard {
+        bank,
+        indices,
+        expected_digest,
+    })
+}
+
+fn decode_hex(s: &str) -> anyhow::Result<Vec<u8>> {
+    let s = s.trim();
+    if s.len() % 2 != 0 {
+        anyhow::bail!("hex string has odd length");
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| anyhow::anyhow!("invalid hex: {e}")))
+        .collect()
+}
+
 pub fn sign(
     store_path: &Path,
     backend: &dyn TpmBackend,
     segment_id: u64,
     identity: &str,
+    require_baseline: Option<&str>,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     let log = open_log(store_path)?;
     // Identity resolution still needs the citadel Store; secure-log's
     // store doesn't know about the identity tables.
     let id_store = Store::open(store_path)?;
-    let signer = TpmCheckpointSigner::new(backend, &id_store);
+    let mut signer = TpmCheckpointSigner::new(backend, &id_store);
+    // Optionally bind the anchoring key to a measured state: require the
+    // live PCRs to match a saved baseline before signing the root.
+    if let Some(bl_name) = require_baseline {
+        signer = signer.with_pcr_guard(build_pcr_guard(&id_store, bl_name)?);
+    }
     let (ckpt_hash, sig) = log
         .sign_segment(&signer, identity, segment_id)
         .map_err(|e| anyhow::anyhow!("{}", e))?;

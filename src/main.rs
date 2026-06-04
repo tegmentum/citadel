@@ -676,11 +676,13 @@ fn main() -> anyhow::Result<()> {
                     AuditCommand::Sign {
                         segment_id,
                         identity,
+                        require_baseline,
                     } => commands::audit::sign(
                         &store_path,
                         backend.as_ref(),
                         segment_id,
                         &identity,
+                        require_baseline.as_deref(),
                         format,
                     ),
                     AuditCommand::Verify { stream } => {
@@ -747,11 +749,13 @@ fn main() -> anyhow::Result<()> {
                     MeasureCommand::Sign {
                         segment_id,
                         identity,
+                        require_baseline,
                     } => commands::measure::sign(
                         &store_path,
                         backend.as_ref(),
                         segment_id,
                         &identity,
+                        require_baseline.as_deref(),
                         format,
                     ),
                     MeasureCommand::Verify { seqno } => {

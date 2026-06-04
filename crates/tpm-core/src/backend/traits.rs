@@ -60,47 +60,8 @@ pub trait TpmBackend: Send + Sync {
     /// which is what a real TPM derives for a PolicyPCR session, so it
     /// is consistent whether the backend is mock, vTPM, or hardware.
     fn pcr_policy_digest(&self, bank: &str, indices: &[u32]) -> anyhow::Result<Vec<u8>> {
-        use sha2::{Digest, Sha256};
-        const TPM_CC_POLICY_PCR: u32 = 0x0000_017F;
-        let alg_id: u16 = match bank {
-            "sha256" => 0x000B,
-            "sha384" => 0x000C,
-            "sha1" => 0x0004,
-            other => anyhow::bail!("unsupported PCR bank: {other}"),
-        };
-
-        // pcrDigest = H(concat of selected PCR digests, ascending index)
-        let mut values = self.pcr_read(bank, indices)?;
-        values.sort_by_key(|v| v.index);
-        let mut concat = Vec::new();
-        for v in &values {
-            concat.extend_from_slice(&v.digest);
-        }
-        let pcr_digest = {
-            let mut h = Sha256::new();
-            h.update(&concat);
-            h.finalize().to_vec()
-        };
-
-        // TPML_PCR_SELECTION { count, [TPMS_PCR_SELECTION{ hash, size=3, bitmap }] }
-        let mut sel = Vec::new();
-        sel.extend_from_slice(&1u32.to_be_bytes());
-        sel.extend_from_slice(&alg_id.to_be_bytes());
-        sel.push(3);
-        let mut bitmap = [0u8; 3];
-        for &i in indices {
-            if i < 24 {
-                bitmap[(i / 8) as usize] |= 1 << (i % 8);
-            }
-        }
-        sel.extend_from_slice(&bitmap);
-
-        let mut h = Sha256::new();
-        h.update([0u8; 32]);
-        h.update(TPM_CC_POLICY_PCR.to_be_bytes());
-        h.update(&sel);
-        h.update(&pcr_digest);
-        Ok(h.finalize().to_vec())
+        let values = self.pcr_read(bank, indices)?;
+        pcr_policy_digest_from(bank, &values)
     }
 
     /// Define an NV index with the given size.
@@ -224,6 +185,55 @@ pub fn hash_for_bank(bank: &str, data: &[u8]) -> anyhow::Result<Vec<u8>> {
         }
         other => anyhow::bail!("hashing for bank '{other}' is not supported (use sha256)"),
     }
+}
+
+/// Compute the TPM2 `PolicyPCR` (sha256) authorization digest over an
+/// explicit set of PCR values, rather than the live ones. Used to derive
+/// the expected digest from a saved baseline so the live state can be
+/// compared against it. The PCR selection is taken from each value's
+/// `index`.
+pub fn pcr_policy_digest_from(bank: &str, values: &[PcrValue]) -> anyhow::Result<Vec<u8>> {
+    use sha2::{Digest, Sha256};
+    const TPM_CC_POLICY_PCR: u32 = 0x0000_017F;
+    let alg_id: u16 = match bank {
+        "sha256" => 0x000B,
+        "sha384" => 0x000C,
+        "sha1" => 0x0004,
+        other => anyhow::bail!("unsupported PCR bank: {other}"),
+    };
+
+    // pcrDigest = H(concat of PCR digests, ascending index)
+    let mut sorted: Vec<&PcrValue> = values.iter().collect();
+    sorted.sort_by_key(|v| v.index);
+    let mut concat = Vec::new();
+    for v in &sorted {
+        concat.extend_from_slice(&v.digest);
+    }
+    let pcr_digest = {
+        let mut h = Sha256::new();
+        h.update(&concat);
+        h.finalize().to_vec()
+    };
+
+    // TPML_PCR_SELECTION { count, [TPMS_PCR_SELECTION{ hash, size=3, bitmap }] }
+    let mut sel = Vec::new();
+    sel.extend_from_slice(&1u32.to_be_bytes());
+    sel.extend_from_slice(&alg_id.to_be_bytes());
+    sel.push(3);
+    let mut bitmap = [0u8; 3];
+    for v in &sorted {
+        if v.index < 24 {
+            bitmap[(v.index / 8) as usize] |= 1 << (v.index % 8);
+        }
+    }
+    sel.extend_from_slice(&bitmap);
+
+    let mut h = Sha256::new();
+    h.update([0u8; 32]);
+    h.update(TPM_CC_POLICY_PCR.to_be_bytes());
+    h.update(&sel);
+    h.update(&pcr_digest);
+    Ok(h.finalize().to_vec())
 }
 
 /// Fold a measurement into a PCR value in software: `H(pcr ‖ digest)`.

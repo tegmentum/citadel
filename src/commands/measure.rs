@@ -136,14 +136,19 @@ pub fn checkpoint(store_path: &Path, format: OutputFormat) -> anyhow::Result<()>
 }
 
 /// Anchor a sealed segment's root by signing it with a TPM identity.
+///
+/// When `require_baseline` is set, the signing key is gated on the live
+/// PCRs matching that saved baseline — binding the anchoring key to a
+/// known-good measured state.
 pub fn sign(
     store_path: &Path,
     backend: &dyn TpmBackend,
     segment_id: u64,
     identity: &str,
+    require_baseline: Option<&str>,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
-    audit::sign(store_path, backend, segment_id, identity, format)
+    audit::sign(store_path, backend, segment_id, identity, require_baseline, format)
 }
 
 /// Prove that a measurement (by seqno) is included under a sealed root.

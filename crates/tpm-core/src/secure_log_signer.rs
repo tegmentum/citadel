@@ -31,12 +31,56 @@ use crate::store::Store;
 pub struct TpmCheckpointSigner<'a> {
     backend: &'a dyn TpmBackend,
     store: &'a Store,
+    /// Optional measured-state gate: when set, the signer refuses to
+    /// sign unless the live PCRs match the expected PolicyPCR digest.
+    /// This binds the anchoring key to a known-good measured state so a
+    /// tampered/unmeasured host cannot produce valid checkpoints.
+    pcr_guard: Option<PcrGuard>,
+}
+
+/// A measured-state precondition for checkpoint signing: the live
+/// `bank`/`indices` PCRs must hash to `expected_digest` (a PolicyPCR
+/// digest, typically derived from a saved baseline).
+#[derive(Clone)]
+pub struct PcrGuard {
+    pub bank: String,
+    pub indices: Vec<u32>,
+    pub expected_digest: Vec<u8>,
 }
 
 impl<'a> TpmCheckpointSigner<'a> {
     /// Build a new signer over the given backend and store.
     pub fn new(backend: &'a dyn TpmBackend, store: &'a Store) -> Self {
-        Self { backend, store }
+        Self {
+            backend,
+            store,
+            pcr_guard: None,
+        }
+    }
+
+    /// Require the live PCRs to match `guard` before any signing.
+    pub fn with_pcr_guard(mut self, guard: PcrGuard) -> Self {
+        self.pcr_guard = Some(guard);
+        self
+    }
+
+    /// Enforce the measured-state gate, if configured.
+    fn check_pcr_guard(&self) -> Result<(), SignerError> {
+        let Some(guard) = &self.pcr_guard else {
+            return Ok(());
+        };
+        let current = self
+            .backend
+            .pcr_policy_digest(&guard.bank, &guard.indices)
+            .map_err(|e| SignerError::SignFailed(e.to_string()))?;
+        if current != guard.expected_digest {
+            return Err(SignerError::SignFailed(format!(
+                "measured-state gate failed: {} PCR {:?} differ from the expected baseline; \
+                 refusing to sign checkpoint",
+                guard.bank, guard.indices
+            )));
+        }
+        Ok(())
     }
 
     fn handle_for_identity(&self, identity_name: &str) -> Result<KeyHandle, SignerError> {
@@ -113,6 +157,9 @@ impl<'a> CheckpointSigner for TpmCheckpointSigner<'a> {
         identity_name: &str,
         message: &[u8],
     ) -> Result<(Vec<u8>, String), SignerError> {
+        // Refuse to sign unless the host is in the expected measured
+        // state (if a guard is configured).
+        self.check_pcr_guard()?;
         // Look up identity now so we have both the handle (for the
         // backend) and the UUID (for the persisted signer_identity).
         let identity = self
@@ -138,5 +185,58 @@ impl<'a> CheckpointSigner for TpmCheckpointSigner<'a> {
         self.backend
             .verify_signature(&handle, message, signature)
             .map_err(|e| SignerError::VerifyFailed(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::MockBackend;
+    use secure_log::CheckpointSigner;
+
+    #[test]
+    fn guard_blocks_signing_when_pcrs_diverge_from_baseline() {
+        let store = Store::open_memory().unwrap();
+        let backend = MockBackend::new();
+
+        // Capture the current measured state as the expected baseline.
+        let expected = backend.pcr_policy_digest("sha256", &[0, 7]).unwrap();
+        let guard = PcrGuard {
+            bank: "sha256".to_string(),
+            indices: vec![0, 7],
+            expected_digest: expected,
+        };
+        let signer = TpmCheckpointSigner::new(&backend, &store).with_pcr_guard(guard);
+
+        // PCRs still match: the guard passes, so signing proceeds far
+        // enough to fail on the (absent) identity rather than the gate.
+        let err = signer
+            .sign_checkpoint("no-such-identity", b"root")
+            .expect_err("no identity exists yet");
+        assert!(
+            !err.to_string().contains("measured-state gate"),
+            "guard should have passed while PCRs match: {err}"
+        );
+
+        // Extend a bound PCR: the live state now diverges from baseline.
+        backend.pcr_extend("sha256", 0, &[0x99u8; 32]).unwrap();
+        let err = signer
+            .sign_checkpoint("no-such-identity", b"root")
+            .expect_err("guard must block signing after the PCR changes");
+        assert!(
+            err.to_string().contains("measured-state gate failed"),
+            "expected the measured-state gate to fail, got: {err}"
+        );
+    }
+
+    #[test]
+    fn no_guard_allows_signing_attempt_regardless_of_pcrs() {
+        let store = Store::open_memory().unwrap();
+        let backend = MockBackend::new();
+        backend.pcr_extend("sha256", 0, &[0x99u8; 32]).unwrap();
+        let signer = TpmCheckpointSigner::new(&backend, &store);
+        // No guard => proceeds to identity lookup (fails there, not on a gate).
+        let err = signer.sign_checkpoint("no-such-identity", b"root").unwrap_err();
+        assert!(!err.to_string().contains("measured-state gate"));
     }
 }

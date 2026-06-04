@@ -439,6 +439,11 @@ pub enum MeasureCommand {
         /// Identity name (see `tpm identity list`)
         #[arg(long)]
         identity: String,
+
+        /// Only sign if live PCRs match this saved baseline (binds the
+        /// anchoring key to a known-good measured state)
+        #[arg(long)]
+        require_baseline: Option<String>,
     },
     /// Prove a measurement (by seqno) is included under a sealed root
     Verify {
@@ -658,6 +663,10 @@ pub enum AuditCommand {
         /// Identity name (see `tpm identity list`).
         #[arg(long)]
         identity: String,
+        /// Only sign if live PCRs match this saved baseline (binds the
+        /// signing key to a known-good measured state).
+        #[arg(long)]
+        require_baseline: Option<String>,
     },
     /// Verify the full checkpoint chain from genesis to head.
     Verify {
