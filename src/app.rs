@@ -436,7 +436,16 @@ pub enum MeasureCommand {
         from: Option<std::path::PathBuf>,
     },
     /// Seal a Merkle segment over pending measurements (the tree root)
-    Checkpoint,
+    Checkpoint {
+        /// Also extend the Merkle root into this PCR index, so secrets
+        /// can be sealed to the attested measurement set
+        #[arg(long)]
+        extend_pcr: Option<u32>,
+
+        /// PCR bank for --extend-pcr
+        #[arg(long, default_value = "sha256")]
+        bank: String,
+    },
     /// Sign a sealed segment's root with a TPM-backed identity
     Sign {
         /// Segment id to sign
@@ -458,6 +467,22 @@ pub enum MeasureCommand {
     },
     /// List sealed measurement segments (Merkle roots)
     List,
+    /// Increment the monotonic anti-rollback counter
+    AnchorCounter {
+        /// NV index for the counter (decimal or 0x-hex)
+        #[arg(long, value_parser = parse_u32_maybe_hex)]
+        nv_index: Option<u32>,
+    },
+}
+
+fn parse_u32_maybe_hex(s: &str) -> Result<u32, String> {
+    let s = s.trim();
+    let r = if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u32::from_str_radix(hex, 16)
+    } else {
+        s.parse::<u32>()
+    };
+    r.map_err(|e| format!("invalid NV index '{s}': {e}"))
 }
 
 #[derive(Subcommand)]

@@ -76,6 +76,18 @@ pub trait TpmBackend: Send + Sync {
     /// Delete an NV index.
     fn nv_undefine(&self, index: u32) -> anyhow::Result<()>;
 
+    /// Increment a monotonic NV counter and return its new value.
+    ///
+    /// On real TPMs this maps to `TPM2_NV_Increment` on a counter-type
+    /// NV index, which the hardware guarantees can never decrease — the
+    /// basis for anti-rollback (an attacker replaying an old signed
+    /// checkpoint carries a stale counter the live NV value exceeds).
+    /// The default errors so backends opt in explicitly.
+    fn nv_increment(&self, index: u32) -> anyhow::Result<u64> {
+        let _ = index;
+        anyhow::bail!("nv_increment is not supported by this backend")
+    }
+
     /// Create an attestation key.
     fn create_ak(&self, algorithm: Algorithm) -> anyhow::Result<KeyHandle>;
 

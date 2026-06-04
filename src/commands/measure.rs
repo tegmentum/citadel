@@ -130,9 +130,55 @@ pub fn ima(
 
 // -- anchoring / verification: delegate to the audit secure-log ---
 
-/// Seal a Merkle segment over the pending measurements (the tree root).
-pub fn checkpoint(store_path: &Path, format: OutputFormat) -> anyhow::Result<()> {
-    audit::segments_close(store_path, MEASUREMENT_STREAM, format)
+/// Seal a Merkle segment over the pending measurements (the tree root),
+/// optionally anchoring the root into a PCR so secrets can be sealed to
+/// the attested measurement set (`--extend-pcr`).
+pub fn checkpoint(
+    store_path: &Path,
+    backend: &dyn TpmBackend,
+    extend_pcr: Option<u32>,
+    bank: &str,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let seg = audit::close_segment_value(store_path, MEASUREMENT_STREAM)?;
+
+    if let Some(index) = extend_pcr {
+        // The Merkle root is a bank-sized digest; fold it into the PCR.
+        backend.pcr_extend(bank, index, &seg.merkle_root)?;
+    }
+
+    let out = CheckpointOutput {
+        stream: MEASUREMENT_STREAM.to_string(),
+        segment_id: seg.segment_id,
+        seq_range: format!("[{}, {}]", seg.seq_start, seg.seq_end),
+        merkle_root: hex(&seg.merkle_root),
+        extended_pcr: extend_pcr.map(|i| format!("{}[{}]", bank, i)),
+    };
+    println!("{}", render(&out, format));
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct CheckpointOutput {
+    stream: String,
+    segment_id: u64,
+    seq_range: String,
+    merkle_root: String,
+    extended_pcr: Option<String>,
+}
+
+impl TextRenderable for CheckpointOutput {
+    fn render_text(&self) -> String {
+        let mut out = format!(
+            "sealed measurement checkpoint\n  stream:      {}\n  segment:     {} {}\n  merkle_root: {}\n",
+            self.stream, self.segment_id, self.seq_range, self.merkle_root
+        );
+        match &self.extended_pcr {
+            Some(p) => out.push_str(&format!("  anchored to: PCR {}\n", p)),
+            None => out.push_str("  anchored to: (not extended into a PCR)\n"),
+        }
+        out
+    }
 }
 
 /// Anchor a sealed segment's root by signing it with a TPM identity.
@@ -159,6 +205,46 @@ pub fn verify(store_path: &Path, seqno: u64, format: OutputFormat) -> anyhow::Re
 /// List sealed measurement segments (the Merkle roots).
 pub fn list(store_path: &Path, format: OutputFormat) -> anyhow::Result<()> {
     audit::segments_list(store_path, MEASUREMENT_STREAM, format)
+}
+
+/// Default NV index for the measurement anti-rollback counter.
+const ANCHOR_COUNTER_NV_INDEX: u32 = 0x0180_0001;
+
+/// Increment the monotonic anti-rollback counter and report its value.
+///
+/// On real TPMs this maps to a counter-type NV index (`TPM2_NV_Increment`)
+/// that can never decrease, so a replayed old checkpoint carries a stale
+/// counter the live value exceeds. Binding the counter value into the
+/// signed checkpoint (so verification can compare) requires secure-log
+/// support and is tracked as remaining work; this exposes the primitive.
+pub fn anchor_counter(
+    backend: &dyn TpmBackend,
+    nv_index: Option<u32>,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let index = nv_index.unwrap_or(ANCHOR_COUNTER_NV_INDEX);
+    let value = backend.nv_increment(index)?;
+    let out = AnchorCounterOutput {
+        nv_index: format!("0x{:08X}", index),
+        value,
+    };
+    println!("{}", render(&out, format));
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct AnchorCounterOutput {
+    nv_index: String,
+    value: u64,
+}
+
+impl TextRenderable for AnchorCounterOutput {
+    fn render_text(&self) -> String {
+        format!(
+            "anti-rollback counter\n  nv_index: {}\n  value:    {}\n",
+            self.nv_index, self.value
+        )
+    }
 }
 
 // -- helpers --
@@ -310,5 +396,63 @@ mod tests {
     fn rejects_short_line() {
         assert!(parse_ima_line("10 abc ima-ng").is_none());
         assert!(parse_ima_line("").is_none());
+    }
+
+    /// Capstone: measure -> checkpoint (anchor root into a PCR) -> seal a
+    /// secret to that PCR. The secret unseals while the attested set is
+    /// unchanged, then is refused once a new measurement changes the
+    /// anchored PCR. Exercises Phases 0/1/2/5 together in one process.
+    #[test]
+    fn seal_to_attested_set_breaks_when_the_measured_set_changes() {
+        use crate::commands::secret;
+        use tpm_core::backend::MockBackend;
+        use tpm_core::model::{Policy, PolicyRule};
+        use tpm_core::store::Store;
+        use uuid::Uuid;
+
+        let db = tempfile::NamedTempFile::new().unwrap();
+        let path = db.path();
+        let backend = MockBackend::new();
+        let store = Store::open(path).unwrap();
+
+        // Bind a policy to the measurement-anchor PCR.
+        store
+            .insert_policy(&Policy {
+                id: Uuid::new_v4(),
+                name: "attested".to_string(),
+                rules: vec![PolicyRule::PcrMatch {
+                    bank: "sha256".to_string(),
+                    indices: vec![23],
+                }],
+            })
+            .unwrap();
+
+        let app1 = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(app1.path(), b"app-v1").unwrap();
+        let secret_file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(secret_file.path(), b"deploy-key").unwrap();
+
+        // Measure v1 and anchor the Merkle root into PCR 23.
+        file(path, &backend, app1.path(), "binary", "sha256", None, OutputFormat::Json).unwrap();
+        checkpoint(path, &backend, Some(23), "sha256", OutputFormat::Json).unwrap();
+
+        // Seal a secret to the attested set; it unseals now.
+        secret::seal(&store, &backend, "secret/deploy", secret_file.path(), Some("attested"), OutputFormat::Json).unwrap();
+        secret::unseal(&store, &backend, "secret/deploy", None, OutputFormat::Json)
+            .expect("unseals while the attested set is unchanged");
+
+        // A new measurement changes the anchored PCR (the attested set).
+        let app2 = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(app2.path(), b"app-v2-rogue").unwrap();
+        file(path, &backend, app2.path(), "binary", "sha256", None, OutputFormat::Json).unwrap();
+        checkpoint(path, &backend, Some(23), "sha256", OutputFormat::Json).unwrap();
+
+        // The secret is now sealed to a state that no longer holds.
+        let err = secret::unseal(&store, &backend, "secret/deploy", None, OutputFormat::Json)
+            .expect_err("unseal must be refused after the measured set changes");
+        assert!(
+            err.to_string().contains("PCR policy not satisfied"),
+            "unexpected error: {err}"
+        );
     }
 }

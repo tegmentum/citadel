@@ -747,8 +747,14 @@ fn main() -> anyhow::Result<()> {
                         from.as_deref(),
                         format,
                     ),
-                    MeasureCommand::Checkpoint => {
-                        commands::measure::checkpoint(&store_path, format)
+                    MeasureCommand::Checkpoint { extend_pcr, bank } => {
+                        commands::measure::checkpoint(
+                            &store_path,
+                            backend.as_ref(),
+                            extend_pcr,
+                            &bank,
+                            format,
+                        )
                     }
                     MeasureCommand::Sign {
                         segment_id,
@@ -766,6 +772,9 @@ fn main() -> anyhow::Result<()> {
                         commands::measure::verify(&store_path, seqno, format)
                     }
                     MeasureCommand::List => commands::measure::list(&store_path, format),
+                    MeasureCommand::AnchorCounter { nv_index } => {
+                        commands::measure::anchor_counter(backend.as_ref(), nv_index, format)
+                    }
                 },
                 Command::Graph => commands::graph::show(&store, format),
                 Command::Identity(id_cmd) => match id_cmd {

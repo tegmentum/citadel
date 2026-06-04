@@ -792,15 +792,21 @@ impl TextRenderable for VerifyOutput {
 
 // -- segments --
 
+/// Close the open window for a stream and return the sealed segment
+/// (Merkle root etc.) without printing. Used by the measurement
+/// checkpoint command, which may also extend the root into a PCR.
+pub fn close_segment_value(store_path: &Path, stream: &str) -> anyhow::Result<SegmentInfo> {
+    let log = open_log(store_path)?;
+    log.close_segment(stream)
+        .map_err(|e| anyhow::anyhow!("{}", e))
+}
+
 pub fn segments_close(
     store_path: &Path,
     stream: &str,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
-    let log = open_log(store_path)?;
-    let seg = log
-        .close_segment(stream)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let seg = close_segment_value(store_path, stream)?;
     println!("{}", render(&SegmentOutput::from(&seg), format));
     Ok(())
 }

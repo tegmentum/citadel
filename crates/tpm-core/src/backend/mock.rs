@@ -15,6 +15,8 @@ pub struct MockBackend {
     /// (bank, index). Indices absent here read back as their
     /// deterministic default (see `pcr_default`).
     pcrs: Mutex<HashMap<(String, u32), Vec<u8>>>,
+    /// Monotonic NV counters, keyed by index. Increment-only.
+    counters: Mutex<HashMap<u32, u64>>,
 }
 
 struct MockKey {
@@ -34,6 +36,7 @@ impl MockBackend {
             keys: Mutex::new(HashMap::new()),
             nv: Mutex::new(HashMap::new()),
             pcrs: Mutex::new(HashMap::new()),
+            counters: Mutex::new(HashMap::new()),
         }
     }
 
@@ -211,6 +214,13 @@ impl TpmBackend for MockBackend {
         Ok(())
     }
 
+    fn nv_increment(&self, index: u32) -> anyhow::Result<u64> {
+        let mut counters = self.counters.lock().unwrap();
+        let v = counters.entry(index).or_insert(0);
+        *v += 1; // increment-only, mirroring a TPM counter-type NV index
+        Ok(*v)
+    }
+
     fn create_ak(&self, algorithm: Algorithm) -> anyhow::Result<KeyHandle> {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -357,6 +367,17 @@ mod tests {
     fn extend_rejects_wrong_digest_size() {
         let a = MockBackend::new();
         assert!(a.pcr_extend("sha256", 0, &[0u8; 16]).is_err());
+    }
+
+    #[test]
+    fn nv_counter_is_monotonic_per_index() {
+        let a = MockBackend::new();
+        assert_eq!(a.nv_increment(0x0180_0001).unwrap(), 1);
+        assert_eq!(a.nv_increment(0x0180_0001).unwrap(), 2);
+        assert_eq!(a.nv_increment(0x0180_0001).unwrap(), 3);
+        // A different index counts independently.
+        assert_eq!(a.nv_increment(0x0180_0002).unwrap(), 1);
+        assert_eq!(a.nv_increment(0x0180_0001).unwrap(), 4);
     }
 
     #[test]
