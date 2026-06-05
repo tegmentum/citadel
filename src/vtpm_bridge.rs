@@ -483,6 +483,11 @@ impl TpmBackend for VtpmBackend {
         result.map_err(|e| anyhow::anyhow!("measured-state policy not satisfied (TPM): {e}"))
     }
 
+    fn public_blob(&self, handle: &KeyHandle) -> anyhow::Result<Vec<u8>> {
+        let kd: serde_json::Value = serde_json::from_slice(&handle.id)?;
+        Ok(serde_json::from_value(kd["public"].clone())?)
+    }
+
     fn create_key_authorized(
         &self,
         algorithm: Algorithm,

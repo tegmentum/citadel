@@ -1,6 +1,6 @@
 # Design: Upgrading the MMA agent (Citadel) without bricking signing
 
-Status: Design / answer (PolicyAuthorize not yet implemented)
+Status: Implemented (PolicyAuthorize + witness-logged approvals, vTPM-validated)
 Related: `measured-merkle-anchoring.md`, `tpm-nv-counter-and-policy-signing.md`
 
 ## The problem
@@ -164,32 +164,37 @@ VerifySignature is NO_SESSIONS (ticket at offset 10); the authority must
 load under a real hierarchy (OWNER), which needs its public's
 fixedTPM/fixedParent clear.
 
-### REMAINING — CLI + witness-logged approvals + signer integration
+### DONE — CLI + witness-logged approvals + signer integration
 
-1. **`public_blob(handle)`** backend method (portable authority public),
-   so citadel can store/pass the authority pub backend-agnostically; plus
-   **mock impls** of the four methods for a software test path.
-2. **Authority + binding (CLI)**: `tpm identity init <auth> --authority`
-   (via `create_authority_key`); `tpm identity init <name> --authorized-by
-   <auth> --pcr-bind <pcrs>` (via `create_key_authorized`), recording
-   `{policy_authorize: {authority, bank, indices}}` in the key object
-   metadata.
-3. **`tpm policy approve --authority <auth> --pcr <pcrs>`**: compute the
-   PolicyPCR digest of the (current/baseline) state, `approve_policy` with
-   the authority key, and **append the approval to the witnessed MMA log**
-   (`audit::append_value`, event `policy.approve`, payload
-   `{approved_policy, policy_ref, signature, authority}`). This is the
-   transparency half from the threat model — approvals are public,
-   append-only, witness-able, not just handed to the TPM.
-4. **Signer integration**: in `TpmCheckpointSigner`, when the identity is
-   PolicyAuthorize-bound (metadata), resolve the authority pub, compute the
-   current PolicyPCR digest `V`, scan the MMA log for the latest
-   `policy.approve` whose `approved_policy == V`, and call `sign_authorized`
-   with that approval. No valid logged approval for `V` ⇒ no signature
-   (the detection signal from the threat model).
-5. **Provenance**: surface the approving authority + whether the signing
-   state was logged-approved in `attest verify` (extends the existing
-   `agent:` line).
+All five pieces are implemented and validated end-to-end on the real vTPM
+(`authorized_key_signs_only_after_witnessed_approval_vtpm`) and with the
+mock backend (same-named, no `_vtpm` suffix):
 
-Effort: ~1–2 days of mechanical wiring (protocol + StartAuthSession already
-done). All vTPM-testable.
+1. **`public_blob(handle)`** backend method (portable authority public) +
+   vTPM override (extracts the stored `public` blob) and **mock impls** of
+   the four PolicyAuthorize methods for a software test path.
+2. **Authority + binding (CLI)** — `tpm identity init <auth> --authority`
+   (via `create_authority_key`, recorded as `{policy_authority: true}`);
+   `tpm identity init <name> --authorized-by <auth> --pcr-bind <pcrs>` (via
+   `create_key_authorized`, recording `{policy_authorize: {authority, bank,
+   indices}}` in the key object metadata). `--authorized-by` requires
+   `--pcr-bind`; `--authority` is exclusive with both.
+3. **`tpm policy approve --authority <auth> --pcr <pcrs>`** — computes the
+   live PolicyPCR digest, `approve_policy` with the authority key, and
+   **appends the approval to the witnessed MMA log** (`measurement` stream,
+   event `policy.approve`, payload `{approved_policy, policy_ref,
+   signature, authority, bank, indices}`). The transparency half: approvals
+   are public, append-only, witness-able, not merely handed to the TPM.
+4. **Signer integration** — in `TpmCheckpointSigner::sign_checkpoint`, a
+   PolicyAuthorize-bound identity (metadata `policy_authorize`) resolves the
+   authority pub, computes the live PolicyPCR digest `V`, scans the MMA log
+   for the latest `policy.approve` whose `approved_policy == V`, and calls
+   `sign_authorized` with that approval. **No valid logged approval for `V`
+   ⇒ no signature** (the detection signal — an unapproved state is exactly
+   the one with no witnessed authorization).
+5. **Provenance** — `attest verify` surfaces an `approval:` line:
+   the approving authority, the bound PCRs, and whether the live measured
+   state carries a witnessed approval (`ApprovalProvenance`).
+
+The TPM signing key never changes across upgrades: an upgrade is a new
+`policy.approve` in the log, not a re-key.

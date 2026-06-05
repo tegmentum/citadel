@@ -29,6 +29,96 @@ struct MeasurementCheckpoint {
     /// Provenance of the signing agent (Citadel) from its MMA enrollment.
     #[serde(default)]
     agent: Option<super::measure::AgentProvenance>,
+    /// If the signing key is PolicyAuthorize-bound, the approving authority
+    /// and whether the live measured state has a witnessed approval.
+    #[serde(default)]
+    approval: Option<ApprovalProvenance>,
+}
+
+/// PolicyAuthorize provenance for a signing identity: which offline
+/// authority the key is bound to, and whether the current measured state
+/// carries a witnessed `policy.approve` in the MMA log. A signing key bound
+/// this way only produces signatures for authority-approved states, so a
+/// `logged_approved: true` here is positive evidence the upgrade was
+/// authorized; `false` means the key signed in a state with no logged
+/// approval (which the signer refuses — so this should not normally occur).
+#[derive(Serialize, Deserialize, Clone)]
+struct ApprovalProvenance {
+    authority: String,
+    bank: String,
+    indices: Vec<u32>,
+    logged_approved: bool,
+}
+
+/// Resolve the PolicyAuthorize provenance for a segment's signer identity
+/// (a UUID string), if its key is `--authorized-by`-bound. Recomputes the
+/// live PolicyPCR digest and checks the MMA log for a matching approval.
+fn signing_approval_provenance(
+    store: &Store,
+    store_path: &std::path::Path,
+    backend: &dyn TpmBackend,
+    signer_identity: Option<&str>,
+) -> anyhow::Result<Option<ApprovalProvenance>> {
+    let Some(sid) = signer_identity else {
+        return Ok(None);
+    };
+    let Ok(uuid) = sid.parse::<uuid::Uuid>() else {
+        return Ok(None);
+    };
+    let Some(identity) = store.list_identities()?.into_iter().find(|i| i.id == uuid) else {
+        return Ok(None);
+    };
+    let Some(key) = store.get_object_by_id(&identity.key_object_id)? else {
+        return Ok(None);
+    };
+    let Some(p) = key.metadata.get("policy_authorize") else {
+        return Ok(None);
+    };
+    let authority = p
+        .get("authority")
+        .and_then(|a| a.as_str())
+        .unwrap_or("?")
+        .to_string();
+    let bank = p.get("bank").and_then(|b| b.as_str()).unwrap_or("sha256").to_string();
+    let indices: Vec<u32> = p
+        .get("indices")
+        .and_then(|i| i.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_u64().map(|n| n as u32)).collect())
+        .unwrap_or_default();
+
+    // Does the live measured state have a witnessed approval?
+    let want = backend
+        .pcr_policy_digest(&bank, &indices)
+        .map(|v| hex_bytes(&v))
+        .unwrap_or_default();
+    let logged_approved = approval_logged(store_path, &want)?;
+    Ok(Some(ApprovalProvenance {
+        authority,
+        bank,
+        indices,
+        logged_approved,
+    }))
+}
+
+/// Scan the MMA measurement log for a `policy.approve` whose
+/// `approved_policy` equals `want` (hex of the live PolicyPCR digest).
+fn approval_logged(store_path: &std::path::Path, want: &str) -> anyhow::Result<bool> {
+    let store = Store::open(store_path)?;
+    let Some(head) = store.secure_log_head(super::measure::MEASUREMENT_STREAM)? else {
+        return Ok(false);
+    };
+    let rows = store.secure_log_range(super::measure::MEASUREMENT_STREAM, 1, head)?;
+    for row in rows.iter().rev() {
+        if row.event_type != "policy.approve" {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&row.payload) {
+            if v.get("approved_policy").and_then(|x| x.as_str()) == Some(want) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// A quote optionally bundled with a measurement checkpoint. Written by
@@ -174,6 +264,12 @@ pub fn quote(
                 signature: hex_bytes(&seg.signature),
                 signer_identity: seg.signer_identity.clone(),
                 agent: super::measure::latest_agent_enrollment(store_path)?,
+                approval: signing_approval_provenance(
+                    store,
+                    store_path,
+                    backend,
+                    seg.signer_identity.as_deref(),
+                )?,
             }),
             None => anyhow::bail!(
                 "no signed measurement segment on stream '{}'; run `tpm measure checkpoint` then `tpm measure sign`",
@@ -293,6 +389,7 @@ pub fn verify(
                 checkpoint_chain_ok: result.is_ok(),
                 error: result.err().map(|e| e.to_string()),
                 agent: c.agent.clone(),
+                approval: c.approval.clone(),
             })
         }
         None => None,
@@ -377,6 +474,8 @@ struct MeasurementVerify {
     checkpoint_chain_ok: bool,
     error: Option<String>,
     agent: Option<super::measure::AgentProvenance>,
+    #[serde(default)]
+    approval: Option<ApprovalProvenance>,
 }
 
 impl TextRenderable for VerifyResult {
@@ -432,6 +531,17 @@ impl TextRenderable for VerifyResult {
                     a.version.as_deref().unwrap_or("?"),
                     a.digest.as_deref().map(|d| &d[..d.len().min(16)]).unwrap_or("?"),
                     prov,
+                ));
+            }
+            if let Some(ap) = &m.approval {
+                let status = if ap.logged_approved {
+                    "witnessed approval present"
+                } else {
+                    "NO witnessed approval for current state"
+                };
+                out.push_str(&format!(
+                    "    approval:  authorized-by {} ({} PCR {:?}) — {}\n",
+                    ap.authority, ap.bank, ap.indices, status,
                 ));
             }
         }

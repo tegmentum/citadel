@@ -55,6 +55,20 @@ pub struct PcrGuard {
     pub expected_digest: Vec<u8>,
 }
 
+/// A PolicyAuthorize binding recorded on a signing key: the key may sign
+/// under any `bank`/`indices` PolicyPCR state that the `authority`
+/// identity has approved (and that approval is witnessed in the MMA log).
+struct AuthorizedBinding {
+    authority: String,
+    bank: String,
+    indices: Vec<u32>,
+}
+
+/// The witnessed MMA measurement stream that carries `policy.approve`
+/// approvals. Must match `commands::measure::MEASUREMENT_STREAM` in the
+/// `tpm` binary (the signer lives in `tpm-core` and can't import it).
+const MMA_MEASUREMENT_STREAM: &str = "measurement";
+
 impl<'a> TpmCheckpointSigner<'a> {
     /// Build a new signer over the given backend and store.
     pub fn new(backend: &'a dyn TpmBackend, store: &'a Store) -> Self {
@@ -128,6 +142,110 @@ impl<'a> TpmCheckpointSigner<'a> {
             .map(|a| a.iter().filter_map(|v| v.as_u64().map(|n| n as u32)).collect())
             .unwrap_or_default();
         Ok(Some((bank, indices)))
+    }
+
+    /// If the identity's key records a PolicyAuthorize binding (stored at
+    /// creation under `metadata.policy_authorize`), return it: the name of
+    /// the approving authority identity plus the bank/indices whose live
+    /// PolicyPCR digest the authority must have approved.
+    fn authorized_binding_for_identity(
+        &self,
+        identity_name: &str,
+    ) -> Result<Option<AuthorizedBinding>, SignerError> {
+        let identity = self
+            .store
+            .get_identity(identity_name)
+            .map_err(|e| SignerError::Storage(e.to_string()))?
+            .ok_or_else(|| SignerError::UnknownIdentity(identity_name.to_string()))?;
+        let key = self
+            .store
+            .get_object_by_id(&identity.key_object_id)
+            .map_err(|e| SignerError::Storage(e.to_string()))?
+            .ok_or_else(|| SignerError::Storage("identity references missing key".into()))?;
+        let Some(p) = key.metadata.get("policy_authorize") else {
+            return Ok(None);
+        };
+        let authority = p
+            .get("authority")
+            .and_then(|a| a.as_str())
+            .ok_or_else(|| SignerError::Storage("malformed policy_authorize binding".into()))?
+            .to_string();
+        let bank = p
+            .get("bank")
+            .and_then(|b| b.as_str())
+            .ok_or_else(|| SignerError::Storage("malformed policy_authorize binding".into()))?
+            .to_string();
+        let indices = p
+            .get("indices")
+            .and_then(|i| i.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_u64().map(|n| n as u32)).collect())
+            .unwrap_or_default();
+        Ok(Some(AuthorizedBinding {
+            authority,
+            bank,
+            indices,
+        }))
+    }
+
+    /// Resolve the backend-agnostic public blob of the named authority
+    /// identity's key (the PolicyAuthorize authority public).
+    fn authority_pub(&self, authority_name: &str) -> Result<Vec<u8>, SignerError> {
+        let handle = self.handle_for_identity(authority_name)?;
+        self.backend
+            .public_blob(&handle)
+            .map_err(|e| SignerError::SignFailed(e.to_string()))
+    }
+
+    /// Scan the witnessed MMA measurement log for the latest `policy.approve`
+    /// event whose `approved_policy` equals `approved_policy` (the current
+    /// live PolicyPCR digest). Returns `(policy_ref, signature)` from that
+    /// approval, or `None` if no logged approval covers this state.
+    ///
+    /// This is the *detection* half of the threat model: an unapproved state
+    /// change is exactly the one with no valid, witnessed approval here, so
+    /// signing for it is refused.
+    fn find_logged_approval(
+        &self,
+        approved_policy: &[u8],
+    ) -> Result<Option<(Vec<u8>, Vec<u8>)>, SignerError> {
+        let want = hex_str(approved_policy);
+        let head = self
+            .store
+            .secure_log_head(MMA_MEASUREMENT_STREAM)
+            .map_err(|e| SignerError::Storage(e.to_string()))?;
+        let Some(head) = head else {
+            return Ok(None);
+        };
+        let rows = self
+            .store
+            .secure_log_range(MMA_MEASUREMENT_STREAM, 1, head)
+            .map_err(|e| SignerError::Storage(e.to_string()))?;
+        for row in rows.iter().rev() {
+            if row.event_type != "policy.approve" {
+                continue;
+            }
+            let payload: serde_json::Value = match serde_json::from_slice(&row.payload) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if payload.get("approved_policy").and_then(|v| v.as_str()) != Some(want.as_str()) {
+                continue;
+            }
+            let sig = payload
+                .get("signature")
+                .and_then(|v| v.as_str())
+                .and_then(|s| decode_hex(s))
+                .ok_or_else(|| {
+                    SignerError::Storage("logged approval has malformed signature".into())
+                })?;
+            let policy_ref = payload
+                .get("policy_ref")
+                .and_then(|v| v.as_str())
+                .map(|s| decode_hex(s).unwrap_or_default())
+                .unwrap_or_default();
+            return Ok(Some((policy_ref, sig)));
+        }
+        Ok(None)
     }
 
     fn handle_for_identity(&self, identity_name: &str) -> Result<KeyHandle, SignerError> {
@@ -229,18 +347,54 @@ impl<'a> CheckpointSigner for TpmCheckpointSigner<'a> {
             None => (message.to_vec(), None),
         };
 
-        // If the identity's key is bound to a PCR policy (created with
-        // `--pcr-bind`), sign under a policy session so the TPM itself
-        // enforces the measured state; otherwise sign with the password.
-        let signature = match self.pcr_binding_for_identity(identity_name)? {
-            Some((bank, indices)) => self
+        // Choose the signing path by how the identity's key is bound:
+        //
+        //  * PolicyAuthorize (`--authorized-by`): the key signs under *any*
+        //    state an offline authority approved. Resolve the authority pub,
+        //    compute the live PolicyPCR digest, find the witnessed approval
+        //    for it in the MMA log, and present it via `sign_authorized`. No
+        //    logged approval for the current state ⇒ refuse to sign (the
+        //    detection signal — an upgrade is an authority-signed state, an
+        //    attack is an unapproved one).
+        //  * PolicyPCR (`--pcr-bind`): the key signs only while the bound
+        //    PCRs match their values at creation (frozen measured state).
+        //  * Unbound: sign with the password.
+        let signature = if let Some(b) = self.authorized_binding_for_identity(identity_name)? {
+            let authority_pub = self.authority_pub(&b.authority)?;
+            let approved_policy = self
                 .backend
+                .pcr_policy_digest(&b.bank, &b.indices)
+                .map_err(|e| SignerError::SignFailed(e.to_string()))?;
+            let (policy_ref, approval_sig) = self
+                .find_logged_approval(&approved_policy)?
+                .ok_or_else(|| {
+                    SignerError::SignFailed(format!(
+                        "no witnessed approval for the current measured state \
+                         ({} PCR {:?}); authority '{}' must approve it (tpm policy approve) \
+                         before this key will sign",
+                        b.bank, b.indices, b.authority
+                    ))
+                })?;
+            self.backend
+                .sign_authorized(
+                    &handle,
+                    &signed_message,
+                    &b.bank,
+                    &b.indices,
+                    &authority_pub,
+                    &approved_policy,
+                    &policy_ref,
+                    &approval_sig,
+                )
+                .map_err(|e| SignerError::SignFailed(e.to_string()))?
+        } else if let Some((bank, indices)) = self.pcr_binding_for_identity(identity_name)? {
+            self.backend
                 .sign_with_policy(&handle, &signed_message, &bank, &indices)
-                .map_err(|e| SignerError::SignFailed(e.to_string()))?,
-            None => self
-                .backend
+                .map_err(|e| SignerError::SignFailed(e.to_string()))?
+        } else {
+            self.backend
                 .sign(&handle, &signed_message)
-                .map_err(|e| SignerError::SignFailed(e.to_string()))?,
+                .map_err(|e| SignerError::SignFailed(e.to_string()))?
         };
 
         if let Some(c) = counter {
@@ -286,6 +440,18 @@ fn bind_counter(message: &[u8], counter: u64) -> Vec<u8> {
 
 fn hex_str(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Decode a lowercase/uppercase hex string into bytes; `None` on any
+/// non-hex character or odd length.
+fn decode_hex(s: &str) -> Option<Vec<u8>> {
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect()
 }
 
 #[cfg(test)]

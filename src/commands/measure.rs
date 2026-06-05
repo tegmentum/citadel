@@ -510,7 +510,7 @@ impl TextRenderable for AnchorCounterOutput {
 
 // -- helpers --
 
-fn append_measurement(
+pub(crate) fn append_measurement(
     store_path: &Path,
     backend: &dyn TpmBackend,
     event: &str,
@@ -680,8 +680,8 @@ mod tests {
         let store = Store::open(path).unwrap();
 
         crate::commands::identity::init(
-            &store, &backend, "auditor", "generic", "ecc-p256", None, None, None, None,
-            OutputFormat::Json,
+            &store, &backend, "auditor", "generic", "ecc-p256", None, None, None, None, false,
+            None, OutputFormat::Json,
         )
         .unwrap();
 
@@ -709,6 +709,119 @@ mod tests {
         let err = rollback_check(path, &backend, Some(ANCHOR_COUNTER_NV_INDEX), OutputFormat::Json)
             .expect_err("advancing the live counter past recorded checkpoints is a rollback");
         assert!(err.to_string().contains("rollback"), "unexpected error: {err}");
+    }
+
+    /// PolicyAuthorize end-to-end: a key bound `--authorized-by` an
+    /// authority refuses to sign a measured state with no witnessed
+    /// approval, and signs it once the authority's `policy.approve` lands
+    /// in the MMA log. This is the enforcement+detection pair from the
+    /// upgrade threat model, exercised through the full CLI surface.
+    #[test]
+    fn authorized_key_signs_only_after_witnessed_approval() {
+        use crate::commands::{audit, policy};
+        use tpm_core::backend::MockBackend;
+        use tpm_core::store::Store;
+
+        let db = tempfile::NamedTempFile::new().unwrap();
+        let path = db.path();
+        let backend = MockBackend::new();
+        let store = Store::open(path).unwrap();
+
+        // The offline authority (upgrade approver) and a signing key bound
+        // to it via PolicyAuthorize over PCR 14.
+        crate::commands::identity::init(
+            &store, &backend, "release-authority", "attestation", "ecc-p256", None, None, None,
+            None, true, None, OutputFormat::Json,
+        )
+        .unwrap();
+        crate::commands::identity::init(
+            &store, &backend, "anchor", "attestation", "ecc-p256", None, None, None, Some(&[14]),
+            false, Some("release-authority"), OutputFormat::Json,
+        )
+        .unwrap();
+
+        let app = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(app.path(), b"workload").unwrap();
+        file(path, &backend, app.path(), "binary", "sha256", None, OutputFormat::Json).unwrap();
+        checkpoint(path, &backend, None, "sha256", OutputFormat::Json).unwrap();
+
+        // No approval yet: the key must refuse to sign this state.
+        let err = sign(path, &backend, 1, "anchor", None, None, OutputFormat::Json)
+            .expect_err("an unapproved measured state must not produce a signature");
+        assert!(
+            err.to_string().contains("no witnessed approval"),
+            "unexpected error: {err}"
+        );
+
+        // The authority approves the current PCR 14 state → witnessed in
+        // the MMA log as a `policy.approve` event.
+        policy::approve(&store, path, &backend, "release-authority", &[14], "sha256", OutputFormat::Json)
+            .unwrap();
+
+        // Now the same key signs (the upgrade ceremony, no re-key).
+        sign(path, &backend, 1, "anchor", None, None, OutputFormat::Json).unwrap();
+        assert_eq!(
+            audit::verify_checkpoint_chain(path, &backend, MEASUREMENT_STREAM).unwrap(),
+            1
+        );
+    }
+
+    /// The same end-to-end approval flow, but exercised against the real
+    /// libtpms vTPM so `sign_authorized` runs actual
+    /// LoadExternal→VerifySignature→PolicyAuthorize→Sign with the approval
+    /// pulled from the witnessed MMA log. Skipped unless
+    /// TPM_VTPM_COMPONENT points at the component.
+    #[cfg(feature = "vtpm")]
+    #[test]
+    fn authorized_key_signs_only_after_witnessed_approval_vtpm() {
+        use crate::commands::{audit, policy};
+        use crate::vtpm_bridge::VtpmBackend;
+        use tpm_core::store::Store;
+
+        let Ok(component) = std::env::var("TPM_VTPM_COMPONENT") else {
+            eprintln!("skipping: TPM_VTPM_COMPONENT not set");
+            return;
+        };
+        let backend = VtpmBackend::new(std::path::Path::new(&component)).unwrap();
+
+        let db = tempfile::NamedTempFile::new().unwrap();
+        let path = db.path();
+        let store = Store::open(path).unwrap();
+
+        crate::commands::identity::init(
+            &store, &backend, "release-authority", "attestation", "ecc-p256", None, None, None,
+            None, true, None, OutputFormat::Json,
+        )
+        .unwrap();
+        crate::commands::identity::init(
+            &store, &backend, "anchor", "attestation", "ecc-p256", None, None, None, Some(&[14]),
+            false, Some("release-authority"), OutputFormat::Json,
+        )
+        .unwrap();
+
+        let app = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(app.path(), b"workload").unwrap();
+        file(path, &backend, app.path(), "binary", "sha256", None, OutputFormat::Json).unwrap();
+        checkpoint(path, &backend, None, "sha256", OutputFormat::Json).unwrap();
+
+        // No witnessed approval: the TPM-bound key refuses to sign.
+        let err = sign(path, &backend, 1, "anchor", None, None, OutputFormat::Json)
+            .expect_err("an unapproved measured state must not produce a signature");
+        assert!(
+            err.to_string().contains("no witnessed approval"),
+            "unexpected error: {err}"
+        );
+
+        // Authority approves the live PCR 14 state → logged in the MMA.
+        policy::approve(&store, path, &backend, "release-authority", &[14], "sha256", OutputFormat::Json)
+            .unwrap();
+
+        // The TPM now signs under PolicyAuthorize with the logged approval.
+        sign(path, &backend, 1, "anchor", None, None, OutputFormat::Json).unwrap();
+        assert_eq!(
+            audit::verify_checkpoint_chain(path, &backend, MEASUREMENT_STREAM).unwrap(),
+            1
+        );
     }
 
     #[test]

@@ -1,5 +1,8 @@
+use std::path::Path;
+
 use uuid::Uuid;
 
+use tpm_core::backend::{KeyHandle, TpmBackend};
 use tpm_core::model::{Policy, PolicyRule};
 use tpm_core::output::format::{render, TextRenderable};
 use tpm_core::output::OutputFormat;
@@ -540,5 +543,103 @@ impl TextRenderable for FragilityOutput {
         }
 
         out
+    }
+}
+
+// -- policy approve (PolicyAuthorize upgrade ceremony) --
+
+/// As `authority`, approve the current measured state (`bank`/`indices`
+/// PolicyPCR digest) for keys bound to that authority via
+/// TPM2_PolicyAuthorize, and record the approval in the witnessed MMA log.
+///
+/// This is the transparency half of the upgrade design: the approval is
+/// signed by the (offline) authority and appended append-only to the
+/// `measurement` stream as a `policy.approve` event, so every authorized
+/// state change is public, attributable, and witness-able — an unapproved
+/// state is exactly the one with no such logged approval.
+pub fn approve(
+    store: &Store,
+    store_path: &Path,
+    backend: &dyn TpmBackend,
+    authority: &str,
+    pcr_indices: &[u32],
+    pcr_bank: &str,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    if pcr_indices.is_empty() {
+        anyhow::bail!("--pcr must name at least one PCR index to approve");
+    }
+    // Resolve the authority identity → its signing key handle.
+    let identity = store
+        .get_identity(authority)?
+        .ok_or_else(|| anyhow::anyhow!("authority identity not found: {}", authority))?;
+    let key = store
+        .get_object_by_id(&identity.key_object_id)?
+        .ok_or_else(|| anyhow::anyhow!("authority '{}' references missing key", authority))?;
+    let handle_blob = key
+        .handle_blob
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("authority '{}' key has no handle blob", authority))?;
+    let auth_handle = KeyHandle {
+        id: handle_blob,
+        path: key.path.to_string(),
+    };
+
+    // Compute the live PolicyPCR digest and have the authority sign it.
+    let approved_policy = backend.pcr_policy_digest(pcr_bank, pcr_indices)?;
+    let policy_ref: &[u8] = &[];
+    let signature = backend.approve_policy(&auth_handle, &approved_policy, policy_ref)?;
+
+    let approved_hex = hex(&approved_policy);
+    let payload = serde_json::json!({
+        "approved_policy": approved_hex,
+        "policy_ref": hex(policy_ref),
+        "signature": hex(&signature),
+        "authority": authority,
+        "bank": pcr_bank,
+        "indices": pcr_indices,
+    });
+    let seqno = crate::commands::measure::append_measurement(
+        store_path,
+        backend,
+        "policy.approve",
+        &payload.to_string(),
+    )?;
+    store.log_action(
+        "policy.approve",
+        Some(authority),
+        &serde_json::json!({ "approved_policy": approved_hex, "bank": pcr_bank, "indices": pcr_indices, "seqno": seqno }),
+    )?;
+
+    let out = ApproveOutput {
+        authority: authority.to_string(),
+        bank: pcr_bank.to_string(),
+        indices: pcr_indices.to_vec(),
+        approved_policy: approved_hex,
+        seqno,
+    };
+    println!("{}", render(&out, format));
+    Ok(())
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+#[derive(Serialize)]
+struct ApproveOutput {
+    authority: String,
+    bank: String,
+    indices: Vec<u32>,
+    approved_policy: String,
+    seqno: u64,
+}
+
+impl TextRenderable for ApproveOutput {
+    fn render_text(&self) -> String {
+        format!(
+            "approved {} PCR {:?}\n  policy:    {}\n  authority: {}\n  logged:    {} (seqno {})",
+            self.bank, self.indices, self.approved_policy, self.authority, "policy.approve", self.seqno
+        )
     }
 }

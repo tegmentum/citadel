@@ -25,8 +25,30 @@ pub fn init(
     subject: Option<&str>,
     key_path: Option<&str>,
     pcr_bind: Option<&[u32]>,
+    authority: bool,
+    authorized_by: Option<&str>,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
+    // Authority identity: an external-loadable approver key (the offline
+    // PolicyAuthorize root). Signing keys bind to it with --authorized-by.
+    if authority {
+        if authorized_by.is_some() || pcr_bind.is_some() {
+            anyhow::bail!("--authority cannot be combined with --authorized-by or --pcr-bind");
+        }
+        return init_authority(store, backend, name, usage, algorithm, subject, key_path, format);
+    }
+
+    // PolicyAuthorize-bound identity: the key signs under any measured
+    // state the authority approves (upgradable policy, no re-key).
+    if let Some(auth_name) = authorized_by {
+        let indices = pcr_bind.ok_or_else(|| {
+            anyhow::anyhow!("--authorized-by requires --pcr-bind to name the PCRs the approval covers")
+        })?;
+        return init_authorized(
+            store, backend, name, usage, algorithm, subject, key_path, auth_name, indices, format,
+        );
+    }
+
     // PCR-bound identities create a TPM-policy-bound key so the TPM
     // enforces the measured state at sign time (see `init_pcr_bound`).
     if let Some(indices) = pcr_bind {
@@ -121,6 +143,175 @@ fn init_pcr_bound(
         "identity.init",
         Some(name),
         &serde_json::json!({ "usage": identity.usage.as_str(), "key": key_path_str, "pcr_bind": indices }),
+    )?;
+
+    let out = IdentityInitOutput {
+        name: identity.name,
+        id: identity.id.to_string(),
+        usage: identity.usage.to_string(),
+        key_object_id: identity.key_object_id.to_string(),
+        subject: identity.subject,
+    };
+    println!("{}", render(&out, format));
+    Ok(())
+}
+
+/// Create a PolicyAuthorize *authority* identity: an external-loadable
+/// signing key that approves measured states for keys bound to it. Held
+/// offline (HSM / air-gapped) in production — it is the upgrade root of
+/// trust, so its compromise makes attacks indistinguishable from upgrades.
+#[allow(clippy::too_many_arguments)]
+fn init_authority(
+    store: &Store,
+    backend: &dyn TpmBackend,
+    name: &str,
+    usage: &str,
+    algorithm: &str,
+    subject: Option<&str>,
+    key_path: Option<&str>,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    if store.get_identity(name)?.is_some() {
+        anyhow::bail!("identity already exists: {}", name);
+    }
+    let usage_parsed: IdentityUsage = usage.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+    let alg: Algorithm = algorithm.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+    let key_path_str = key_path
+        .map(String::from)
+        .unwrap_or_else(|| format!("authority/{}", name));
+    let path = ObjectPath::new(&key_path_str)?;
+    if store.get_object(&path)?.is_some() {
+        anyhow::bail!("object already exists: {}", path);
+    }
+
+    let handle = backend.create_authority_key(alg, &path)?;
+
+    let obj = TpmObject {
+        id: Uuid::new_v4(),
+        path: path.clone(),
+        kind: ObjectKind::SigningKey,
+        algorithm: alg,
+        policy_id: None,
+        handle_blob: Some(handle.id),
+        created_at: Utc::now(),
+        metadata: serde_json::json!({ "policy_authority": true }),
+    };
+    store.insert_object(&obj)?;
+
+    let identity = Identity {
+        id: Uuid::new_v4(),
+        name: name.to_string(),
+        key_object_id: obj.id,
+        policy_id: None,
+        usage: usage_parsed,
+        subject: subject.map(String::from),
+        certificate_pem: None,
+        created_at: Utc::now(),
+        rotated_from: None,
+    };
+    store.insert_identity(&identity)?;
+    store.log_action(
+        "identity.init",
+        Some(name),
+        &serde_json::json!({ "usage": identity.usage.as_str(), "key": key_path_str, "authority": true }),
+    )?;
+
+    let out = IdentityInitOutput {
+        name: identity.name,
+        id: identity.id.to_string(),
+        usage: identity.usage.to_string(),
+        key_object_id: identity.key_object_id.to_string(),
+        subject: identity.subject,
+    };
+    println!("{}", render(&out, format));
+    Ok(())
+}
+
+/// Create a signing identity bound to an `authority` via
+/// TPM2_PolicyAuthorize: the key signs under any `indices` PolicyPCR
+/// state the authority has approved (and that approval is witnessed in
+/// the MMA log). Unlike `--pcr-bind`, an upgrade needs only a new
+/// approval — the key itself never changes.
+#[allow(clippy::too_many_arguments)]
+fn init_authorized(
+    store: &Store,
+    backend: &dyn TpmBackend,
+    name: &str,
+    usage: &str,
+    algorithm: &str,
+    subject: Option<&str>,
+    key_path: Option<&str>,
+    authority_name: &str,
+    indices: &[u32],
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    if store.get_identity(name)?.is_some() {
+        anyhow::bail!("identity already exists: {}", name);
+    }
+    // Resolve the authority identity and its public (backend-agnostic).
+    let authority = store
+        .get_identity(authority_name)?
+        .ok_or_else(|| anyhow::anyhow!("authority identity not found: {}", authority_name))?;
+    let auth_key = store
+        .get_object_by_id(&authority.key_object_id)?
+        .ok_or_else(|| anyhow::anyhow!("authority '{}' references missing key", authority_name))?;
+    let auth_handle_blob = auth_key
+        .handle_blob
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("authority '{}' key has no handle blob", authority_name))?;
+    let authority_pub = backend.public_blob(&tpm_core::backend::KeyHandle {
+        id: auth_handle_blob,
+        path: auth_key.path.to_string(),
+    })?;
+
+    let usage_parsed: IdentityUsage = usage.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+    let alg: Algorithm = algorithm.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+    let key_path_str = key_path
+        .map(String::from)
+        .unwrap_or_else(|| format!("signing/{}", name));
+    let path = ObjectPath::new(&key_path_str)?;
+    if store.get_object(&path)?.is_some() {
+        anyhow::bail!("object already exists: {}", path);
+    }
+
+    let bank = "sha256";
+    let handle = backend.create_key_authorized(alg, &path, &authority_pub)?;
+
+    let obj = TpmObject {
+        id: Uuid::new_v4(),
+        path: path.clone(),
+        kind: ObjectKind::SigningKey,
+        algorithm: alg,
+        policy_id: None,
+        handle_blob: Some(handle.id),
+        created_at: Utc::now(),
+        metadata: serde_json::json!({
+            "policy_authorize": { "authority": authority_name, "bank": bank, "indices": indices }
+        }),
+    };
+    store.insert_object(&obj)?;
+
+    let identity = Identity {
+        id: Uuid::new_v4(),
+        name: name.to_string(),
+        key_object_id: obj.id,
+        policy_id: None,
+        usage: usage_parsed,
+        subject: subject.map(String::from),
+        certificate_pem: None,
+        created_at: Utc::now(),
+        rotated_from: None,
+    };
+    store.insert_identity(&identity)?;
+    store.log_action(
+        "identity.init",
+        Some(name),
+        &serde_json::json!({
+            "usage": identity.usage.as_str(),
+            "key": key_path_str,
+            "authorized_by": authority_name,
+            "pcr_bind": indices,
+        }),
     )?;
 
     let out = IdentityInitOutput {

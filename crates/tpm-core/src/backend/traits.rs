@@ -60,6 +60,13 @@ pub trait TpmBackend: Send + Sync {
         anyhow::bail!("policy signing is not supported by this backend")
     }
 
+    /// A key's portable public blob (for verification / PolicyAuthorize).
+    /// Default returns the opaque handle id; backends with a structured
+    /// handle (e.g. the vTPM's JSON) return just the public part.
+    fn public_blob(&self, handle: &KeyHandle) -> anyhow::Result<Vec<u8>> {
+        Ok(handle.id.clone())
+    }
+
     // -- PolicyAuthorize: upgradable, authority-approved signing --
 
     /// Create an external-loadable signing key to act as a PolicyAuthorize

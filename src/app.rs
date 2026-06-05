@@ -307,6 +307,23 @@ pub enum PolicyCommand {
         /// Policy name
         name: String,
     },
+    /// Approve the current measured state for a PolicyAuthorize-bound key.
+    ///
+    /// As the named authority, sign the live PolicyPCR digest of `--pcr`
+    /// and append the approval to the witnessed MMA log (`policy.approve`).
+    /// Keys bound with `tpm identity init --authorized-by <authority>` may
+    /// then sign in this state without re-keying — the upgrade ceremony.
+    Approve {
+        /// Authority identity that signs the approval (the offline approver)
+        #[arg(long)]
+        authority: String,
+        /// PCR indices whose current state to approve (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        pcr: Vec<u32>,
+        /// PCR bank
+        #[arg(long, default_value = "sha256")]
+        pcr_bank: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -913,6 +930,19 @@ pub enum IdentityCommand {
         /// enforced signing). Comma-separated indices.
         #[arg(long, value_delimiter = ',')]
         pcr_bind: Option<Vec<u32>>,
+        /// Create this identity as a PolicyAuthorize *authority* (an
+        /// offline release/upgrade approver). Its key is external-loadable
+        /// so its approvals can be verified under a real hierarchy. Bind
+        /// signing keys to it with `--authorized-by <name>`.
+        #[arg(long)]
+        authority: bool,
+        /// Bind this signing key to the named authority via
+        /// TPM2_PolicyAuthorize (upgradable policy): the key signs under
+        /// *any* measured state that authority approves (`tpm policy
+        /// approve`), and never needs re-keying across upgrades. Requires
+        /// `--pcr-bind` to name the PCRs the approval covers.
+        #[arg(long)]
+        authorized_by: Option<String>,
     },
     /// Show identity details
     Show {

@@ -4,8 +4,16 @@ use std::sync::Mutex;
 use crate::model::{Algorithm, ObjectPath};
 
 use super::traits::{
-    bank_digest_size, pcr_fold, BackendStatus, KeyHandle, PcrValue, SealedData, TpmBackend,
+    bank_digest_size, hash_for_bank, pcr_fold, BackendStatus, KeyHandle, PcrValue, SealedData,
+    TpmBackend,
 };
+
+/// The aHash an authority signs to approve a policy: `H(approvedPolicy ‖ policyRef)`.
+fn approval_ahash(approved_policy: &[u8], policy_ref: &[u8]) -> Vec<u8> {
+    let mut buf = approved_policy.to_vec();
+    buf.extend_from_slice(policy_ref);
+    hash_for_bank("sha256", &buf).expect("sha256 available")
+}
 
 /// Deterministic mock backend for development and testing.
 pub struct MockBackend {
@@ -156,6 +164,63 @@ impl TpmBackend for MockBackend {
                 bank,
                 indices
             );
+        }
+        self.sign(handle, data)
+    }
+
+    fn create_authority_key(
+        &self,
+        algorithm: Algorithm,
+        path: &ObjectPath,
+    ) -> anyhow::Result<KeyHandle> {
+        self.create_key(algorithm, path)
+    }
+
+    fn create_key_authorized(
+        &self,
+        algorithm: Algorithm,
+        path: &ObjectPath,
+        _authority_pub: &[u8],
+    ) -> anyhow::Result<KeyHandle> {
+        // Mock: a normal key; the state + approval checks are enforced in
+        // sign_authorized (a real TPM enforces them via authPolicy).
+        self.create_key(algorithm, path)
+    }
+
+    fn approve_policy(
+        &self,
+        authority: &KeyHandle,
+        approved_policy: &[u8],
+        policy_ref: &[u8],
+    ) -> anyhow::Result<Vec<u8>> {
+        self.sign(authority, &approval_ahash(approved_policy, policy_ref))
+    }
+
+    fn sign_authorized(
+        &self,
+        handle: &KeyHandle,
+        data: &[u8],
+        bank: &str,
+        indices: &[u32],
+        authority_pub: &[u8],
+        approved_policy: &[u8],
+        policy_ref: &[u8],
+        approval_sig: &[u8],
+    ) -> anyhow::Result<Vec<u8>> {
+        // The current measured state must equal the approved one.
+        if self.pcr_policy_digest(bank, indices)? != approved_policy {
+            anyhow::bail!(
+                "measured-state policy not satisfied: current state differs from the approval"
+            );
+        }
+        // The authority must have signed the approval.
+        let ahash = approval_ahash(approved_policy, policy_ref);
+        let authority = KeyHandle {
+            id: authority_pub.to_vec(),
+            path: String::new(),
+        };
+        if !self.verify_signature(&authority, &ahash, approval_sig)? {
+            anyhow::bail!("approval signature does not verify");
         }
         self.sign(handle, data)
     }

@@ -538,6 +538,19 @@ fn main() -> anyhow::Result<()> {
                     PolicyCommand::Fragility { name } => {
                         commands::policy::fragility(&store, &name, format)
                     }
+                    PolicyCommand::Approve {
+                        authority,
+                        pcr,
+                        pcr_bank,
+                    } => commands::policy::approve(
+                        &store,
+                        &store_path,
+                        backend.as_ref(),
+                        &authority,
+                        &pcr,
+                        &pcr_bank,
+                        format,
+                    ),
                 },
                 Command::Object(obj_cmd) => match obj_cmd {
                     ObjectCommand::List => commands::object::list(&store, format),
@@ -836,6 +849,8 @@ fn main() -> anyhow::Result<()> {
                         subject,
                         key_path,
                         pcr_bind,
+                        authority,
+                        authorized_by,
                     } => commands::identity::init(
                         &store,
                         backend.as_ref(),
@@ -846,6 +861,8 @@ fn main() -> anyhow::Result<()> {
                         subject.as_deref(),
                         key_path.as_deref(),
                         pcr_bind.as_deref(),
+                        authority,
+                        authorized_by.as_deref(),
                         format,
                     ),
                     IdentityCommand::Show { name } => {
