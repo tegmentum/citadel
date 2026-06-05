@@ -32,13 +32,19 @@ const TPM2_CC_NV_READ: u32 = 0x0000014E;
 const TPM2_CC_NV_READ_PUBLIC: u32 = 0x00000169;
 const TPM2_CC_START_AUTH_SESSION: u32 = 0x00000176;
 const TPM2_CC_POLICY_PCR: u32 = 0x0000017F;
+const TPM2_CC_POLICY_AUTHORIZE: u32 = 0x0000016A;
 const TPM_SE_POLICY: u8 = 0x01;
+const TPM_ST_HASHCHECK: u16 = 0x8024;
 
 // objectAttributes for an ECC/RSA signing key. The default has
 // userWithAuth (0x40); the policy-bound variant clears it so the key can
 // only be used by satisfying its authPolicy (a policy session).
 const OBJ_ATTR_SIGN_USERAUTH: u32 = 0x0004_0072;
 const OBJ_ATTR_SIGN_POLICY: u32 = 0x0004_0032; // userWithAuth cleared
+// External/authority signing key: fixedTPM + fixedParent cleared so its
+// public can be LoadExternal'd under a real hierarchy (required for a
+// usable VerifySignature ticket -> TPM2_PolicyAuthorize).
+const OBJ_ATTR_SIGN_EXTERNAL: u32 = 0x0004_0060;
 
 // TPMA_NV attribute bits (TPM 2.0 Part 2). Note OWNERREAD is bit 17 and
 // AUTHREAD is bit 18 — an earlier attempt swapped these, which is why
@@ -167,11 +173,13 @@ impl VtpmBackend {
         &self,
         algorithm: Algorithm,
         path: &ObjectPath,
+        attrs: u32,
         auth_policy: &[u8],
     ) -> anyhow::Result<KeyHandle> {
         let mut engine = self.engine.lock().unwrap();
         let srk = create_primary_srk(&mut engine)?;
-        let (pub_blob, priv_blob) = create_child_key(&mut engine, srk, algorithm, auth_policy)?;
+        let (pub_blob, priv_blob) =
+            create_child_key(&mut engine, srk, algorithm, attrs, auth_policy)?;
         flush_context(&mut engine, srk)?;
 
         let key_data = serde_json::json!({
@@ -337,9 +345,10 @@ fn create_child_key(
     engine: &mut VtpmEngine,
     parent: u32,
     alg: Algorithm,
+    attrs: u32,
     auth_policy: &[u8],
 ) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
-    let resp = send_command(engine, &build_create_cmd(parent, alg, auth_policy))?;
+    let resp = send_command(engine, &build_create_cmd(parent, alg, attrs, auth_policy))?;
     if resp.len() < 16 {
         anyhow::bail!("Create response too short: {} bytes", resp.len());
     }
@@ -415,7 +424,7 @@ impl TpmBackend for VtpmBackend {
     }
 
     fn create_key(&self, algorithm: Algorithm, path: &ObjectPath) -> anyhow::Result<KeyHandle> {
-        self.create_key_inner(algorithm, path, &[])
+        self.create_key_inner(algorithm, path, OBJ_ATTR_SIGN_USERAUTH, &[])
     }
 
     fn create_key_with_policy(
@@ -424,7 +433,17 @@ impl TpmBackend for VtpmBackend {
         path: &ObjectPath,
         auth_policy: &[u8],
     ) -> anyhow::Result<KeyHandle> {
-        self.create_key_inner(algorithm, path, auth_policy)
+        self.create_key_inner(algorithm, path, OBJ_ATTR_SIGN_POLICY, auth_policy)
+    }
+
+    fn create_authority_key(
+        &self,
+        algorithm: Algorithm,
+        path: &ObjectPath,
+    ) -> anyhow::Result<KeyHandle> {
+        // External-loadable signing key (fixedTPM/fixedParent clear) so its
+        // public can be verified under a real hierarchy for PolicyAuthorize.
+        self.create_key_inner(algorithm, path, OBJ_ATTR_SIGN_EXTERNAL, &[])
     }
 
     fn sign_with_policy(
@@ -462,6 +481,96 @@ impl TpmBackend for VtpmBackend {
 
         flush_context(&mut engine, srk).ok();
         result.map_err(|e| anyhow::anyhow!("measured-state policy not satisfied (TPM): {e}"))
+    }
+
+    fn create_key_authorized(
+        &self,
+        algorithm: Algorithm,
+        path: &ObjectPath,
+        authority_pub: &[u8],
+    ) -> anyhow::Result<KeyHandle> {
+        let name = tpm_key_name(authority_pub);
+        let auth_policy = compute_policy_authorize_digest(&name, &[]);
+        self.create_key_inner(algorithm, path, OBJ_ATTR_SIGN_POLICY, &auth_policy)
+    }
+
+    fn approve_policy(
+        &self,
+        authority: &KeyHandle,
+        approved_policy: &[u8],
+        policy_ref: &[u8],
+    ) -> anyhow::Result<Vec<u8>> {
+        let ahash = approval_ahash(approved_policy, policy_ref);
+        let mut engine = self.engine.lock().unwrap();
+        let srk = create_primary_srk(&mut engine)?;
+        let result: anyhow::Result<Vec<u8>> = (|| {
+            let kd: serde_json::Value = serde_json::from_slice(&authority.id)?;
+            let pub_blob: Vec<u8> = serde_json::from_value(kd["public"].clone())?;
+            let priv_blob: Vec<u8> = serde_json::from_value(kd["private"].clone())?;
+            let kh = load_key(&mut engine, srk, &pub_blob, &priv_blob)?;
+            // Sign the approval aHash directly (null hashcheck ticket).
+            let resp = send_command(
+                &mut engine,
+                &build_sign_cmd_with_ticket(kh, &ahash, &null_hashcheck_ticket(), TPM_RS_PW),
+            )?;
+            flush_context(&mut engine, kh).ok();
+            let sig = if resp.len() >= 14 {
+                let ps = u32::from_be_bytes([resp[10], resp[11], resp[12], resp[13]]) as usize;
+                resp[14..(14 + ps).min(resp.len())].to_vec()
+            } else {
+                resp[10..].to_vec()
+            };
+            Ok(sig)
+        })();
+        flush_context(&mut engine, srk).ok();
+        result
+    }
+
+    fn sign_authorized(
+        &self,
+        handle: &KeyHandle,
+        data: &[u8],
+        bank: &str,
+        indices: &[u32],
+        authority_pub: &[u8],
+        approved_policy: &[u8],
+        policy_ref: &[u8],
+        approval_sig: &[u8],
+    ) -> anyhow::Result<Vec<u8>> {
+        let hash_alg = bank_to_alg_id(bank)?;
+        let name = tpm_key_name(authority_pub);
+        let ahash = approval_ahash(approved_policy, policy_ref);
+        let mut engine = self.engine.lock().unwrap();
+        let srk = create_primary_srk(&mut engine)?;
+        let result: anyhow::Result<Vec<u8>> = (|| {
+            let kd: serde_json::Value = serde_json::from_slice(&handle.id)?;
+            let pub_blob: Vec<u8> = serde_json::from_value(kd["public"].clone())?;
+            let priv_blob: Vec<u8> = serde_json::from_value(kd["private"].clone())?;
+            let kh = load_key(&mut engine, srk, &pub_blob, &priv_blob)?;
+
+            // Verify the authority's approval -> ticket.
+            let le = send_command(&mut engine, &build_load_external_cmd(authority_pub, TPM_RH_OWNER))?;
+            let auth_handle = u32::from_be_bytes([le[10], le[11], le[12], le[13]]);
+            let ticket = verify_signature_ticket(&mut engine, auth_handle, &ahash, approval_sig)?;
+            flush_context(&mut engine, auth_handle).ok();
+
+            // Policy session: PolicyPCR (live) then PolicyAuthorize.
+            let start = send_command(&mut engine, &build_start_auth_session_cmd())?;
+            let session = u32::from_be_bytes([start[10], start[11], start[12], start[13]]);
+            let sign_res: anyhow::Result<Vec<u8>> = (|| {
+                send_command(&mut engine, &build_policy_pcr_cmd(session, hash_alg, indices))?;
+                send_command(
+                    &mut engine,
+                    &build_policy_authorize_cmd(session, approved_policy, policy_ref, &name, &ticket),
+                )?;
+                tpm_hash_and_sign(&mut engine, kh, data, session)
+            })();
+            flush_context(&mut engine, session).ok();
+            flush_context(&mut engine, kh).ok();
+            sign_res
+        })();
+        flush_context(&mut engine, srk).ok();
+        result.map_err(|e| anyhow::anyhow!("authorized signing failed (TPM): {e}"))
     }
 
     fn sign(&self, handle: &KeyHandle, data: &[u8]) -> anyhow::Result<Vec<u8>> {
@@ -507,7 +616,7 @@ impl TpmBackend for VtpmBackend {
         let key_data: serde_json::Value = serde_json::from_slice(&handle.id)?;
         let pub_blob: Vec<u8> = serde_json::from_value(key_data["public"].clone())?;
 
-        let resp = send_command(&mut engine, &build_load_external_cmd(&pub_blob))?;
+        let resp = send_command(&mut engine, &build_load_external_cmd(&pub_blob, TPM_RH_NULL))?;
         if resp.len() < 14 {
             anyhow::bail!("LoadExternal response too short: {} bytes", resp.len());
         }
@@ -934,6 +1043,92 @@ fn build_policy_pcr_cmd(session: u32, hash_alg: u16, indices: &[u32]) -> Vec<u8>
     c
 }
 
+fn sha256(data: &[u8]) -> Vec<u8> {
+    tpm_core::backend::hash_for_bank("sha256", data).expect("sha256 available")
+}
+
+/// The TPM Name of a key from its TPM2B_PUBLIC blob:
+/// `nameAlg ‖ H_nameAlg(TPMT_PUBLIC)`. Assumes a sha256 nameAlg.
+fn tpm_key_name(pub_blob: &[u8]) -> Vec<u8> {
+    // pub_blob = size(2) | TPMT_PUBLIC{ type(2), nameAlg(2), ... }
+    let tpmt_public = &pub_blob[2..];
+    let name_alg = &pub_blob[4..6];
+    let mut name = name_alg.to_vec();
+    name.extend_from_slice(&sha256(tpmt_public));
+    name
+}
+
+/// The PolicyAuthorize authPolicy for a key authorized by `key_name`:
+/// `H( H(0^32 ‖ CC_PolicyAuthorize ‖ keyName) ‖ policyRef )`.
+fn compute_policy_authorize_digest(key_name: &[u8], policy_ref: &[u8]) -> Vec<u8> {
+    let mut d1 = Vec::new();
+    d1.extend_from_slice(&[0u8; 32]);
+    d1.extend_from_slice(&TPM2_CC_POLICY_AUTHORIZE.to_be_bytes());
+    d1.extend_from_slice(key_name);
+    let d1 = sha256(&d1);
+    let mut d2 = d1;
+    d2.extend_from_slice(policy_ref);
+    sha256(&d2)
+}
+
+/// The aHash an authority signs to approve a policy:
+/// `H_sha256(approvedPolicy ‖ policyRef)`.
+fn approval_ahash(approved_policy: &[u8], policy_ref: &[u8]) -> Vec<u8> {
+    let mut buf = approved_policy.to_vec();
+    buf.extend_from_slice(policy_ref);
+    sha256(&buf)
+}
+
+/// A null TPMT_TK_HASHCHECK (sign a caller-supplied digest, no TPM hash).
+fn null_hashcheck_ticket() -> Vec<u8> {
+    let mut t = Vec::new();
+    t.extend_from_slice(&TPM_ST_HASHCHECK.to_be_bytes());
+    t.extend_from_slice(&TPM_RH_NULL.to_be_bytes());
+    t.extend_from_slice(&0u16.to_be_bytes()); // empty digest
+    t
+}
+
+fn build_policy_authorize_cmd(
+    session: u32,
+    approved_policy: &[u8],
+    policy_ref: &[u8],
+    key_name: &[u8],
+    check_ticket: &[u8],
+) -> Vec<u8> {
+    let mut c = Vec::new();
+    c.extend_from_slice(&TPM_ST_NO_SESSIONS.to_be_bytes());
+    c.extend_from_slice(&0u32.to_be_bytes());
+    c.extend_from_slice(&TPM2_CC_POLICY_AUTHORIZE.to_be_bytes());
+    c.extend_from_slice(&session.to_be_bytes()); // policySession
+    c.extend_from_slice(&(approved_policy.len() as u16).to_be_bytes());
+    c.extend_from_slice(approved_policy);
+    c.extend_from_slice(&(policy_ref.len() as u16).to_be_bytes());
+    c.extend_from_slice(policy_ref);
+    c.extend_from_slice(&(key_name.len() as u16).to_be_bytes());
+    c.extend_from_slice(key_name);
+    c.extend_from_slice(check_ticket); // TPMT_TK_VERIFIED, as-is
+    let size = c.len() as u32;
+    c[2..6].copy_from_slice(&size.to_be_bytes());
+    c
+}
+
+/// Run TPM2_VerifySignature and return the TPMT_TK_VERIFIED ticket bytes
+/// on success (for feeding TPM2_PolicyAuthorize).
+fn verify_signature_ticket(
+    engine: &mut VtpmEngine,
+    key_handle: u32,
+    digest: &[u8],
+    signature: &[u8],
+) -> anyhow::Result<Vec<u8>> {
+    let resp = send_command(engine, &build_verify_signature_cmd(key_handle, digest, signature))?;
+    // VerifySignature is a NO_SESSIONS command: response is
+    //   header(10) | TPMT_TK_VERIFIED  (no parameterSize field).
+    if resp.len() < 10 {
+        anyhow::bail!("VerifySignature response too short");
+    }
+    Ok(resp[10..].to_vec())
+}
+
 /// Empty-password authorization area (`TPM_RS_PW`, continueSession).
 fn pw_auth_area() -> Vec<u8> {
     let mut a = Vec::new();
@@ -1025,7 +1220,7 @@ fn nv_read_public_attributes(engine: &mut VtpmEngine, index: u32) -> Option<u32>
     Some(u32::from_be_bytes([resp[18], resp[19], resp[20], resp[21]]))
 }
 
-fn build_load_external_cmd(pub_blob: &[u8]) -> Vec<u8> {
+fn build_load_external_cmd(pub_blob: &[u8], hierarchy: u32) -> Vec<u8> {
     let mut c = Vec::new();
     c.extend_from_slice(&TPM_ST_NO_SESSIONS.to_be_bytes());
     c.extend_from_slice(&0u32.to_be_bytes()); // size placeholder
@@ -1034,8 +1229,9 @@ fn build_load_external_cmd(pub_blob: &[u8]) -> Vec<u8> {
     c.extend_from_slice(&0u16.to_be_bytes());
     // inPublic: the stored TPM2B_PUBLIC (already size-prefixed)
     c.extend_from_slice(pub_blob);
-    // hierarchy
-    c.extend_from_slice(&TPM_RH_NULL.to_be_bytes());
+    // hierarchy: NULL for a verify-only load, a real hierarchy (OWNER)
+    // when a usable VerifySignature ticket is needed (PolicyAuthorize).
+    c.extend_from_slice(&hierarchy.to_be_bytes());
     let size = c.len() as u32;
     c[2..6].copy_from_slice(&size.to_be_bytes());
     c
@@ -1098,7 +1294,12 @@ fn build_create_primary_cmd() -> Vec<u8> {
     c
 }
 
-fn build_create_cmd(parent_handle: u32, algorithm: Algorithm, auth_policy: &[u8]) -> Vec<u8> {
+fn build_create_cmd(
+    parent_handle: u32,
+    algorithm: Algorithm,
+    attrs: u32,
+    auth_policy: &[u8],
+) -> Vec<u8> {
     let mut c = Vec::new();
     c.extend_from_slice(&TPM_ST_SESSIONS.to_be_bytes());
     c.extend_from_slice(&0u32.to_be_bytes());
@@ -1117,15 +1318,15 @@ fn build_create_cmd(parent_handle: u32, algorithm: Algorithm, auth_policy: &[u8]
     c.extend_from_slice(&0u16.to_be_bytes());
     c.extend_from_slice(&0u16.to_be_bytes());
 
-    // A policy-bound key clears userWithAuth and carries an authPolicy
-    // (TPM2B_DIGEST); otherwise it uses password auth with an empty policy.
-    let (attrs, policy_field) = if auth_policy.is_empty() {
-        (OBJ_ATTR_SIGN_USERAUTH, Vec::new())
+    // `attrs` is chosen by the caller; a non-empty `auth_policy` is
+    // emitted as the TPM2B_DIGEST authPolicy.
+    let policy_field = if auth_policy.is_empty() {
+        Vec::new()
     } else {
         let mut p = Vec::new();
         p.extend_from_slice(&(auth_policy.len() as u16).to_be_bytes());
         p.extend_from_slice(auth_policy);
-        (OBJ_ATTR_SIGN_POLICY, p)
+        p
     };
     let authpolicy_bytes = |out: &mut Vec<u8>| {
         if policy_field.is_empty() {
@@ -1513,6 +1714,60 @@ mod tests {
             err.to_string().contains("policy"),
             "expected a TPM policy refusal, got: {err}"
         );
+    }
+
+    #[test]
+    fn policy_authorize_signs_only_for_authority_approved_states() {
+        let Ok(component) = std::env::var("TPM_VTPM_COMPONENT") else {
+            eprintln!("skipping: TPM_VTPM_COMPONENT not set");
+            return;
+        };
+        let backend = VtpmBackend::new(std::path::Path::new(&component)).unwrap();
+        let bank = "sha256";
+        let indices = [14u32];
+        let policy_ref: &[u8] = &[];
+
+        // Authority key (the offline approver) + its public blob.
+        let authority = backend
+            .create_authority_key(Algorithm::EccP256, &ObjectPath::new("policy/authority").unwrap())
+            .unwrap();
+        let akd: serde_json::Value = serde_json::from_slice(&authority.id).unwrap();
+        let authority_pub: Vec<u8> = serde_json::from_value(akd["public"].clone()).unwrap();
+
+        // MMA signing key bound to the authority via PolicyAuthorize.
+        let key = backend
+            .create_key_authorized(
+                Algorithm::EccP256,
+                &ObjectPath::new("signing/mma").unwrap(),
+                &authority_pub,
+            )
+            .unwrap();
+
+        // Approve the current state; the key signs.
+        let v1 = backend.pcr_policy_digest(bank, &indices).unwrap();
+        let sig1 = backend.approve_policy(&authority, &v1, policy_ref).unwrap();
+        let s = backend
+            .sign_authorized(&key, b"root", bank, &indices, &authority_pub, &v1, policy_ref, &sig1)
+            .expect("authorized key signs in an approved state");
+        assert!(s.len() >= 2 && s[0] == 0x00 && s[1] == 0x18, "real ECDSA sig, got {}", s.len());
+
+        // Change PCR 14: the old approval no longer applies -> refused.
+        backend.pcr_extend(bank, 14, &[0x22u8; 32]).unwrap();
+        assert!(
+            backend
+                .sign_authorized(&key, b"root", bank, &indices, &authority_pub, &v1, policy_ref, &sig1)
+                .is_err(),
+            "signing must fail for a state the authority did not approve"
+        );
+
+        // Upgrade: the authority approves the NEW state; the SAME key signs.
+        let v2 = backend.pcr_policy_digest(bank, &indices).unwrap();
+        assert_ne!(v1, v2);
+        let sig2 = backend.approve_policy(&authority, &v2, policy_ref).unwrap();
+        let s2 = backend
+            .sign_authorized(&key, b"root", bank, &indices, &authority_pub, &v2, policy_ref, &sig2)
+            .expect("same key signs after the authority approves the upgraded state");
+        assert!(s2.len() >= 2 && s2[0] == 0x00 && s2[1] == 0x18);
     }
 
     #[test]

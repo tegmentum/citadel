@@ -60,6 +60,63 @@ pub trait TpmBackend: Send + Sync {
         anyhow::bail!("policy signing is not supported by this backend")
     }
 
+    // -- PolicyAuthorize: upgradable, authority-approved signing --
+
+    /// Create an external-loadable signing key to act as a PolicyAuthorize
+    /// **authority** (release/upgrade approver). Its public can be verified
+    /// under a real hierarchy. Default: not supported.
+    fn create_authority_key(
+        &self,
+        _algorithm: Algorithm,
+        _path: &ObjectPath,
+    ) -> anyhow::Result<KeyHandle> {
+        anyhow::bail!("policy-authorize is not supported by this backend")
+    }
+
+    /// Create a signing key whose use requires a policy *approved by an
+    /// authority key* (TPM2_PolicyAuthorize over `authority_pub`'s name),
+    /// rather than a frozen PolicyPCR digest. The authority can later
+    /// approve new measured states without re-keying. Default: not supported.
+    fn create_key_authorized(
+        &self,
+        _algorithm: Algorithm,
+        _path: &ObjectPath,
+        _authority_pub: &[u8],
+    ) -> anyhow::Result<KeyHandle> {
+        anyhow::bail!("policy-authorize is not supported by this backend")
+    }
+
+    /// As the authority, approve a PolicyPCR digest (`approved_policy`):
+    /// sign `H(approved_policy ‖ policy_ref)` so a target machine in that
+    /// state can satisfy a PolicyAuthorize-bound key. Default: not supported.
+    fn approve_policy(
+        &self,
+        _authority: &KeyHandle,
+        _approved_policy: &[u8],
+        _policy_ref: &[u8],
+    ) -> anyhow::Result<Vec<u8>> {
+        anyhow::bail!("policy-authorize is not supported by this backend")
+    }
+
+    /// Sign under an authority-approved policy: `PolicyPCR` over the live
+    /// PCRs, then `PolicyAuthorize` with the authority's approval, then
+    /// sign. The TPM refuses unless the live PCRs equal `approved_policy`
+    /// AND the authority signed it. Default: not supported.
+    #[allow(clippy::too_many_arguments)]
+    fn sign_authorized(
+        &self,
+        _handle: &KeyHandle,
+        _data: &[u8],
+        _bank: &str,
+        _indices: &[u32],
+        _authority_pub: &[u8],
+        _approved_policy: &[u8],
+        _policy_ref: &[u8],
+        _approval_sig: &[u8],
+    ) -> anyhow::Result<Vec<u8>> {
+        anyhow::bail!("policy-authorize is not supported by this backend")
+    }
+
     /// Seal data under a policy. Returns an opaque sealed blob.
     fn seal(&self, data: &[u8], policy_digest: Option<&[u8]>) -> anyhow::Result<SealedData>;
 
