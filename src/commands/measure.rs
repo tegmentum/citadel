@@ -143,6 +143,17 @@ pub fn checkpoint(
     let seg = audit::close_segment_value(store_path, MEASUREMENT_STREAM)?;
 
     if let Some(index) = extend_pcr {
+        // PCRs 0-15 are in the TPM's Startup(STATE) save set and persist
+        // across invocations; 16-23 reset each boot, so an anchor there
+        // can't back a cross-invocation seal-to-attested-set.
+        if !pcr_persists(index) {
+            eprintln!(
+                "warning: PCR {} resets each boot (not in the Startup(STATE) save set); \
+                 the measurement anchor will not persist across invocations. \
+                 Use a PCR in 0-15 (e.g. the default 14).",
+                index
+            );
+        }
         // The Merkle root is a bank-sized digest; fold it into the PCR.
         backend.pcr_extend(bank, index, &seg.merkle_root)?;
     }
@@ -325,6 +336,12 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
+/// Whether a PCR index is in the TPM Startup(STATE) save set, and so
+/// persists across invocations. PCRs 0-15 are saved; 16-23 reset.
+fn pcr_persists(index: u32) -> bool {
+    index < 16
+}
+
 #[derive(Serialize)]
 struct MeasureFileOutput {
     seqno: u64,
@@ -396,6 +413,15 @@ mod tests {
     fn rejects_short_line() {
         assert!(parse_ima_line("10 abc ima-ng").is_none());
         assert!(parse_ima_line("").is_none());
+    }
+
+    #[test]
+    fn pcr_save_set_boundary() {
+        assert!(pcr_persists(0));
+        assert!(pcr_persists(14));
+        assert!(pcr_persists(15));
+        assert!(!pcr_persists(16));
+        assert!(!pcr_persists(23));
     }
 
     /// Capstone: measure -> checkpoint (anchor root into a PCR) -> seal a

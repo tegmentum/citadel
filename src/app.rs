@@ -437,9 +437,11 @@ pub enum MeasureCommand {
     },
     /// Seal a Merkle segment over pending measurements (the tree root)
     Checkpoint {
-        /// Also extend the Merkle root into this PCR index, so secrets
-        /// can be sealed to the attested measurement set
-        #[arg(long)]
+        /// Extend the Merkle root into a PCR so secrets can be sealed to
+        /// the attested measurement set. Without a value, uses a saved
+        /// PCR (14) that persists across invocations; PCRs 16-23 reset
+        /// each boot and will not persist.
+        #[arg(long, num_args = 0..=1, default_missing_value = "14")]
         extend_pcr: Option<u32>,
 
         /// PCR bank for --extend-pcr
