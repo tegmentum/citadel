@@ -100,6 +100,20 @@ Default index: `0x0180_0001` (the existing `ANCHOR_COUNTER_NV_INDEX` in
 
 ### Follow-on — bind the counter into the checkpoint (anti-rollback)
 
+> **Status: DONE — citadel-side** (`feat(measure): anti-rollback counter
+> bound into signed checkpoints`). The original sketch below modified the
+> secure-log crate, but a `SecureLogStore` trait change would have churned
+> ~10 published store impls. Instead the binding lives entirely in
+> citadel's `TpmCheckpointSigner` (tpm-core): it signs over
+> `H("artr" ‖ ckpt_hash ‖ counter)`, records the counter by checkpoint
+> hash (a new `checkpoint_counters` table, migration V6), and verify
+> reconstructs the bound message. `measure/audit sign --anti-rollback`
+> enables it; `measure rollback-check` flags truncation (live NV counter
+> > latest recorded checkpoint). secure-log is untouched. Validated
+> end-to-end on the real vTPM (bind → verify → detect). The cleaner
+> on-segment data model below remains a possible future refactor if the
+> secure-log workspace is reworked anyway.
+
 Once the counter works, wire it into signing so a verifier can detect
 rollback:
 
