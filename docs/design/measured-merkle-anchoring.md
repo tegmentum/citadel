@@ -1,5 +1,12 @@
 # Design: Measured Merkle Anchoring, Measurement, and Sealing
 
+> **Name:** this subsystem is **MMA — Measured Merkle Anchor**: the Merkle
+> measurement structure that branches off the end of the linear measured-boot /
+> TPM-enrollment chain (the "trunk") and anchors application measurements back
+> to the TPM. MMA is the canonical term for the `tpm measure` command group and
+> its checkpoints/anchors.
+
+
 Status: Phases 0–5 implemented (Part 5 partial — see Progress below)
 Audience: citadel maintainers
 Related: `crates/tpm-core/src/backend/traits.rs`, `secure-log` (sibling repo), `src/commands/{pcr,secret,attest,policy,identity,audit}.rs`

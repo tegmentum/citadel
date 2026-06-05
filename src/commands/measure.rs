@@ -80,6 +80,92 @@ pub fn file(
     Ok(())
 }
 
+// -- self-enrollment: tpm measure enroll --
+
+/// Enroll Citadel itself into the MMA by measuring the running executable
+/// — the agent's own self-measurement at the root of the application
+/// branch. With `--pcr`, also extend the digest into a PCR so the agent's
+/// signing identity can be bound to it (combine with
+/// `tpm identity init --pcr-bind`).
+///
+/// Note: a self-measurement via the running binary is self-attestation —
+/// a tampered agent can report a false hash. It becomes a real anchor
+/// only when Citadel is itself measured from below (IMA / a measured
+/// launcher); the enrolled digest is then cross-checkable.
+pub fn enroll(
+    store_path: &Path,
+    backend: &dyn TpmBackend,
+    bank: &str,
+    pcr: Option<u32>,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let exe = std::env::current_exe()
+        .map_err(|e| anyhow::anyhow!("locating the Citadel executable: {e}"))?;
+    let data = std::fs::read(&exe).map_err(|e| anyhow::anyhow!("reading {}: {e}", exe.display()))?;
+    let digest = hash_for_bank(bank, &data)?;
+    let digest_hex = hex(&digest);
+
+    if let Some(index) = pcr {
+        if !pcr_persists(index) {
+            eprintln!(
+                "warning: PCR {} resets each boot (not in the Startup(STATE) save set); \
+                 the agent measurement will not persist across invocations. Use a PCR in 0-15.",
+                index
+            );
+        }
+        backend.pcr_extend(bank, index, &digest)?;
+    }
+
+    let payload = serde_json::json!({
+        "source": "self",
+        "artifact_id": "citadel",
+        "kind": "agent",
+        "digest_alg": bank,
+        "digest": digest_hex,
+        "path": exe.to_string_lossy(),
+        "version": env!("CARGO_PKG_VERSION"),
+        "pcr": pcr,
+    })
+    .to_string();
+
+    let seqno = append_measurement(store_path, backend, "agent.enroll", &payload)?;
+
+    let out = EnrollOutput {
+        seqno,
+        digest_alg: bank.to_string(),
+        digest: digest_hex,
+        path: exe.to_string_lossy().to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        pcr,
+    };
+    println!("{}", render(&out, format));
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct EnrollOutput {
+    seqno: u64,
+    digest_alg: String,
+    digest: String,
+    path: String,
+    version: String,
+    pcr: Option<u32>,
+}
+
+impl TextRenderable for EnrollOutput {
+    fn render_text(&self) -> String {
+        let mut out = format!(
+            "enrolled Citadel into the MMA\n  seqno:    {}\n  version:  {}\n  path:     {}\n  {}:  {}\n",
+            self.seqno, self.version, self.path, self.digest_alg, self.digest
+        );
+        match self.pcr {
+            Some(i) => out.push_str(&format!("  pcr:      extended {}[{}]\n", self.digest_alg, i)),
+            None => out.push_str("  pcr:      (not extended)\n"),
+        }
+        out
+    }
+}
+
 // -- delegated measurement: tpm measure ima [--from <path>] --
 
 pub fn ima(

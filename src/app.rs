@@ -428,6 +428,16 @@ pub enum MeasureCommand {
         #[arg(long)]
         pcr: Option<u32>,
     },
+    /// Enroll Citadel itself into the MMA (measure the running binary)
+    Enroll {
+        /// Hash bank
+        #[arg(long, default_value = "sha256")]
+        bank: String,
+
+        /// Also extend the agent digest into this PCR (use 0-15 to persist)
+        #[arg(long)]
+        pcr: Option<u32>,
+    },
     /// Ingest the kernel IMA runtime measurement list (delegated source)
     Ima {
         /// Read IMA measurements from this file instead of the default
