@@ -437,6 +437,12 @@ pub enum MeasureCommand {
         /// Also extend the agent digest into this PCR (use 0-15 to persist)
         #[arg(long)]
         pcr: Option<u32>,
+
+        /// Cross-check the agent hash against the kernel IMA log (a
+        /// mismatch is fatal). Without a value uses the default
+        /// /sys/kernel/security/ima/ascii_runtime_measurements.
+        #[arg(long, num_args = 0..=1, default_missing_value = "/sys/kernel/security/ima/ascii_runtime_measurements")]
+        verify_ima: Option<std::path::PathBuf>,
     },
     /// Ingest the kernel IMA runtime measurement list (delegated source)
     Ima {

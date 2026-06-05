@@ -97,6 +97,7 @@ pub fn enroll(
     backend: &dyn TpmBackend,
     bank: &str,
     pcr: Option<u32>,
+    verify_ima: Option<&Path>,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     let exe = std::env::current_exe()
@@ -104,6 +105,43 @@ pub fn enroll(
     let data = std::fs::read(&exe).map_err(|e| anyhow::anyhow!("reading {}: {e}", exe.display()))?;
     let digest = hash_for_bank(bank, &data)?;
     let digest_hex = hex(&digest);
+
+    // Cross-check against the kernel IMA measurement of the same binary,
+    // turning self-attestation into a kernel-corroborated anchor. A
+    // mismatch is fatal (the running binary differs from what the kernel
+    // measured); a missing entry or hash-alg mismatch is a warning.
+    let ima_corroborated = match verify_ima {
+        None => None,
+        Some(ima_path) => match ima_digest_for_path(ima_path, &exe)? {
+            Some((alg, _)) if alg != bank => {
+                eprintln!(
+                    "warning: IMA measured {} with {}, enrolling with {} — cannot compare",
+                    exe.display(),
+                    alg,
+                    bank
+                );
+                Some(false)
+            }
+            Some((_, ima_hex)) if ima_hex.eq_ignore_ascii_case(&digest_hex) => Some(true),
+            Some((_, ima_hex)) => {
+                anyhow::bail!(
+                    "IMA cross-check FAILED for {}: running binary hashes to {} but the kernel \
+                     IMA log measured {} — the binary differs from what was measured",
+                    exe.display(),
+                    digest_hex,
+                    ima_hex
+                );
+            }
+            None => {
+                eprintln!(
+                    "warning: no IMA measurement found for {} (IMA may not be enabled for it, \
+                     or the recorded path differs); enrolling without corroboration",
+                    exe.display()
+                );
+                Some(false)
+            }
+        },
+    };
 
     if let Some(index) = pcr {
         if !pcr_persists(index) {
@@ -125,6 +163,7 @@ pub fn enroll(
         "path": exe.to_string_lossy(),
         "version": env!("CARGO_PKG_VERSION"),
         "pcr": pcr,
+        "ima_corroborated": ima_corroborated,
     })
     .to_string();
 
@@ -137,9 +176,26 @@ pub fn enroll(
         path: exe.to_string_lossy().to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         pcr,
+        ima_corroborated,
     };
     println!("{}", render(&out, format));
     Ok(())
+}
+
+/// File-data digest the kernel IMA log recorded for `target`, if any:
+/// `(alg, hex)` from the matching `ascii_runtime_measurements` line.
+fn ima_digest_for_path(ima_path: &Path, target: &Path) -> anyhow::Result<Option<(String, String)>> {
+    let contents = std::fs::read_to_string(ima_path)
+        .map_err(|e| anyhow::anyhow!("reading IMA measurements from {}: {e}", ima_path.display()))?;
+    let target_str = target.to_string_lossy();
+    for line in contents.lines() {
+        if let Some(e) = parse_ima_line(line) {
+            if e.filename == target_str {
+                return Ok(Some((e.digest_alg, e.file_digest)));
+            }
+        }
+    }
+    Ok(None)
 }
 
 #[derive(Serialize)]
@@ -150,6 +206,9 @@ struct EnrollOutput {
     path: String,
     version: String,
     pcr: Option<u32>,
+    /// `Some(true)` corroborated by IMA, `Some(false)` requested but not
+    /// corroborated, `None` not requested.
+    ima_corroborated: Option<bool>,
 }
 
 impl TextRenderable for EnrollOutput {
@@ -161,6 +220,11 @@ impl TextRenderable for EnrollOutput {
         match self.pcr {
             Some(i) => out.push_str(&format!("  pcr:      extended {}[{}]\n", self.digest_alg, i)),
             None => out.push_str("  pcr:      (not extended)\n"),
+        }
+        match self.ima_corroborated {
+            Some(true) => out.push_str("  ima:      corroborated (kernel measured the same hash)\n"),
+            Some(false) => out.push_str("  ima:      NOT corroborated (see warning)\n"),
+            None => {}
         }
         out
     }
@@ -614,6 +678,23 @@ mod tests {
         let err = rollback_check(path, &backend, Some(ANCHOR_COUNTER_NV_INDEX), OutputFormat::Json)
             .expect_err("advancing the live counter past recorded checkpoints is a rollback");
         assert!(err.to_string().contains("rollback"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn ima_digest_lookup_by_path() {
+        let f = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            f.path(),
+            "10 aa ima-ng sha256:cafe /opt/app\n10 bb ima-ng sha256:beef /usr/bin/x\n",
+        )
+        .unwrap();
+        assert_eq!(
+            ima_digest_for_path(f.path(), std::path::Path::new("/opt/app")).unwrap(),
+            Some(("sha256".to_string(), "cafe".to_string()))
+        );
+        assert!(ima_digest_for_path(f.path(), std::path::Path::new("/nope"))
+            .unwrap()
+            .is_none());
     }
 
     #[test]

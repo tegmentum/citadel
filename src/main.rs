@@ -769,11 +769,16 @@ fn main() -> anyhow::Result<()> {
                         pcr,
                         format,
                     ),
-                    MeasureCommand::Enroll { bank, pcr } => commands::measure::enroll(
+                    MeasureCommand::Enroll {
+                        bank,
+                        pcr,
+                        verify_ima,
+                    } => commands::measure::enroll(
                         &store_path,
                         backend.as_ref(),
                         &bank,
                         pcr,
+                        verify_ima.as_deref(),
                         format,
                     ),
                     MeasureCommand::Ima { from } => commands::measure::ima(
