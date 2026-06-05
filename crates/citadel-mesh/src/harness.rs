@@ -25,6 +25,7 @@ use crate::enrollment::{self, AdmissionOutcome, EnrollmentChallenge};
 use crate::id::{Epoch, MeshId, NodeId};
 use crate::membership::Membership;
 use crate::node::{Node, NodeConfig, WitnessSummary};
+use crate::quarantine::{self, QuarantineDecision, QuarantineScope};
 use crate::state::{LivenessState, TrustState};
 use crate::witness;
 
@@ -245,11 +246,112 @@ impl Mesh {
     /// the founding authority's view. A node on probation cannot vote.
     pub fn is_eligible_voter(&self, witness: NodeId) -> bool {
         let authority = self.nodes[0].id();
+        // A node quarantined at/above RestrictMeshVoting loses its vote.
+        if self
+            .node(authority)
+            .quarantine_of(witness)
+            .is_some_and(|s| s.restricts_voting())
+        {
+            return false;
+        }
         witness == authority
             || matches!(
                 self.trust_of(authority, witness),
                 Some(TrustState::Trusted) | Some(TrustState::Degraded)
             )
+    }
+
+    /// The quarantine scope on `subject` as the founding authority sees it.
+    pub fn quarantine_of(&self, subject: NodeId) -> Option<QuarantineScope> {
+        self.node(self.nodes[0].id()).quarantine_of(subject)
+    }
+
+    /// Propose and vote on quarantining `subject` at `scope`. The subject's
+    /// witnesses vote (approving if they see it suspicious/isolated); the
+    /// action is enacted only on the scope's quorum — plus `operator_approved`
+    /// for the most severe scopes (design §13.4). On enactment every member
+    /// applies the scope.
+    pub fn propose_quarantine(
+        &mut self,
+        proposer: NodeId,
+        subject: NodeId,
+        scope: QuarantineScope,
+        operator_approved: bool,
+    ) -> QuarantineDecision {
+        let tick = self.tick;
+        let cfg = self.template_config.clone().unwrap_or_default();
+        let roster: Vec<NodeId> = self.nodes.iter().map(|n| n.id()).collect();
+        let ws = witness::assign(subject, &roster, Epoch(cfg.mesh_epoch), cfg.witness_count.max(1));
+
+        let proposal = self.node(proposer).propose_quarantine(subject, scope, tick);
+        let mut votes = Vec::new();
+        let mut eligible = HashSet::new();
+        for w in &ws.witnesses {
+            votes.push(self.node(*w).vote_on_quarantine(&proposal, tick));
+            if self.is_eligible_voter(*w) {
+                eligible.insert(*w);
+            }
+        }
+        let decision = quarantine::decide_quarantine(
+            &proposal,
+            &votes,
+            &eligible,
+            cfg.witness_count.max(1),
+            operator_approved,
+        );
+        if decision.enacted {
+            for n in &mut self.nodes {
+                n.apply_quarantine(subject, scope, tick);
+            }
+        }
+        decision
+    }
+
+    /// Simulate remediation (a clean reimage): replace `subject`'s backend so
+    /// it once again attests to the golden state.
+    pub fn remediate(&mut self, subject: NodeId) {
+        self.node_mut(subject)
+            .replace_backend(Box::new(MockBackend::new()))
+            .expect("fresh backend");
+    }
+
+    /// An isolated node requests to rejoin: it re-attests, its witnesses vote,
+    /// and on quorum the quarantine is lifted — returning it to **probation**,
+    /// not straight to trusted (design §13.5). Returns whether it rejoined.
+    pub fn rejoin(&mut self, subject: NodeId) -> bool {
+        let tick = self.tick;
+        let cfg = self.template_config.clone().unwrap_or_default();
+        let roster: Vec<NodeId> = self.nodes.iter().map(|n| n.id()).collect();
+        let ws = witness::assign(subject, &roster, Epoch(cfg.mesh_epoch), cfg.witness_count.max(1));
+
+        let challenge = EnrollmentChallenge {
+            mesh_id: self.mesh_id.clone(),
+            candidate: subject,
+            nonce: enroll_nonce(subject, tick),
+            pcr_bank: cfg.pcr_bank.clone(),
+            pcr_selection: cfg.pcr_selection.clone(),
+            policy_revision: cfg.policy_revision,
+            admission_witnesses: ws.witnesses.clone(),
+            quorum_threshold: ws.quorum_threshold,
+        };
+        let claim = match self.node(subject).make_enrollment_claim(&challenge, "worker", "v2") {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+
+        let mut approvals = 0usize;
+        for w in &ws.witnesses {
+            if self.is_eligible_voter(*w) && self.node(*w).verify_rejoin(&claim, &challenge, tick) {
+                approvals += 1;
+            }
+        }
+        let lifted = approvals >= ws.quorum_threshold;
+        if lifted {
+            for n in &mut self.nodes {
+                n.lift_quarantine(subject, tick);
+            }
+        }
+        lifted
     }
 
     /// Attempt to enroll a new node (healthy candidate). See

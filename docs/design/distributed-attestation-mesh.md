@@ -2,8 +2,12 @@
 
 ## Design Document
 
-Status: Design (handoff) — not yet implemented
-Related: `measured-merkle-anchoring.md`, `mma-upgrade.md`, `tpm-nv-counter-and-policy-signing.md`
+Status: Implemented — Phases 0–6 complete in `crates/citadel-mesh`
+(network-free protocol core + deterministic in-process harness; real-vTPM
+attestation validated). Remaining: transport wiring over `tpmd`, AK/EK
+endorsement-chain validation, and the LtHash log-shipping integration
+(`distributed-log-shipping-lthash.md`).
+Related: `distributed-log-shipping-lthash.md`, `measured-merkle-anchoring.md`, `mma-upgrade.md`, `tpm-nv-counter-and-policy-signing.md`
 
 > Implementation note (citadel repo): this mesh is designed to build on
 > primitives this repo already has rather than reinvent them —
@@ -1594,25 +1598,31 @@ across the probation window. Real AK/EK endorsement-chain validation (so the
 attestation key is bound to genuine hardware, closing the `AK_UNTRUSTED`
 gap) is the remaining hardening on this path.
 
-### Phase 6: Quarantine
+### Phase 6: Quarantine — DONE
 
-Deliverables:
-
-```text
-quarantine proposals
-quarantine voting
-scope-based isolation
-operator approval workflow
-rejoin flow
-```
-
-Acceptance:
+Deliverables (in `quarantine.rs` + `node.rs`/`harness.rs`):
 
 ```text
-- Suspicious node can be moved to RestrictedMeshVoting.
-- Stronger isolation requires configured quorum.
-- Rejoin requires fresh attestation and probation.
+quarantine proposals      ✓ signed QuarantineProposal (subject, scope, reasons)
+quarantine voting          ✓ signed QuarantineVote; decide_quarantine eligible tally
+scope-based isolation       ✓ 7 QuarantineScopes by severity; trust frozen while quarantined
+operator approval workflow  ✓ severe scopes gated on operator_approved, not witnesses alone
+rejoin flow                 ✓ remediate → re-attest → witness vote → back to Probationary
 ```
+
+Acceptance (proven by `tests/phase6.rs` + `quarantine.rs` units):
+
+```text
+- Suspicious node → RestrictMeshVoting.   ✓ quorum enacts; the node loses its vote
+- Stronger isolation needs higher quorum.  ✓ FullIsolation needs more approvals + an operator
+- Rejoin needs fresh attestation+probation.✓ stale node refused; remediated rejoins to probation
+```
+
+Quarantine is quorum-driven (no unilateral isolation), severity-graded (each
+scope needs a wider fraction of the subject's witnesses, the most
+destructive also an operator), and reversible: an isolated node rejoins only
+by attesting afresh and being voted back — and only to probation, never
+straight to trusted.
 
 ---
 

@@ -24,9 +24,11 @@ use crate::enrollment::{
 };
 use crate::id::{Epoch, MeshId, NodeId};
 use crate::membership::Membership;
+use crate::quarantine::{Ballot, QuarantineProposal, QuarantineScope, QuarantineVote};
 use crate::state::{LivenessState, TrustState};
-use crate::types::{AttestationChallenge, GossipEnvelope, GossipMessage, Verdict};
+use crate::types::{AttestationChallenge, GossipEnvelope, GossipMessage, ReasonCode, Verdict};
 use crate::witness;
+use tpm_core::backend::TpmBackend;
 
 /// Tunable SWIM / attestation parameters (design §9.8).
 #[derive(Clone, Debug)]
@@ -144,6 +146,9 @@ pub struct Node {
     /// Tick at which each subject was admitted to probation — used to gate
     /// promotion to `Trusted` after the probation window.
     probation_start: HashMap<NodeId, u64>,
+    /// Quarantine scope currently applied to each subject (design §13). While
+    /// present, the subject's trust is frozen (sticky until a rejoin lifts it).
+    quarantine: HashMap<NodeId, QuarantineScope>,
     outbox: Vec<Addressed>,
 }
 
@@ -176,6 +181,7 @@ impl Node {
             witness_reports: HashMap::new(),
             last_challenge: HashMap::new(),
             probation_start: HashMap::new(),
+            quarantine: HashMap::new(),
             outbox: Vec::new(),
         }
     }
@@ -558,6 +564,11 @@ impl Node {
     /// once a quorum has reported (design §11.4). Below quorum, leave the
     /// existing (provisional / direct-observation) trust untouched.
     fn aggregate_trust(&mut self, subject: NodeId) {
+        // A quarantined node's trust is frozen until a rejoin explicitly
+        // lifts the quarantine — re-attesting alone must not auto-clear it.
+        if self.quarantine.contains_key(&subject) {
+            return;
+        }
         let ws = self.witnesses_for(subject);
         let relevant: Vec<Verdict> = match self.witness_reports.get(&subject) {
             Some(reports) => ws
@@ -748,6 +759,98 @@ impl Node {
         self.membership.learn(node_id, key, role, tick);
         self.membership.set_trust(&node_id, TrustState::Probationary);
         self.probation_start.insert(node_id, tick);
+    }
+
+    // -- quarantine (design §13) ----------------------------------------
+
+    /// Propose quarantining `subject` at `scope`, citing a reason if this
+    /// node currently considers the subject suspicious.
+    pub fn propose_quarantine(
+        &self,
+        subject: NodeId,
+        scope: QuarantineScope,
+        tick: u64,
+    ) -> QuarantineProposal {
+        let reasons = if matches!(
+            self.membership.get(&subject).map(|m| m.trust),
+            Some(TrustState::Suspicious)
+        ) {
+            vec![ReasonCode::PcrMismatch]
+        } else {
+            Vec::new()
+        };
+        QuarantineProposal::create(&self.keypair, self.id, subject, reasons, scope, tick + 10, tick)
+    }
+
+    /// Vote on a quarantine proposal: approve if this node independently sees
+    /// the subject as suspicious or already isolated; reject otherwise.
+    pub fn vote_on_quarantine(&self, proposal: &QuarantineProposal, tick: u64) -> QuarantineVote {
+        let ballot = if matches!(
+            self.membership.get(&proposal.subject).map(|m| m.trust),
+            Some(TrustState::Suspicious) | Some(TrustState::Isolated)
+        ) {
+            Ballot::Approve
+        } else {
+            Ballot::Reject
+        };
+        QuarantineVote::sign(&self.keypair, self.id, proposal.id, ballot, tick)
+    }
+
+    /// Apply an enacted quarantine scope to `subject` in this view.
+    pub fn apply_quarantine(&mut self, subject: NodeId, scope: QuarantineScope, _tick: u64) {
+        self.quarantine.insert(subject, scope);
+        if scope.isolates() {
+            self.membership.set_trust(&subject, TrustState::Isolated);
+        }
+    }
+
+    /// The scope currently quarantining `subject`, if any.
+    pub fn quarantine_of(&self, subject: NodeId) -> Option<QuarantineScope> {
+        self.quarantine.get(&subject).copied()
+    }
+
+    /// Lift a quarantine on rejoin: the node returns to **probation**, never
+    /// straight to trusted (design §13.5).
+    pub fn lift_quarantine(&mut self, subject: NodeId, tick: u64) {
+        self.quarantine.remove(&subject);
+        if self.membership.get(&subject).is_some() {
+            self.membership.set_trust(&subject, TrustState::Probationary);
+            self.probation_start.insert(subject, tick);
+        }
+    }
+
+    /// As a witness, verify a rejoining node's fresh attestation (signature,
+    /// nonce, measured state) — no duplicate check, since it is already a
+    /// member re-proving itself.
+    pub fn verify_rejoin(
+        &self,
+        claim: &EnrollmentClaim,
+        challenge: &EnrollmentChallenge,
+        tick: u64,
+    ) -> bool {
+        if !claim.verify_signature() || claim.nonce != challenge.nonce {
+            return false;
+        }
+        let ach = AttestationChallenge {
+            challenger: self.id,
+            subject: claim.candidate,
+            nonce: challenge.nonce.clone(),
+            pcr_bank: challenge.pcr_bank.clone(),
+            pcr_selection: challenge.pcr_selection.clone(),
+            policy_revision: challenge.policy_revision,
+            expires_at_tick: tick + 5,
+        };
+        self.attestor
+            .verify(&ach, &claim.evidence, &self.peer_reference, self.id, tick)
+            .result
+            == Verdict::Pass
+    }
+
+    /// Replace the node's TPM backend (a clean reimage / remediation),
+    /// minting a fresh attestation key. Used before a rejoin.
+    pub fn replace_backend(&mut self, backend: Box<dyn TpmBackend>) -> anyhow::Result<()> {
+        self.attestor = Attestor::new(backend)?;
+        Ok(())
     }
 
     fn make_nonce(&self, target: NodeId) -> Vec<u8> {

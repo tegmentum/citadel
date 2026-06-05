@@ -24,6 +24,7 @@
 //! * [`erasure`] — Reed-Solomon evidence fragments (any K of N reconstruct).
 //! * [`evidence`] — hash-chained evidence records, receipts, reconstruction.
 //! * [`enrollment`] — quorum admission, probation, duplicate-identity checks.
+//! * [`quarantine`] — quorum-driven, scope-graded, reversible isolation.
 //! * [`node`] — the agent: the SWIM tick + envelope handling.
 //! * [`harness`] — an in-memory mesh of nodes for deterministic tests.
 
@@ -36,6 +37,7 @@ pub mod harness;
 pub mod id;
 pub mod membership;
 pub mod node;
+pub mod quarantine;
 pub mod state;
 pub mod types;
 pub mod witness;
