@@ -60,6 +60,8 @@ The `--backend` flag (or `TPM_BACKEND` env var) selects the TPM backend. Default
 
 Auto-detection checks for `/dev/tpmrm0` first, then looks for the vTPM component at `~/.local/share/tpm/tpm-ephemeral.component.wasm`, and falls back to mock if neither is found.
 
+The vTPM persists its permanent state (NV and hierarchy seeds) alongside the metadata store at `<store>.tpmstate`, so keys, NV counters, and signed material survive across separate `tpm` invocations — signing, sealing, and attestation work end-to-end on the virtual TPM, not just the mock. (PCRs reset to a fresh-boot state each invocation.)
+
 ## Commands
 
 ### Workspace
