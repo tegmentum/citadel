@@ -17,6 +17,9 @@ pub struct MockBackend {
     pcrs: Mutex<HashMap<(String, u32), Vec<u8>>>,
     /// Monotonic NV counters, keyed by index. Increment-only.
     counters: Mutex<HashMap<u32, u64>>,
+    /// authPolicy a key was bound to (key id -> PolicyPCR digest), so
+    /// `sign_with_policy` can enforce the measured-state gate in software.
+    key_policies: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
 }
 
 struct MockKey {
@@ -37,6 +40,7 @@ impl MockBackend {
             nv: Mutex::new(HashMap::new()),
             pcrs: Mutex::new(HashMap::new()),
             counters: Mutex::new(HashMap::new()),
+            key_policies: Mutex::new(HashMap::new()),
         }
     }
 
@@ -111,6 +115,49 @@ impl TpmBackend for MockBackend {
                 path: path.clone(),
             })
             .collect())
+    }
+
+    fn create_key_with_policy(
+        &self,
+        algorithm: Algorithm,
+        path: &ObjectPath,
+        auth_policy: &[u8],
+    ) -> anyhow::Result<KeyHandle> {
+        let handle = self.create_key(algorithm, path)?;
+        self.key_policies
+            .lock()
+            .unwrap()
+            .insert(handle.id.clone(), auth_policy.to_vec());
+        Ok(handle)
+    }
+
+    fn sign_with_policy(
+        &self,
+        handle: &KeyHandle,
+        data: &[u8],
+        bank: &str,
+        indices: &[u32],
+    ) -> anyhow::Result<Vec<u8>> {
+        let expected = self
+            .key_policies
+            .lock()
+            .unwrap()
+            .get(&handle.id)
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!("policy-bound key not known to this mock backend instance")
+            })?;
+        // Software enforcement mirroring the TPM: the current PolicyPCR
+        // digest must match what the key was bound to.
+        let current = self.pcr_policy_digest(bank, indices)?;
+        if current != expected {
+            anyhow::bail!(
+                "measured-state policy not satisfied: {} PCR {:?} differ from the bound state",
+                bank,
+                indices
+            );
+        }
+        self.sign(handle, data)
     }
 
     fn seal(&self, data: &[u8], policy_digest: Option<&[u8]>) -> anyhow::Result<SealedData> {
