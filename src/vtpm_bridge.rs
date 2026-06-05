@@ -26,6 +26,20 @@ const TPM2_CC_PCR_READ: u32 = 0x0000017E;
 const TPM2_CC_PCR_EXTEND: u32 = 0x00000182;
 const TPM2_CC_LOAD_EXTERNAL: u32 = 0x00000167;
 const TPM2_CC_VERIFY_SIGNATURE: u32 = 0x00000177;
+const TPM2_CC_NV_DEFINE_SPACE: u32 = 0x0000012A;
+const TPM2_CC_NV_INCREMENT: u32 = 0x00000134;
+const TPM2_CC_NV_READ: u32 = 0x0000014E;
+const TPM2_CC_NV_READ_PUBLIC: u32 = 0x00000169;
+
+// TPMA_NV attribute bits (TPM 2.0 Part 2). Note OWNERREAD is bit 17 and
+// AUTHREAD is bit 18 — an earlier attempt swapped these, which is why
+// the NV-counter auth paths were rejected.
+const TPMA_NV_OWNERWRITE: u32 = 0x0000_0002; // bit 1
+const TPMA_NV_COUNTER: u32 = 0x0000_0010; // TPM_NT=1 in bits [7:4]
+const TPMA_NV_OWNERREAD: u32 = 0x0002_0000; // bit 17
+const TPMA_NV_NO_DA: u32 = 0x0200_0000; // bit 25
+// NV index already defined — NV_DefineSpace is idempotent for our use.
+const TPM_RC_NV_DEFINED: u32 = 0x0000_014C;
 
 const TPM_RH_OWNER: u32 = 0x40000001;
 const TPM_RH_NULL: u32 = 0x40000007;
@@ -579,6 +593,49 @@ impl TpmBackend for VtpmBackend {
         Ok(())
     }
 
+    fn nv_increment(&self, index: u32) -> anyhow::Result<u64> {
+        let mut engine = self.engine.lock().unwrap();
+
+        // Define the counter NV index (idempotent: NV_DEFINED means it
+        // already exists, e.g. restored from persisted permanent state).
+        let def = engine
+            .process(&build_nv_define_counter_cmd(index))
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        let drc = response_rc(&def);
+        if drc != 0 && drc != TPM_RC_NV_DEFINED {
+            anyhow::bail!("NV_DefineSpace failed: rc 0x{:08x}", drc);
+        }
+
+        // Increment then read back the 8-byte counter.
+        let inc = engine
+            .process(&build_nv_increment_cmd(index))
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        let irc = response_rc(&inc);
+        if irc != 0 {
+            // Diagnostic: report the index's actual stored attributes so
+            // an auth/attribute mismatch is immediately localizable.
+            let attrs = nv_read_public_attributes(&mut engine, index)
+                .map(|a| format!("0x{a:08x}"))
+                .unwrap_or_else(|| "<readpublic failed>".into());
+            anyhow::bail!("NV_Increment failed: rc 0x{:08x} (nv attributes {})", irc, attrs);
+        }
+
+        let resp = send_command(&mut engine, &build_nv_read_cmd(index, 8))?;
+        // header(10) | paramSize(4) | TPM2B_MAX_NV_BUFFER(size u16 + data) | auth
+        if resp.len() < 16 {
+            anyhow::bail!("NV_Read response too short: {} bytes", resp.len());
+        }
+        let data_size = u16::from_be_bytes([resp[14], resp[15]]) as usize;
+        let start = 16;
+        let end = start + data_size;
+        if data_size != 8 || end > resp.len() {
+            anyhow::bail!("unexpected NV counter size: {} bytes", data_size);
+        }
+        let mut buf = [0u8; 8];
+        buf.copy_from_slice(&resp[start..end]);
+        Ok(u64::from_be_bytes(buf))
+    }
+
     fn create_ak(&self, algorithm: Algorithm) -> anyhow::Result<KeyHandle> {
         let path = ObjectPath::new("ak").unwrap();
         self.create_key(algorithm, &path)
@@ -734,6 +791,97 @@ fn build_pcr_extend_cmd(hash_alg: u16, pcr_index: u32, digest: &[u8]) -> Vec<u8>
     let size = c.len() as u32;
     c[2..6].copy_from_slice(&size.to_be_bytes());
     c
+}
+
+/// Empty-password authorization area (`TPM_RS_PW`, continueSession).
+fn pw_auth_area() -> Vec<u8> {
+    let mut a = Vec::new();
+    a.extend_from_slice(&TPM_RS_PW.to_be_bytes());
+    a.extend_from_slice(&0u16.to_be_bytes()); // nonce (empty)
+    a.push(0x01); // sessionAttributes: continueSession
+    a.extend_from_slice(&0u16.to_be_bytes()); // password (empty)
+    a
+}
+
+fn build_nv_define_counter_cmd(index: u32) -> Vec<u8> {
+    let mut c = Vec::new();
+    c.extend_from_slice(&TPM_ST_SESSIONS.to_be_bytes());
+    c.extend_from_slice(&0u32.to_be_bytes()); // size placeholder
+    c.extend_from_slice(&TPM2_CC_NV_DEFINE_SPACE.to_be_bytes());
+    c.extend_from_slice(&TPM_RH_OWNER.to_be_bytes()); // authHandle
+    let auth = pw_auth_area();
+    c.extend_from_slice(&(auth.len() as u32).to_be_bytes());
+    c.extend_from_slice(&auth);
+    // auth: TPM2B_AUTH (new index's authValue) — empty.
+    c.extend_from_slice(&0u16.to_be_bytes());
+    // publicInfo: TPM2B_NV_PUBLIC { size, TPMS_NV_PUBLIC }
+    let mut pubinfo = Vec::new();
+    pubinfo.extend_from_slice(&index.to_be_bytes()); // nvIndex
+    pubinfo.extend_from_slice(&TPM_ALG_SHA256.to_be_bytes()); // nameAlg
+    let attrs = TPMA_NV_OWNERWRITE | TPMA_NV_OWNERREAD | TPMA_NV_COUNTER | TPMA_NV_NO_DA;
+    pubinfo.extend_from_slice(&attrs.to_be_bytes());
+    pubinfo.extend_from_slice(&0u16.to_be_bytes()); // authPolicy (empty)
+    pubinfo.extend_from_slice(&8u16.to_be_bytes()); // dataSize = 8 (counter)
+    c.extend_from_slice(&(pubinfo.len() as u16).to_be_bytes());
+    c.extend_from_slice(&pubinfo);
+    let size = c.len() as u32;
+    c[2..6].copy_from_slice(&size.to_be_bytes());
+    c
+}
+
+fn build_nv_increment_cmd(index: u32) -> Vec<u8> {
+    let mut c = Vec::new();
+    c.extend_from_slice(&TPM_ST_SESSIONS.to_be_bytes());
+    c.extend_from_slice(&0u32.to_be_bytes());
+    c.extend_from_slice(&TPM2_CC_NV_INCREMENT.to_be_bytes());
+    c.extend_from_slice(&TPM_RH_OWNER.to_be_bytes()); // authHandle (owner)
+    c.extend_from_slice(&index.to_be_bytes()); // nvIndex
+    let auth = pw_auth_area();
+    c.extend_from_slice(&(auth.len() as u32).to_be_bytes());
+    c.extend_from_slice(&auth);
+    let size = c.len() as u32;
+    c[2..6].copy_from_slice(&size.to_be_bytes());
+    c
+}
+
+fn build_nv_read_cmd(index: u32, size: u16) -> Vec<u8> {
+    let mut c = Vec::new();
+    c.extend_from_slice(&TPM_ST_SESSIONS.to_be_bytes());
+    c.extend_from_slice(&0u32.to_be_bytes());
+    c.extend_from_slice(&TPM2_CC_NV_READ.to_be_bytes());
+    c.extend_from_slice(&TPM_RH_OWNER.to_be_bytes()); // authHandle (owner)
+    c.extend_from_slice(&index.to_be_bytes()); // nvIndex
+    let auth = pw_auth_area();
+    c.extend_from_slice(&(auth.len() as u32).to_be_bytes());
+    c.extend_from_slice(&auth);
+    c.extend_from_slice(&size.to_be_bytes()); // size to read
+    c.extend_from_slice(&0u16.to_be_bytes()); // offset
+    let sz = c.len() as u32;
+    c[2..6].copy_from_slice(&sz.to_be_bytes());
+    c
+}
+
+/// Read an NV index's TPMA_NV attributes via TPM2_NV_ReadPublic, for
+/// diagnostics when increment/read auth is rejected.
+fn nv_read_public_attributes(engine: &mut VtpmEngine, index: u32) -> Option<u32> {
+    let mut c = Vec::new();
+    c.extend_from_slice(&TPM_ST_NO_SESSIONS.to_be_bytes());
+    c.extend_from_slice(&0u32.to_be_bytes());
+    c.extend_from_slice(&TPM2_CC_NV_READ_PUBLIC.to_be_bytes());
+    c.extend_from_slice(&index.to_be_bytes());
+    let sz = c.len() as u32;
+    c[2..6].copy_from_slice(&sz.to_be_bytes());
+    let resp = engine.process(&c).ok()?;
+    if response_rc(&resp) != 0 {
+        return None;
+    }
+    // header(10) | TPM2B_NV_PUBLIC{ size u16, TPMS_NV_PUBLIC{ nvIndex u32,
+    // nameAlg u16, attributes u32, ... } } | ...
+    // attributes start at 10 + 2 (size) + 4 (nvIndex) + 2 (nameAlg) = 18.
+    if resp.len() < 22 {
+        return None;
+    }
+    Some(u32::from_be_bytes([resp[18], resp[19], resp[20], resp[21]]))
 }
 
 fn build_load_external_cmd(pub_blob: &[u8]) -> Vec<u8> {
@@ -1138,6 +1286,47 @@ mod tests {
         assert_eq!(
             restored, after_extend,
             "PCR 10 must survive across invocations via persisted volatile state"
+        );
+    }
+
+    const TEST_NV_INDEX: u32 = 0x0180_0001;
+
+    #[test]
+    fn nv_counter_is_monotonic_in_process() {
+        let Ok(component) = std::env::var("TPM_VTPM_COMPONENT") else {
+            eprintln!("skipping: TPM_VTPM_COMPONENT not set");
+            return;
+        };
+        let backend = VtpmBackend::new(std::path::Path::new(&component)).unwrap();
+        let v1 = backend.nv_increment(TEST_NV_INDEX).unwrap();
+        let v2 = backend.nv_increment(TEST_NV_INDEX).unwrap();
+        assert!(v2 > v1, "counter must strictly increase: {v1} -> {v2}");
+        // A different index counts independently and does not perturb the first.
+        backend.nv_increment(0x0180_0002).unwrap();
+        let v3 = backend.nv_increment(TEST_NV_INDEX).unwrap();
+        assert!(v3 > v2, "counter must keep increasing: {v2} -> {v3}");
+    }
+
+    #[test]
+    fn nv_counter_persists_across_instances() {
+        let Ok(component) = std::env::var("TPM_VTPM_COMPONENT") else {
+            eprintln!("skipping: TPM_VTPM_COMPONENT not set");
+            return;
+        };
+        let comp = std::path::Path::new(&component);
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state_path = tmp.path().to_path_buf();
+        std::fs::remove_file(&state_path).ok();
+
+        let v1 = {
+            let b1 = VtpmBackend::open(comp, Some(&state_path)).unwrap();
+            b1.nv_increment(TEST_NV_INDEX).unwrap()
+        };
+        let b2 = VtpmBackend::open(comp, Some(&state_path)).unwrap();
+        let v2 = b2.nv_increment(TEST_NV_INDEX).unwrap();
+        assert!(
+            v2 > v1,
+            "NV counter must keep increasing across instances (anti-rollback): {v1} -> {v2}"
         );
     }
 }
