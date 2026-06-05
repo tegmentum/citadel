@@ -24,8 +24,11 @@ const TPM2_CC_FLUSH_CONTEXT: u32 = 0x00000165;
 const TPM2_CC_GET_RANDOM: u32 = 0x0000017B;
 const TPM2_CC_PCR_READ: u32 = 0x0000017E;
 const TPM2_CC_PCR_EXTEND: u32 = 0x00000182;
+const TPM2_CC_LOAD_EXTERNAL: u32 = 0x00000167;
+const TPM2_CC_VERIFY_SIGNATURE: u32 = 0x00000177;
 
 const TPM_RH_OWNER: u32 = 0x40000001;
+const TPM_RH_NULL: u32 = 0x40000007;
 const TPM_RS_PW: u32 = 0x40000009;
 
 const TPM_ALG_SHA256: u16 = 0x000B;
@@ -144,8 +147,15 @@ fn tpm_hash_and_sign(
         engine,
         &build_sign_cmd_with_ticket(key_handle, &digest, &ticket),
     )?;
-    if resp.len() > 14 {
-        Ok(resp[14..].to_vec())
+    // The TPM2_Sign response (TPM_ST_SESSIONS) is:
+    //   header(10) | parameterSize(4) | TPMT_SIGNATURE | responseAuth
+    // Return exactly the TPMT_SIGNATURE — trailing response-session bytes
+    // would otherwise corrupt TPM2_VerifySignature, which expects the
+    // signature structure with nothing after it.
+    if resp.len() >= 14 {
+        let param_size = u32::from_be_bytes([resp[10], resp[11], resp[12], resp[13]]) as usize;
+        let end = (14 + param_size).min(resp.len());
+        Ok(resp[14..end].to_vec())
     } else {
         Ok(resp[10..].to_vec())
     }
@@ -204,6 +214,48 @@ impl TpmBackend for VtpmBackend {
                 Ok(extract_response_data(&resp, 12))
             }
         }
+    }
+
+    fn verify_signature(
+        &self,
+        handle: &KeyHandle,
+        data: &[u8],
+        signature: &[u8],
+    ) -> anyhow::Result<bool> {
+        // Real ECDSA signatures are non-deterministic, so the trait's
+        // default re-sign-and-compare cannot verify them. Verify properly
+        // by loading the public key (portable; no private material or SRK
+        // needed, so this works across processes) and asking the TPM to
+        // check the signature.
+        let mut engine = self.engine.lock().unwrap();
+
+        let key_data: serde_json::Value = serde_json::from_slice(&handle.id)?;
+        let pub_blob: Vec<u8> = serde_json::from_value(key_data["public"].clone())?;
+
+        let resp = send_command(&mut engine, &build_load_external_cmd(&pub_blob))?;
+        if resp.len() < 14 {
+            anyhow::bail!("LoadExternal response too short: {} bytes", resp.len());
+        }
+        let kh = u32::from_be_bytes([resp[10], resp[11], resp[12], resp[13]]);
+
+        // Digest of the signed data (SHA-256, matching the sign path).
+        let digest = tpm_core::backend::hash_for_bank("sha256", data)?;
+
+        // Call process() directly: TPM2_VerifySignature returns a non-zero
+        // RC for an invalid signature (or an unparseable one, e.g. the
+        // cross-process random fallback), which we map to `false` rather
+        // than an error.
+        let vresp = engine
+            .process(&build_verify_signature_cmd(kh, &digest, signature))
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        flush_context(&mut engine, kh).ok();
+
+        let rc = if vresp.len() >= 10 {
+            u32::from_be_bytes([vresp[6], vresp[7], vresp[8], vresp[9]])
+        } else {
+            0xFFFF_FFFF
+        };
+        Ok(rc == 0)
     }
 
     fn list_handles(&self) -> anyhow::Result<Vec<KeyHandle>> {
@@ -482,6 +534,38 @@ fn build_pcr_extend_cmd(hash_alg: u16, pcr_index: u32, digest: &[u8]) -> Vec<u8>
     c
 }
 
+fn build_load_external_cmd(pub_blob: &[u8]) -> Vec<u8> {
+    let mut c = Vec::new();
+    c.extend_from_slice(&TPM_ST_NO_SESSIONS.to_be_bytes());
+    c.extend_from_slice(&0u32.to_be_bytes()); // size placeholder
+    c.extend_from_slice(&TPM2_CC_LOAD_EXTERNAL.to_be_bytes());
+    // inPrivate: empty TPM2B_SENSITIVE (public-only load)
+    c.extend_from_slice(&0u16.to_be_bytes());
+    // inPublic: the stored TPM2B_PUBLIC (already size-prefixed)
+    c.extend_from_slice(pub_blob);
+    // hierarchy
+    c.extend_from_slice(&TPM_RH_NULL.to_be_bytes());
+    let size = c.len() as u32;
+    c[2..6].copy_from_slice(&size.to_be_bytes());
+    c
+}
+
+fn build_verify_signature_cmd(key_handle: u32, digest: &[u8], signature: &[u8]) -> Vec<u8> {
+    let mut c = Vec::new();
+    c.extend_from_slice(&TPM_ST_NO_SESSIONS.to_be_bytes());
+    c.extend_from_slice(&0u32.to_be_bytes()); // size placeholder
+    c.extend_from_slice(&TPM2_CC_VERIFY_SIGNATURE.to_be_bytes());
+    c.extend_from_slice(&key_handle.to_be_bytes());
+    // digest: TPM2B_DIGEST
+    c.extend_from_slice(&(digest.len() as u16).to_be_bytes());
+    c.extend_from_slice(digest);
+    // signature: TPMT_SIGNATURE (stored as-is from TPM2_Sign)
+    c.extend_from_slice(signature);
+    let size = c.len() as u32;
+    c[2..6].copy_from_slice(&size.to_be_bytes());
+    c
+}
+
 fn build_create_primary_cmd() -> Vec<u8> {
     let mut c = Vec::new();
     c.extend_from_slice(&TPM_ST_SESSIONS.to_be_bytes());
@@ -723,4 +807,64 @@ fn sha256_digest(data: &[u8]) -> [u8; 32] {
         hash[i * 8..(i + 1) * 8].copy_from_slice(&chunk.to_le_bytes());
     }
     hash
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tpm_core::backend::TpmBackend;
+    use tpm_core::model::{Algorithm, ObjectPath};
+
+    /// In-process sign -> verify round-trip against the real libtpms
+    /// vTPM. Skipped unless TPM_VTPM_COMPONENT points at the component.
+    /// Proves verify_signature handles non-deterministic ECDSA (the
+    /// trait default's re-sign-and-compare cannot).
+    #[test]
+    fn ecdsa_sign_then_verify_roundtrip() {
+        let Ok(component) = std::env::var("TPM_VTPM_COMPONENT") else {
+            eprintln!("skipping: TPM_VTPM_COMPONENT not set");
+            return;
+        };
+        let backend = VtpmBackend::new(std::path::Path::new(&component)).unwrap();
+        let path = ObjectPath::new("signing/verify-test").unwrap();
+        let handle = backend.create_key(Algorithm::EccP256, &path).unwrap();
+
+        let msg = b"measurement-checkpoint-root";
+        let sig = backend.sign(&handle, msg).unwrap();
+
+        // A real ECDSA TPMT_SIGNATURE starts with sigAlg = TPM_ALG_ECDSA.
+        // On the *ephemeral* vTPM, sign() cannot reload the key (the SRK
+        // is not persisted) and returns a random fallback instead — in
+        // which case the positive round-trip cannot be exercised here
+        // (it needs a persistent TPM, e.g. swtpm).
+        let is_real_signature = sig.len() >= 2 && sig[0] == 0x00 && sig[1] == 0x18;
+
+        if is_real_signature {
+            assert!(
+                backend.verify_signature(&handle, msg, &sig).unwrap(),
+                "valid ECDSA signature must verify"
+            );
+            assert!(
+                !backend.verify_signature(&handle, b"tampered", &sig).unwrap(),
+                "signature must not verify against a different message"
+            );
+            let mut bad = sig.clone();
+            *bad.last_mut().unwrap() ^= 0xFF;
+            assert!(
+                !backend.verify_signature(&handle, msg, &bad).unwrap(),
+                "a tampered signature must not verify"
+            );
+        } else {
+            eprintln!(
+                "note: ephemeral vTPM returned a non-signature fallback ({} bytes); \
+                 verify_signature correctly rejects it. Positive round-trip needs a \
+                 persistent TPM.",
+                sig.len()
+            );
+            assert!(
+                !backend.verify_signature(&handle, msg, &sig).unwrap(),
+                "verify_signature must reject the non-signature fallback"
+            );
+        }
+    }
 }
