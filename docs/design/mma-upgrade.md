@@ -20,6 +20,50 @@ cover (kernel, firmware), not just Citadel itself.
 
 So: **how do we roll out a new agent/Citadel and keep signing?**
 
+## Threat model: an upgrade looks exactly like an attack
+
+Measurement is blind to intent. A hash says "the state is X"; it can never
+say "X is good." A legitimate upgrade and a malicious tamper are therefore
+the **same observable event** — a change to a previously-unapproved
+measurement. The only thing that distinguishes them is **authorization**:
+an upgrade is an attack that an authority signed off on.
+
+Two hard consequences:
+
+1. **Don't try to tell them apart at measurement time — you can't.** All
+   security collapses onto the approval layer. The design's job is to make
+   every *authorized* state change hard to forge and fully attributable,
+   not to make the TPM "smarter" about intent.
+2. **The authority key is the crown jewel.** If it is compromised, attacks
+   become indistinguishable from upgrades by construction. So it must not
+   be a single online key:
+   - **offline / HSM**, ideally **M-of-N quorum** (one compromise is not
+     enough);
+   - approvals **transparency-logged**, not merely verified — recorded in
+     an append-only, **witnessed** log (the CT / Sigstore model) so even a
+     coerced/compromised authority leaves public evidence and a bad
+     "upgrade" is detectable after the fact;
+   - **reproducible builds + source provenance**, so the approved digest
+     is verifiable from public source, not opaque.
+
+This reframes the whole mechanism:
+
+- **PolicyAuthorize is the enforcement** — the TPM refuses to sign for any
+  state no authority approved.
+- **The witnessed approval log is the detection** — an approval that
+  should not exist is publicly visible; an *unapproved* state change is
+  exactly the one with **no valid, witnessed approval** in the log. You
+  don't detect the attack by the measurement; you detect it by the absence
+  of a logged authorization for that measurement.
+
+MMA is already positioned for this: the log records the `agent.enroll`
+event (the new measurement); fold the **approval** in beside it (the
+secure log is already witness-able) and an upgrade becomes an attributable
+record — "approved by ⟨quorum⟩ at ⟨time⟩, reproducible from ⟨source⟩,
+witnessed at ⟨height⟩." This should drive the PolicyAuthorize design below:
+approvals are quorum-signed and land in the witnessed MMA, not just handed
+to the TPM.
+
 ## Recommended answer: PolicyAuthorize (an upgradable policy)
 
 TPM 2.0's canonical mechanism for this is **`TPM2_PolicyAuthorize`**.
