@@ -31,6 +31,7 @@ pub mod membership;
 pub mod node;
 pub mod state;
 pub mod types;
+pub mod witness;
 
 pub use crypto::{MeshKeypair, MeshPublicKey, Signature};
 pub use id::{Epoch, MeshId, NodeId};

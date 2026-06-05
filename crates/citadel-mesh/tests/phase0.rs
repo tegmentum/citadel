@@ -87,7 +87,18 @@ fn a_restarted_node_refutes_suspicion_with_higher_incarnation() {
 
 #[test]
 fn mock_attestation_challenge_response_drives_trust() {
-    let (mut mesh, [a, b, _c]) = three_node_mesh();
+    // Isolate the *manual* (single-challenger) attestation path: disable
+    // automatic witnessing so trust changes only when A challenges B.
+    // (Quorum-driven witness attestation is covered by the Phase 3 tests.)
+    let mut mesh = Mesh::new("prod-east-1");
+    let cfg = || NodeConfig {
+        witness_count: 0,
+        ..NodeConfig::default()
+    };
+    let a = mesh.add_node(1, "worker", cfg());
+    let b = mesh.add_node(2, "worker", cfg());
+    let _c = mesh.add_node(3, "worker", cfg());
+    mesh.wire_full_membership();
     mesh.run(5);
 
     // Before any attestation, A has not classified B's trust.

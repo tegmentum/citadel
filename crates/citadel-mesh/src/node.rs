@@ -15,14 +15,15 @@
 //! keeps the node pure and synchronous so the in-process [`crate::harness`]
 //! can run a whole mesh deterministically.
 
+use std::collections::HashMap;
+
 use crate::attest::{Attestor, ReferenceMeasurements};
 use crate::crypto::MeshKeypair;
-use crate::id::{MeshId, NodeId};
+use crate::id::{Epoch, MeshId, NodeId};
 use crate::membership::Membership;
 use crate::state::{LivenessState, TrustState};
-use crate::types::{
-    AttestationChallenge, GossipEnvelope, GossipMessage, Verdict,
-};
+use crate::types::{AttestationChallenge, GossipEnvelope, GossipMessage, Verdict};
+use crate::witness;
 
 /// Tunable SWIM / attestation parameters (design §9.8).
 #[derive(Clone, Debug)]
@@ -41,6 +42,13 @@ pub struct NodeConfig {
     pub pcr_selection: Vec<u32>,
     /// The policy revision this node is running.
     pub policy_revision: u64,
+    /// Mesh epoch used for witness assignment (bump to rotate witnesses).
+    pub mesh_epoch: u64,
+    /// Number of witnesses assigned per subject (`0` disables witnessing —
+    /// trust then comes only from a node's own direct challenges).
+    pub witness_count: usize,
+    /// Ticks between a witness re-challenging each of its subjects.
+    pub attestation_interval: u64,
 }
 
 impl Default for NodeConfig {
@@ -53,8 +61,26 @@ impl Default for NodeConfig {
             pcr_bank: "sha256".to_string(),
             pcr_selection: vec![0, 7],
             policy_revision: 1,
+            mesh_epoch: 1,
+            witness_count: 3,
+            attestation_interval: 4,
         }
     }
+}
+
+/// A snapshot of how a subject's assigned witnesses currently vote — the
+/// data behind the dashboard's "agreement" view (design §17.4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WitnessSummary {
+    pub subject: NodeId,
+    /// Number of witnesses assigned to the subject this epoch.
+    pub assigned: usize,
+    /// Of the assigned witnesses, how many have reported a verdict.
+    pub reported: usize,
+    pub pass: usize,
+    pub fail: usize,
+    /// Reports needed for a confident decision.
+    pub quorum: usize,
 }
 
 /// An envelope addressed to a specific recipient.
@@ -103,6 +129,11 @@ pub struct Node {
     /// (the Reference Value Provider's output; design §8.1, §14.2). Empty
     /// until installed from policy — verification is then Inconclusive.
     peer_reference: ReferenceMeasurements,
+    /// Latest attestation verdict per `subject → verifier` heard on the mesh
+    /// (own + gossiped). Aggregated by assigned-witness quorum into trust.
+    witness_reports: HashMap<NodeId, HashMap<NodeId, Verdict>>,
+    /// Last tick this node (as a witness) challenged each subject.
+    last_challenge: HashMap<NodeId, u64>,
     outbox: Vec<Addressed>,
 }
 
@@ -124,11 +155,16 @@ impl Node {
             config,
             tick: 0,
             sequence: 0,
-            probe_cursor: 0,
+            // Diversify the starting probe target by identity so a large
+            // mesh covers (and detects failures in) all peers quickly,
+            // rather than every node probing the same order in lockstep.
+            probe_cursor: id.0[0] as usize,
             pending: None,
             owed: Vec::new(),
             issued_challenges: Vec::new(),
             peer_reference: ReferenceMeasurements::default(),
+            witness_reports: HashMap::new(),
+            last_challenge: HashMap::new(),
             outbox: Vec::new(),
         }
     }
@@ -190,6 +226,7 @@ impl Node {
         self.expire_suspicions(now);
         self.advance_probe(now);
         self.drop_stale_owed(now);
+        self.run_witness_duties(now);
 
         // Start a new direct probe on the interval if idle.
         if self.pending.is_none() && now.is_multiple_of(self.config.probe_interval) {
@@ -350,8 +387,11 @@ impl Node {
             }
             GossipMessage::AttestChallenge(ch) => self.on_challenge(ch, now),
             GossipMessage::AttestEvidence(ev) => self.on_evidence(ev, now),
-            GossipMessage::AttestResult(_res) => {
-                // Phase 0: witness-result aggregation is Phase 3; ignore.
+            GossipMessage::AttestResult(res) => {
+                // A witness's verdict: record it and re-aggregate the
+                // subject's trust from its assigned witnesses.
+                self.record_report(res.subject, res.verifier, res.result);
+                self.aggregate_trust(res.subject);
             }
         }
     }
@@ -439,16 +479,132 @@ impl Node {
         let result = self
             .attestor
             .verify(&ch, &ev, &self.peer_reference, self.id, now);
-        let trust = match result.result {
-            Verdict::Pass => TrustState::Trusted,
-            Verdict::Warn => TrustState::Degraded,
-            Verdict::Fail => TrustState::Suspicious,
-            Verdict::Inconclusive => TrustState::Unknown,
-        };
-        self.membership.set_trust(&ev.subject, trust);
-        // Gossip the signed result to the subject's peers (Phase 3 will
-        // aggregate these into witness quorum; Phase 0 just disseminates).
+        let verdict = result.result;
+        // Our own direct observation — provisional until (and unless) the
+        // assigned-witness quorum decides otherwise in `aggregate_trust`.
+        self.membership.set_trust(&ev.subject, verdict_to_trust(verdict));
+        self.record_report(ev.subject, self.id, verdict);
+        self.aggregate_trust(ev.subject);
+        // Gossip the signed verdict so every node aggregates the same
+        // witness quorum (design §9.1, §11.4).
         self.broadcast(GossipMessage::AttestResult(result));
+    }
+
+    // -- witness duties + trust aggregation (design §10, §11) -----------
+
+    /// The full set of node ids this node knows (its witness roster).
+    fn roster(&self) -> Vec<NodeId> {
+        self.membership.iter().map(|m| m.node_id).collect()
+    }
+
+    /// The witness set assigned to `subject` under the current roster/epoch.
+    fn witnesses_for(&self, subject: NodeId) -> witness::WitnessSet {
+        witness::assign(
+            subject,
+            &self.roster(),
+            Epoch(self.config.mesh_epoch),
+            self.config.witness_count,
+        )
+    }
+
+    /// As an assigned witness, periodically (re-)challenge the alive subjects
+    /// this node is responsible for.
+    fn run_witness_duties(&mut self, now: u64) {
+        if self.config.witness_count == 0 {
+            return;
+        }
+        let roster = self.roster();
+        let epoch = Epoch(self.config.mesh_epoch);
+        let k = self.config.witness_count;
+        let me = self.id;
+        let interval = self.config.attestation_interval;
+        let due: Vec<NodeId> = self
+            .membership
+            .others()
+            .filter(|m| matches!(m.liveness, LivenessState::Alive))
+            .map(|m| m.node_id)
+            .filter(|s| witness::is_witness(me, *s, &roster, epoch, k))
+            .filter(|s| {
+                self.last_challenge
+                    .get(s)
+                    .is_none_or(|t| now.saturating_sub(*t) >= interval)
+            })
+            .collect();
+        for subject in due {
+            self.last_challenge.insert(subject, now);
+            self.challenge_peer(subject);
+        }
+    }
+
+    fn record_report(&mut self, subject: NodeId, verifier: NodeId, verdict: Verdict) {
+        self.witness_reports
+            .entry(subject)
+            .or_default()
+            .insert(verifier, verdict);
+    }
+
+    /// Decide `subject`'s trust from the verdicts of its *assigned* witnesses
+    /// once a quorum has reported (design §11.4). Below quorum, leave the
+    /// existing (provisional / direct-observation) trust untouched.
+    fn aggregate_trust(&mut self, subject: NodeId) {
+        let ws = self.witnesses_for(subject);
+        let relevant: Vec<Verdict> = match self.witness_reports.get(&subject) {
+            Some(reports) => ws
+                .witnesses
+                .iter()
+                .filter_map(|w| reports.get(w).copied())
+                .collect(),
+            None => return,
+        };
+        let reported = relevant.len();
+        if reported == 0 || reported < ws.quorum_threshold {
+            return;
+        }
+        let fails = relevant.iter().filter(|v| matches!(v, Verdict::Fail)).count();
+        let passes = relevant.iter().filter(|v| matches!(v, Verdict::Pass)).count();
+        // ≥1/3 critical objections → Suspicious; else ≥80% pass → Trusted;
+        // ≥60% → Degraded; otherwise withhold trust as Suspicious.
+        let trust = if fails * 3 >= reported {
+            TrustState::Suspicious
+        } else if passes * 5 >= reported * 4 {
+            TrustState::Trusted
+        } else if passes * 5 >= reported * 3 {
+            TrustState::Degraded
+        } else {
+            TrustState::Suspicious
+        };
+        self.membership.set_trust(&subject, trust);
+    }
+
+    /// How `subject`'s assigned witnesses currently vote (dashboard §17.4).
+    pub fn witness_summary(&self, subject: NodeId) -> WitnessSummary {
+        let ws = self.witnesses_for(subject);
+        let (mut pass, mut fail, mut reported) = (0usize, 0usize, 0usize);
+        if let Some(reports) = self.witness_reports.get(&subject) {
+            for w in &ws.witnesses {
+                if let Some(v) = reports.get(w) {
+                    reported += 1;
+                    match v {
+                        Verdict::Pass => pass += 1,
+                        Verdict::Fail => fail += 1,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        WitnessSummary {
+            subject,
+            assigned: ws.witnesses.len(),
+            reported,
+            pass,
+            fail,
+            quorum: ws.quorum_threshold,
+        }
+    }
+
+    /// Expose this node's witness assignment for `subject` (testing / ops).
+    pub fn assigned_witnesses(&self, subject: NodeId) -> Vec<NodeId> {
+        self.witnesses_for(subject).witnesses
     }
 
     fn make_nonce(&self, target: NodeId) -> Vec<u8> {
@@ -515,5 +671,15 @@ impl Node {
             signature: crate::crypto::Signature::zero(),
         }
         .signed(&self.keypair)
+    }
+}
+
+/// Map an attestation verdict to a trust state (a single observation).
+fn verdict_to_trust(v: Verdict) -> TrustState {
+    match v {
+        Verdict::Pass => TrustState::Trusted,
+        Verdict::Warn => TrustState::Degraded,
+        Verdict::Fail => TrustState::Suspicious,
+        Verdict::Inconclusive => TrustState::Unknown,
     }
 }

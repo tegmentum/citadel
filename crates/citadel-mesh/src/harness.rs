@@ -23,7 +23,7 @@ use crate::attest::Attestor;
 use crate::crypto::MeshKeypair;
 use crate::id::{Epoch, MeshId, NodeId};
 use crate::membership::Membership;
-use crate::node::{Node, NodeConfig};
+use crate::node::{Node, NodeConfig, WitnessSummary};
 use crate::state::{LivenessState, TrustState};
 
 /// Per-node snapshot for the "dashboard" view (design §17.2).
@@ -196,6 +196,17 @@ impl Mesh {
     /// How `observer` classifies `subject`'s trust.
     pub fn trust_of(&self, observer: NodeId, subject: NodeId) -> Option<TrustState> {
         self.node(observer).membership().get(&subject).map(|m| m.trust)
+    }
+
+    /// The witnesses `observer` assigns to `subject` this epoch.
+    pub fn assigned_witnesses(&self, observer: NodeId, subject: NodeId) -> Vec<NodeId> {
+        self.node(observer).assigned_witnesses(subject)
+    }
+
+    /// How `subject`'s assigned witnesses currently vote, from `observer`'s
+    /// collected reports (the dashboard "agreement" view, design §17.4).
+    pub fn witness_summary(&self, observer: NodeId, subject: NodeId) -> WitnessSummary {
+        self.node(observer).witness_summary(subject)
     }
 
     /// Aggregate fleet view from `observer`'s membership (design §17.1).

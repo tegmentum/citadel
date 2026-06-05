@@ -1485,44 +1485,56 @@ forged/corrupted quote is rejected as `QUOTE_SIGNATURE_INVALID`
 AK/EK **endorsement-chain** validation that binds the AK to genuine hardware
 (Phase 5 enrollment) — until then the AK public is taken from the quote.
 
-### Phase 2: Gossip Membership
+### Phase 2: Gossip Membership — DONE
+
+Deliverables (all in `node.rs` / `membership.rs` / `types.rs` since Phase 0):
+
+```text
+SWIM-inspired probe loop      ✓ tick(): direct probe → indirect → suspect → faulty
+PING / ACK / PING_REQ         ✓ GossipMessage (+ PingReqAck for indirect)
+SUSPECT / ALIVE / FAULTY      ✓ LivenessState + SWIM merge precedence
+signed gossip envelopes       ✓ Ed25519-signed GossipEnvelope, verified on receipt
+piggyback dissemination       ✓ MemberUpdate digest on every message
+```
+
+Acceptance (proven by `tests/phase2.rs`):
+
+```text
+- Large mesh converges on membership.        ✓ 30 nodes (scaled; same logic at 100+)
+- Node failure becomes Suspect before Faulty. ✓ batch kill → all survivors converge Faulty
+- Restarted node refutes with higher incarn.  ✓ revive → refutes mesh-wide
+```
+
+(Per-node probe start is diversified by identity so detection coverage
+converges quickly at scale rather than every node probing in lockstep.)
+
+### Phase 3: Witness Sets — DONE
 
 Deliverables:
 
 ```text
-SWIM-inspired probe loop
-PING / ACK / PING_REQ
-SUSPECT / ALIVE / FAULTY
-signed gossip envelopes
-piggyback dissemination
+witness assignment engine   ✓ witness.rs: rendezvous(HRW) assignment, epoch-rotatable
+periodic peer attestation   ✓ run_witness_duties: witnesses re-challenge subjects
+witness result gossip       ✓ AttestResult broadcast; recorded per (subject, verifier)
+trust score aggregation     ✓ aggregate_trust: assigned-witness quorum → TrustState (§11.4)
 ```
 
-Acceptance:
+Acceptance (proven by `tests/phase3.rs`):
 
 ```text
-- 100 local simulated nodes converge on membership.
-- Node failure becomes Suspect before Faulty.
-- Restarted node refutes suspicion with higher incarnation.
+- Each node has assigned witnesses.        ✓ deterministic; every observer agrees
+- Witnesses periodically challenge subjects.✓ trust reaches Trusted with no manual challenge
+- Dashboard shows witness agreement ratio.  ✓ WitnessSummary (assigned/reported/pass/fail/quorum)
 ```
 
-### Phase 3: Witness Sets
-
-Deliverables:
-
-```text
-witness assignment engine
-periodic peer attestation
-witness result gossip
-trust score aggregation
-```
-
-Acceptance:
-
-```text
-- Each node has assigned witnesses.
-- Witnesses periodically challenge subjects.
-- Dashboard shows witness agreement ratio.
-```
+Assignment is **decentralized**: every node derives the same witness set for
+a subject from `(roster, epoch)` via HRW hashing — no coordinator (design
+open question §21.8, decentralized option taken). Trust is decided by the
+*agreement* of a subject's assigned witnesses, so a tampered node is driven
+`Suspicious` cluster-wide by quorum, not by any single observer
+(`tampered_node_is_quarantined_by_witness_quorum`). Failure-domain-diverse
+witness selection (§10.4) and witness rotation triggers (§10.3) layer on top
+of this base assignment later.
 
 ### Phase 4: Distributed Evidence
 
