@@ -260,10 +260,23 @@ makes the existing `policy create --pcr` path real end-to-end.
     primitive (mock-tested) + `measure anchor-counter`.
   - *Remaining:* (a) bind the NV counter value into the signed checkpoint so a
     verifier can detect rollback — needs secure-log support; (b) vTPM/hardware
-    `nv_increment` via `TPM2_NV_Increment` incl. counter-NV provisioning;
+    `nv_increment` via `TPM2_NV_Increment` incl. counter-NV provisioning —
+    *attempted on the vTPM but the libtpms component rejects the NV-counter auth
+    paths tried so far (owner-auth → `TPM_RC_NV_AUTHORIZATION`, index self-auth →
+    `TPM_RC_AUTH_UNAVAILABLE`); reverted, needs spec-guided auth handling. The
+    mock counter + secure-log head file remain the working anti-rollback path;*
     (c) real TPM-enforced policy-session signing (StartAuthSession + PolicyPCR +
     sign-under-session) — replaces the citadel-side measured-state gate with
-    hardware enforcement. All of (b)/(c) need on-hardware validation.
+    TPM enforcement; a larger change to the key-creation/sign path, deferred to
+    a focused effort.
+
+Done since the plan (post-`feat(measure): bind ...`):
+- The citadel-side measured-state signing gate (`--require-baseline`) is
+  validated **cross-invocation on the persistent vTPM** (signs when PCRs match
+  the saved baseline, refused after a measurement changes them).
+- Concurrent `--backend vtpm` invocations against the same store are serialized
+  by an exclusive advisory lock on `<store>.tpmstate` (`feat(vtpm): exclusive
+  advisory lock ...`).
 
 Open-question decisions taken:
 - #1 (who hashes): support **both** — direct (`measure file`) and IMA delegation
