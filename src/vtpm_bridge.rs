@@ -31,6 +31,8 @@ const TPM_RH_OWNER: u32 = 0x40000001;
 const TPM_RH_NULL: u32 = 0x40000007;
 
 const TPM_SU_CLEAR: u16 = 0x0000;
+const TPM_SU_STATE: u16 = 0x0001;
+const TPM2_CC_SHUTDOWN: u32 = 0x00000145;
 const TPM_RS_PW: u32 = 0x40000009;
 
 const TPM_ALG_SHA256: u16 = 0x000B;
@@ -48,10 +50,10 @@ const TPM_ECC_NIST_P256: u16 = 0x0003;
 pub struct VtpmBackend {
     engine: Mutex<VtpmEngine>,
     initialized: bool,
-    /// When set, the TPM's permanent state (NV, hierarchy seeds) is
-    /// restored from this file on startup and saved back on drop, so
-    /// keys/NV persist across separate CLI invocations. Without it the
-    /// vTPM is ephemeral and keys cannot be reloaded between processes.
+    /// When set, the TPM's state is restored from this file on startup
+    /// and saved back on drop, so keys, NV, and saved PCRs (0–15) persist
+    /// across separate CLI invocations. Without it the vTPM is ephemeral
+    /// and keys cannot be reloaded between processes.
     state_path: Option<PathBuf>,
 }
 
@@ -61,37 +63,31 @@ impl VtpmBackend {
         Self::open(component_path, None)
     }
 
-    /// Construct a vTPM, optionally persisting permanent state to
-    /// `state_path` across invocations.
+    /// Construct a vTPM, optionally persisting state to `state_path`
+    /// across invocations.
+    ///
+    /// Permanent state (NV, hierarchy seeds) is always restored when
+    /// present. Volatile state (PCRs, etc.) is resumed via
+    /// `Startup(STATE)` when the previous run shut down cleanly; if the
+    /// resume fails (incompatible/no saved volatile), it falls back to a
+    /// fresh boot (`Startup(CLEAR)`) with permanent state only.
     pub fn open(component_path: &Path, state_path: Option<&Path>) -> anyhow::Result<Self> {
-        let mut engine = VtpmEngine::new(component_path)
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        let snapshot = state_path
+            .and_then(|sp| std::fs::read(sp).ok())
+            .map(|blob| StateSnapshot::decode(&blob))
+            .unwrap_or_default();
 
-        // Initialize as TPM 2.0.
-        engine
-            .choose_version(TpmVersion::Tpm20)
-            .map_err(|e| anyhow::anyhow!("choose-version: {}", e))?;
-
-        // Restore persisted permanent state before init, if present.
-        // set-state must precede init (see the WIT state interface).
-        if let Some(sp) = state_path {
-            if let Ok(blob) = std::fs::read(sp) {
-                // Best effort: a corrupt/incompatible blob falls back to
-                // a freshly-manufactured TPM rather than failing the CLI.
-                let _ = engine.set_state(StateType::Permanent, &blob);
+        let engine = if snapshot.resumable && !snapshot.permanent.is_empty() {
+            // The permanent image was checkpointed with Shutdown(STATE);
+            // resume PCRs/sessions via Startup(STATE). Fall back to a
+            // fresh boot if the TPM rejects the resume.
+            match boot(component_path, &snapshot.permanent, true) {
+                Ok(e) => e,
+                Err(_) => boot(component_path, &snapshot.permanent, false)?,
             }
-        }
-
-        engine
-            .init_tpm()
-            .map_err(|e| anyhow::anyhow!("init: {}", e))?;
-
-        // TPM2_Startup(CLEAR) + SelfTest. PCRs/volatile reset each
-        // invocation; permanent state (restored above) carries the
-        // hierarchy seeds, so CreatePrimary is deterministic and stored
-        // key blobs reload.
-        send_command(&mut engine, &build_startup_cmd(TPM_SU_CLEAR))?;
-        send_command(&mut engine, &build_selftest_cmd())?;
+        } else {
+            boot(component_path, &snapshot.permanent, false)?
+        };
 
         Ok(Self {
             engine: Mutex::new(engine),
@@ -100,22 +96,118 @@ impl VtpmBackend {
         })
     }
 
-    /// Save the TPM's permanent state to the state file (atomic write).
+    /// Save TPM state to the state file (atomic write). `Shutdown(STATE)`
+    /// checkpoints volatile state (PCRs, sessions) into the permanent
+    /// image, so the next run can resume it via `Startup(STATE)`. The
+    /// `resumable` flag records whether that checkpoint succeeded.
     fn persist(&self) -> anyhow::Result<()> {
         let Some(sp) = self.state_path.clone() else {
             return Ok(());
         };
         let mut engine = self.engine.lock().unwrap();
+
+        let resumable = engine
+            .process(&build_shutdown_cmd(TPM_SU_STATE))
+            .ok()
+            .map(|r| response_rc(&r) == 0)
+            .unwrap_or(false);
+
         let permanent = engine
             .get_state(StateType::Permanent)
             .map_err(|e| anyhow::anyhow!("get permanent state: {}", e))?;
+
         if let Some(parent) = sp.parent() {
             std::fs::create_dir_all(parent).ok();
         }
         let tmp = sp.with_extension("tpmstate.tmp");
-        std::fs::write(&tmp, &permanent)?;
+        std::fs::write(&tmp, StateSnapshot { permanent, resumable }.encode())?;
         std::fs::rename(&tmp, &sp)?;
         Ok(())
+    }
+}
+
+/// On-disk TPM state snapshot: the permanent image plus whether it was
+/// checkpointed with `Shutdown(STATE)` (and so can be resumed).
+#[derive(Default)]
+struct StateSnapshot {
+    permanent: Vec<u8>,
+    resumable: bool,
+}
+
+impl StateSnapshot {
+    const MAGIC: &'static [u8] = b"VTPM2";
+
+    fn encode(&self) -> Vec<u8> {
+        let mut b = Vec::with_capacity(Self::MAGIC.len() + 5 + self.permanent.len());
+        b.extend_from_slice(Self::MAGIC);
+        b.push(self.resumable as u8);
+        b.extend_from_slice(&(self.permanent.len() as u32).to_be_bytes());
+        b.extend_from_slice(&self.permanent);
+        b
+    }
+
+    fn decode(blob: &[u8]) -> Self {
+        let header = Self::MAGIC.len() + 5;
+        if blob.len() < header || &blob[..Self::MAGIC.len()] != Self::MAGIC {
+            // Legacy files were raw permanent bytes with no magic.
+            return StateSnapshot {
+                permanent: blob.to_vec(),
+                resumable: false,
+            };
+        }
+        let resumable = blob[Self::MAGIC.len()] != 0;
+        let lo = Self::MAGIC.len() + 1;
+        let len = u32::from_be_bytes([blob[lo], blob[lo + 1], blob[lo + 2], blob[lo + 3]]) as usize;
+        let start = lo + 4;
+        let end = (start + len).min(blob.len());
+        StateSnapshot {
+            permanent: blob[start..end].to_vec(),
+            resumable,
+        }
+    }
+}
+
+/// Boot a TPM engine: restore the permanent image (if any), init, then
+/// `Startup(STATE)` to resume saved volatile state or `Startup(CLEAR)`
+/// for a fresh boot. Returns an error if startup is rejected, so the
+/// caller can retry with a fresh boot.
+fn boot(component_path: &Path, permanent: &[u8], resume: bool) -> anyhow::Result<VtpmEngine> {
+    let mut engine = VtpmEngine::new(component_path).map_err(|e| anyhow::anyhow!("{}", e))?;
+    engine
+        .choose_version(TpmVersion::Tpm20)
+        .map_err(|e| anyhow::anyhow!("choose-version: {}", e))?;
+
+    // set-state must precede init.
+    if !permanent.is_empty() {
+        engine
+            .set_state(StateType::Permanent, permanent)
+            .map_err(|e| anyhow::anyhow!("set permanent state: {}", e))?;
+    }
+
+    engine
+        .init_tpm()
+        .map_err(|e| anyhow::anyhow!("init: {}", e))?;
+
+    let su = if resume { TPM_SU_STATE } else { TPM_SU_CLEAR };
+    // process() directly so a Startup(STATE) rejection is a recoverable
+    // error rather than a panic.
+    let resp = engine
+        .process(&build_startup_cmd(su))
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let rc = response_rc(&resp);
+    if rc != 0 {
+        anyhow::bail!("TPM2_Startup(0x{:04x}) failed: rc 0x{:08x}", su, rc);
+    }
+    send_command(&mut engine, &build_selftest_cmd())?;
+    Ok(engine)
+}
+
+/// Extract the TPM response code from a raw response buffer.
+fn response_rc(resp: &[u8]) -> u32 {
+    if resp.len() >= 10 {
+        u32::from_be_bytes([resp[6], resp[7], resp[8], resp[9]])
+    } else {
+        0xFFFF_FFFF
     }
 }
 
@@ -539,6 +631,15 @@ fn build_startup_cmd(startup_type: u16) -> Vec<u8> {
     c.extend_from_slice(&12u32.to_be_bytes());
     c.extend_from_slice(&0x00000144u32.to_be_bytes()); // TPM2_CC_Startup
     c.extend_from_slice(&startup_type.to_be_bytes());
+    c
+}
+
+fn build_shutdown_cmd(shutdown_type: u16) -> Vec<u8> {
+    let mut c = Vec::new();
+    c.extend_from_slice(&TPM_ST_NO_SESSIONS.to_be_bytes());
+    c.extend_from_slice(&12u32.to_be_bytes());
+    c.extend_from_slice(&TPM2_CC_SHUTDOWN.to_be_bytes());
+    c.extend_from_slice(&shutdown_type.to_be_bytes());
     c
 }
 
@@ -975,6 +1076,35 @@ mod tests {
         assert!(
             b2.verify_signature(&handle, msg, &sig).unwrap(),
             "a signature from the reloaded persisted key must verify"
+        );
+    }
+
+    /// Volatile state (PCRs) must resume across instances: a PCR extended
+    /// in one backend instance keeps its value in the next.
+    #[test]
+    fn persisted_pcr_survives_across_instances() {
+        let Ok(component) = std::env::var("TPM_VTPM_COMPONENT") else {
+            eprintln!("skipping: TPM_VTPM_COMPONENT not set");
+            return;
+        };
+        let comp = std::path::Path::new(&component);
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state_path = tmp.path().to_path_buf();
+        std::fs::remove_file(&state_path).ok();
+
+        let digest = vec![0x5Au8; 32];
+        let after_extend = {
+            let b1 = VtpmBackend::open(comp, Some(&state_path)).unwrap();
+            b1.pcr_extend("sha256", 10, &digest).unwrap();
+            b1.pcr_read("sha256", &[10]).unwrap()[0].digest.clone()
+        };
+        assert_ne!(after_extend, vec![0u8; 32], "extend must change PCR 10");
+
+        let b2 = VtpmBackend::open(comp, Some(&state_path)).unwrap();
+        let restored = b2.pcr_read("sha256", &[10]).unwrap()[0].digest.clone();
+        assert_eq!(
+            restored, after_extend,
+            "PCR 10 must survive across invocations via persisted volatile state"
         );
     }
 }
