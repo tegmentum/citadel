@@ -37,9 +37,14 @@ fn default_store_path() -> std::path::PathBuf {
     }
 }
 
-fn create_backend(name: &str) -> anyhow::Result<Box<dyn tpm_core::backend::TpmBackend>> {
+fn create_backend(
+    name: &str,
+    #[cfg_attr(not(feature = "vtpm"), allow(unused_variables))] vtpm_state_path: Option<
+        &std::path::Path,
+    >,
+) -> anyhow::Result<Box<dyn tpm_core::backend::TpmBackend>> {
     match name {
-        "auto" => auto_detect_backend(),
+        "auto" => auto_detect_backend(vtpm_state_path),
         "mock" => Ok(Box::new(MockBackend::new())),
         #[cfg(feature = "tpm-hw")]
         "device" => Ok(Box::new(tpm_core::backend::HardwareBackend::new_device()?)),
@@ -103,7 +108,10 @@ fn create_backend(name: &str) -> anyhow::Result<Box<dyn tpm_core::backend::TpmBa
                          or place it in ~/.local/share/tpm/"
                     )
                 })?;
-            Ok(Box::new(vtpm_bridge::VtpmBackend::new(&component_path)?))
+            Ok(Box::new(vtpm_bridge::VtpmBackend::open(
+                &component_path,
+                vtpm_state_path,
+            )?))
         }
         #[cfg(not(feature = "vtpm"))]
         "vtpm" => {
@@ -155,7 +163,11 @@ fn check_constraints(
     Ok(())
 }
 
-fn auto_detect_backend() -> anyhow::Result<Box<dyn tpm_core::backend::TpmBackend>> {
+fn auto_detect_backend(
+    #[cfg_attr(not(feature = "vtpm"), allow(unused_variables))] vtpm_state_path: Option<
+        &std::path::Path,
+    >,
+) -> anyhow::Result<Box<dyn tpm_core::backend::TpmBackend>> {
     // 1. Try real hardware TPM
     #[cfg(feature = "tpm-hw")]
     {
@@ -201,7 +213,7 @@ fn auto_detect_backend() -> anyhow::Result<Box<dyn tpm_core::backend::TpmBackend
         };
 
         if should_probe {
-            match create_backend("swtpm") {
+            match create_backend("swtpm", vtpm_state_path) {
                 Ok(backend) => {
                     if let Ok(status) = backend.status() {
                         if status.available {
@@ -227,7 +239,7 @@ fn auto_detect_backend() -> anyhow::Result<Box<dyn tpm_core::backend::TpmBackend
         ];
         for candidate in candidates.iter().flatten() {
             if candidate.exists() {
-                match vtpm_bridge::VtpmBackend::new(candidate) {
+                match vtpm_bridge::VtpmBackend::open(candidate, vtpm_state_path) {
                     Ok(backend) => {
                         tracing::info!("auto-detected vTPM at {}", candidate.display());
                         return Ok(Box::new(backend));
@@ -267,6 +279,19 @@ fn dirs_home() -> std::path::PathBuf {
         .unwrap_or_else(|_| std::path::PathBuf::from("."))
 }
 
+/// Path to the persisted vTPM permanent state, alongside the metadata
+/// store (e.g. `tpm.db` -> `tpm.db.tpmstate`).
+#[allow(dead_code)]
+fn vtpm_state_path_for_store(store_path: &std::path::Path) -> std::path::PathBuf {
+    let mut p = store_path.to_path_buf();
+    let name = p
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "tpm.db".into());
+    p.set_file_name(format!("{}.tpmstate", name));
+    p
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -297,8 +322,9 @@ fn main() -> anyhow::Result<()> {
         Some(cmd) => {
             let store_path = cli.store_path.unwrap_or_else(default_store_path);
             let store = Store::open(&store_path)?;
+            let vtpm_state = vtpm_state_path_for_store(&store_path);
             let backend: Box<dyn tpm_core::backend::TpmBackend> =
-                create_backend(&cli.backend)?;
+                create_backend(&cli.backend, Some(&vtpm_state))?;
 
             // Check profile constraints before dispatching
             if let Some(profile) = store.get_active_profile()? {

@@ -3,7 +3,7 @@
 //! All TPM2 command byte building and response parsing lives here.
 //! The `VtpmEngine` is a pure WIT host — this module adds TPM protocol knowledge.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use tpm_core::backend::{
@@ -11,7 +11,7 @@ use tpm_core::backend::{
     TpmBackend,
 };
 use tpm_core::model::{Algorithm, ObjectPath};
-use vtpm_wasm::{TpmVersion, VtpmEngine};
+use vtpm_wasm::{StateType, TpmVersion, VtpmEngine};
 
 // TPM2 constants
 const TPM_ST_NO_SESSIONS: u16 = 0x8001;
@@ -29,6 +29,8 @@ const TPM2_CC_VERIFY_SIGNATURE: u32 = 0x00000177;
 
 const TPM_RH_OWNER: u32 = 0x40000001;
 const TPM_RH_NULL: u32 = 0x40000007;
+
+const TPM_SU_CLEAR: u16 = 0x0000;
 const TPM_RS_PW: u32 = 0x40000009;
 
 const TPM_ALG_SHA256: u16 = 0x000B;
@@ -46,10 +48,22 @@ const TPM_ECC_NIST_P256: u16 = 0x0003;
 pub struct VtpmBackend {
     engine: Mutex<VtpmEngine>,
     initialized: bool,
+    /// When set, the TPM's permanent state (NV, hierarchy seeds) is
+    /// restored from this file on startup and saved back on drop, so
+    /// keys/NV persist across separate CLI invocations. Without it the
+    /// vTPM is ephemeral and keys cannot be reloaded between processes.
+    state_path: Option<PathBuf>,
 }
 
 impl VtpmBackend {
+    /// Construct an ephemeral vTPM (no cross-invocation persistence).
     pub fn new(component_path: &Path) -> anyhow::Result<Self> {
+        Self::open(component_path, None)
+    }
+
+    /// Construct a vTPM, optionally persisting permanent state to
+    /// `state_path` across invocations.
+    pub fn open(component_path: &Path, state_path: Option<&Path>) -> anyhow::Result<Self> {
         let mut engine = VtpmEngine::new(component_path)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
 
@@ -57,33 +71,87 @@ impl VtpmBackend {
         engine
             .choose_version(TpmVersion::Tpm20)
             .map_err(|e| anyhow::anyhow!("choose-version: {}", e))?;
+
+        // Restore persisted permanent state before init, if present.
+        // set-state must precede init (see the WIT state interface).
+        if let Some(sp) = state_path {
+            if let Ok(blob) = std::fs::read(sp) {
+                // Best effort: a corrupt/incompatible blob falls back to
+                // a freshly-manufactured TPM rather than failing the CLI.
+                let _ = engine.set_state(StateType::Permanent, &blob);
+            }
+        }
+
         engine
             .init_tpm()
             .map_err(|e| anyhow::anyhow!("init: {}", e))?;
 
-        // TPM2_Startup + SelfTest
-        send_command(&mut engine, &build_startup_cmd())?;
+        // TPM2_Startup(CLEAR) + SelfTest. PCRs/volatile reset each
+        // invocation; permanent state (restored above) carries the
+        // hierarchy seeds, so CreatePrimary is deterministic and stored
+        // key blobs reload.
+        send_command(&mut engine, &build_startup_cmd(TPM_SU_CLEAR))?;
         send_command(&mut engine, &build_selftest_cmd())?;
 
         Ok(Self {
             engine: Mutex::new(engine),
             initialized: true,
+            state_path: state_path.map(|p| p.to_path_buf()),
         })
+    }
+
+    /// Save the TPM's permanent state to the state file (atomic write).
+    fn persist(&self) -> anyhow::Result<()> {
+        let Some(sp) = self.state_path.clone() else {
+            return Ok(());
+        };
+        let mut engine = self.engine.lock().unwrap();
+        let permanent = engine
+            .get_state(StateType::Permanent)
+            .map_err(|e| anyhow::anyhow!("get permanent state: {}", e))?;
+        if let Some(parent) = sp.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        let tmp = sp.with_extension("tpmstate.tmp");
+        std::fs::write(&tmp, &permanent)?;
+        std::fs::rename(&tmp, &sp)?;
+        Ok(())
     }
 }
 
-/// Send a raw TPM2 command and check the response code.
-fn send_command(engine: &mut VtpmEngine, cmd: &[u8]) -> anyhow::Result<Vec<u8>> {
-    let resp = engine
-        .process(cmd)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
-    if resp.len() >= 10 {
-        let rc = u32::from_be_bytes([resp[6], resp[7], resp[8], resp[9]]);
-        if rc != 0 {
-            anyhow::bail!("TPM error 0x{:08x}", rc);
+impl Drop for VtpmBackend {
+    fn drop(&mut self) {
+        if self.state_path.is_some() {
+            if let Err(e) = self.persist() {
+                tracing::warn!("failed to persist vTPM state: {}", e);
+            }
         }
     }
-    Ok(resp)
+}
+
+/// TPM_RC_RETRY: the TPM could not start the command and asks the caller
+/// to re-submit it. libtpms can return this transiently.
+const TPM_RC_RETRY: u32 = 0x0000_0922;
+
+/// Send a raw TPM2 command and check the response code, transparently
+/// re-submitting on TPM_RC_RETRY.
+fn send_command(engine: &mut VtpmEngine, cmd: &[u8]) -> anyhow::Result<Vec<u8>> {
+    for _ in 0..8 {
+        let resp = engine
+            .process(cmd)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        if resp.len() >= 10 {
+            let rc = u32::from_be_bytes([resp[6], resp[7], resp[8], resp[9]]);
+            if rc == TPM_RC_RETRY {
+                continue;
+            }
+            if rc != 0 {
+                anyhow::bail!("TPM error 0x{:08x}", rc);
+            }
+        }
+        return Ok(resp);
+    }
+    anyhow::bail!("TPM error 0x{:08x} (still retrying after 8 attempts)", TPM_RC_RETRY)
 }
 
 fn create_primary_srk(engine: &mut VtpmEngine) -> anyhow::Result<u32> {
@@ -465,12 +533,12 @@ impl TpmBackend for VtpmBackend {
 
 // ─── TPM2 command builders ──────────────────────────────────────
 
-fn build_startup_cmd() -> Vec<u8> {
+fn build_startup_cmd(startup_type: u16) -> Vec<u8> {
     let mut c = Vec::new();
     c.extend_from_slice(&TPM_ST_NO_SESSIONS.to_be_bytes());
     c.extend_from_slice(&12u32.to_be_bytes());
     c.extend_from_slice(&0x00000144u32.to_be_bytes()); // TPM2_CC_Startup
-    c.extend_from_slice(&0x0000u16.to_be_bytes()); // TPM_SU_CLEAR
+    c.extend_from_slice(&startup_type.to_be_bytes());
     c
 }
 
@@ -866,5 +934,47 @@ mod tests {
                 "verify_signature must reject the non-signature fallback"
             );
         }
+    }
+
+    /// Persisted permanent state must let a key created in one backend
+    /// instance be reloaded and used in a later one (the cross-invocation
+    /// case the ephemeral vTPM cannot do). Proves Option-B persistence and
+    /// real ECDSA sign+verify together.
+    #[test]
+    fn persisted_keys_survive_across_instances() {
+        let Ok(component) = std::env::var("TPM_VTPM_COMPONENT") else {
+            eprintln!("skipping: TPM_VTPM_COMPONENT not set");
+            return;
+        };
+        let comp = std::path::Path::new(&component);
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state_path = tmp.path().to_path_buf();
+        std::fs::remove_file(&state_path).ok(); // first instance starts fresh
+
+        let msg = b"measurement-checkpoint-root";
+        let path = ObjectPath::new("signing/persisted").unwrap();
+
+        // Instance 1: create a key, then drop (persists permanent state).
+        let handle = {
+            let b1 = VtpmBackend::open(comp, Some(&state_path)).unwrap();
+            b1.create_key(Algorithm::EccP256, &path).unwrap()
+        };
+        assert!(state_path.exists(), "state file must be written on drop");
+
+        // Instance 2: restore state, sign with the SAME key blob.
+        let b2 = VtpmBackend::open(comp, Some(&state_path)).unwrap();
+        let sig = b2.sign(&handle, msg).unwrap();
+
+        let is_real = sig.len() >= 2 && sig[0] == 0x00 && sig[1] == 0x18;
+        assert!(
+            is_real,
+            "with persisted permanent state, sign must reload the key and produce a \
+             real ECDSA TPMT_SIGNATURE (got {} bytes)",
+            sig.len()
+        );
+        assert!(
+            b2.verify_signature(&handle, msg, &sig).unwrap(),
+            "a signature from the reloaded persisted key must verify"
+        );
     }
 }
