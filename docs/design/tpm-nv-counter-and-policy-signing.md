@@ -11,6 +11,14 @@ separate and need real hardware.
 
 ## Item 1 — vTPM NV monotonic counter (`nv_increment`)
 
+> **Status: primitive DONE** (`feat(vtpm): implement TPM2 NV monotonic
+> counter ...`). The attribute-bit fix below resolved it; `nv_increment`
+> works on the vTPM and persists across invocations (1,2,3,… via the
+> state file). Tests cover in-process monotonicity and cross-instance
+> persistence. **Remaining:** bind the counter into the signed
+> checkpoint (secure-log change, below), and the `tpm-hw` (tss-esapi)
+> equivalent (needs hardware).
+
 ### Goal
 
 Implement `TpmBackend::nv_increment` for `VtpmBackend` using a real
