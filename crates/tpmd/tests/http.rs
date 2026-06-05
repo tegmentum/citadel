@@ -26,7 +26,7 @@ fn new_app() -> axum::Router {
     // and the persistent witness tests exercise the real storage path.
     let state = Arc::new(Mutex::new(AppState {
         store: Store::open_memory().expect("open in-memory sqlite store"),
-        backend: Box::new(MockBackend::new()),
+        backend: Arc::new(MockBackend::new()),
     }));
     build_router(state)
 }

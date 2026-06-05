@@ -10,6 +10,8 @@
 
 use std::sync::Arc;
 
+pub mod tls;
+
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
@@ -29,7 +31,9 @@ use tpm_core::store::Store;
 /// serialize access to the store and backend.
 pub struct AppState {
     pub store: Store,
-    pub backend: Box<dyn TpmBackend>,
+    /// Shared so the same TPM key custodian backs both the HTTP API and the
+    /// TLS layer (see [`tls`]).
+    pub backend: Arc<dyn TpmBackend>,
 }
 
 /// Build the full HTTP router, including API-key middleware.
@@ -104,7 +108,18 @@ pub async fn run() -> anyhow::Result<()> {
         .unwrap_or_else(|_| default_store_path());
 
     let store = Store::open(&store_path)?;
-    let backend: Box<dyn TpmBackend> = Box::new(MockBackend::new());
+    let backend: Arc<dyn TpmBackend> = Arc::new(MockBackend::new());
+    // The TLS layer (when a TPM-backed identity is configured) signs the
+    // handshake with the same backend the API uses — one key custodian.
+    let tls_backend = backend.clone();
+
+    // Open a second store handle for the TLS setup before `store` is moved
+    // into the shared state (both point at the same database).
+    let tls_store = if std::env::var("TPMD_TLS_IDENTITY").is_ok() {
+        Some(Store::open(&store_path)?)
+    } else {
+        None
+    };
 
     let state = Arc::new(Mutex::new(AppState { store, backend }));
     let app = build_router(state);
@@ -114,13 +129,33 @@ pub async fn run() -> anyhow::Result<()> {
     tracing::info!("tpmd starting on {}", listen);
     tracing::info!("store: {}", store_path.display());
 
-    // Check for TLS configuration
+    // TLS, in order of preference:
+    //   1. TPMD_TLS_IDENTITY — the server key lives in the TPM (no private
+    //      key on disk); the certificate comes from the identity's stored
+    //      certificate_pem or a TPMD_TLS_CERT file.
+    //   2. TPMD_TLS_CERT + TPMD_TLS_KEY — a classic on-disk PEM keypair.
+    //   3. plain TCP.
+    let tls_identity = std::env::var("TPMD_TLS_IDENTITY").ok();
     let tls_cert = std::env::var("TPMD_TLS_CERT").ok();
     let tls_key = std::env::var("TPMD_TLS_KEY").ok();
 
-    match (tls_cert, tls_key) {
-        (Some(cert_path), Some(key_path)) => {
-            tracing::info!("TLS enabled: cert={}, key={}", cert_path, key_path);
+    match (tls_identity, tls_cert, tls_key) {
+        (Some(identity_name), _, _) => {
+            let store = tls_store.expect("opened when TPMD_TLS_IDENTITY is set");
+            let cert_pem = resolve_tls_cert(&store, &identity_name)?;
+            tracing::info!(
+                "TLS enabled: server key held in the TPM via identity '{}'",
+                identity_name
+            );
+            let config =
+                tls::server_config_from_identity(&store, tls_backend, &identity_name, &cert_pem)?;
+            let addr: std::net::SocketAddr = listen.parse()?;
+            axum_server::bind_rustls(addr, axum_server::tls_rustls::RustlsConfig::from_config(config))
+                .serve(app.into_make_service())
+                .await?;
+        }
+        (None, Some(cert_path), Some(key_path)) => {
+            tracing::info!("TLS enabled: cert={}, key={} (on-disk key)", cert_path, key_path);
 
             let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
                 &cert_path,
@@ -138,12 +173,31 @@ pub async fn run() -> anyhow::Result<()> {
                 .await?;
         }
         _ => {
+            let _ = tls_backend;
             let listener = tokio::net::TcpListener::bind(&listen).await?;
             axum::serve(listener, app).await?;
         }
     }
 
     Ok(())
+}
+
+/// Resolve the certificate (PEM) presented for a TPM-backed TLS identity:
+/// the identity's stored `certificate_pem`, else a `TPMD_TLS_CERT` file.
+fn resolve_tls_cert(store: &Store, identity_name: &str) -> anyhow::Result<String> {
+    if let Some(id) = store.get_identity(identity_name)? {
+        if let Some(pem) = id.certificate_pem {
+            return Ok(pem);
+        }
+    }
+    if let Ok(path) = std::env::var("TPMD_TLS_CERT") {
+        return std::fs::read_to_string(&path)
+            .map_err(|e| anyhow::anyhow!("reading TPMD_TLS_CERT {path}: {e}"));
+    }
+    anyhow::bail!(
+        "TLS identity '{identity_name}' has no certificate; store one with \
+         `tpm identity` certificate import, or set TPMD_TLS_CERT to a PEM file"
+    )
 }
 
 // -- Handlers --

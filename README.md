@@ -312,8 +312,25 @@ The dashboard shows health score, backend status, object counts, and the active 
 tpmd                              # start on 127.0.0.1:7701
 TPMD_LISTEN=0.0.0.0:8443 tpmd    # custom address
 TPMD_API_KEY=secret tpmd          # require X-API-Key header
-TPMD_TLS_CERT=cert.pem TPMD_TLS_KEY=key.pem tpmd  # TLS
+TPMD_TLS_CERT=cert.pem TPMD_TLS_KEY=key.pem tpmd  # TLS with an on-disk key
 ```
+
+#### TLS with a TPM-held server key
+
+The daemon can terminate TLS using a TPM-resident key instead of a private
+key file — the key never exists on disk, and the TLS handshake is signed
+inside the TPM. Point it at a citadel **identity** whose key is TPM-backed:
+
+```bash
+TPMD_TLS_IDENTITY=tpmd-tls tpmd        # server key = identity 'tpmd-tls', signed in the TPM
+```
+
+The certificate is taken from the identity's stored `certificate_pem`, or
+from `TPMD_TLS_CERT` if set; its public key must match the identity's TPM
+key. `TPMD_TLS_IDENTITY` takes precedence over the on-disk `TPMD_TLS_KEY`
+path. This path requires an ECDSA-capable backend (the vTPM or hardware TPM)
+since the handshake is signed by the TPM; the software mock cannot terminate
+a live TLS handshake.
 
 ### API
 
