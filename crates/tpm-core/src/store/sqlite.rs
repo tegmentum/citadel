@@ -738,6 +738,36 @@ impl StoreBackend for SqliteStore {
             .execute("DELETE FROM identities WHERE name = ?1", params![name])?;
         Ok(count > 0)
     }
+
+    fn set_checkpoint_counter(&self, checkpoint_hash: &str, counter: u64) -> anyhow::Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO checkpoint_counters (checkpoint_hash, counter) VALUES (?1, ?2)",
+            params![checkpoint_hash, counter as i64],
+        )?;
+        Ok(())
+    }
+
+    fn get_checkpoint_counter(&self, checkpoint_hash: &str) -> anyhow::Result<Option<u64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT counter FROM checkpoint_counters WHERE checkpoint_hash = ?1",
+                params![checkpoint_hash],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?
+            .map(|c| c as u64))
+    }
+
+    fn max_checkpoint_counter(&self) -> anyhow::Result<Option<u64>> {
+        // MAX over an empty table yields a single NULL row.
+        Ok(self
+            .conn
+            .query_row("SELECT MAX(counter) FROM checkpoint_counters", [], |r| {
+                r.get::<_, Option<i64>>(0)
+            })?
+            .map(|c| c as u64))
+    }
 }
 
 struct RawIdentityRow {

@@ -268,6 +268,10 @@ impl TpmBackend for MockBackend {
         Ok(*v)
     }
 
+    fn nv_read_counter(&self, index: u32) -> anyhow::Result<Option<u64>> {
+        Ok(self.counters.lock().unwrap().get(&index).copied())
+    }
+
     fn create_ak(&self, algorithm: Algorithm) -> anyhow::Result<KeyHandle> {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};

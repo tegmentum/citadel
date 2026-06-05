@@ -114,6 +114,13 @@ pub trait TpmBackend: Send + Sync {
         anyhow::bail!("nv_increment is not supported by this backend")
     }
 
+    /// Read a monotonic NV counter's current value without incrementing
+    /// it. `None` if the counter does not exist. Default: `None`.
+    fn nv_read_counter(&self, index: u32) -> anyhow::Result<Option<u64>> {
+        let _ = index;
+        Ok(None)
+    }
+
     /// Create an attestation key.
     fn create_ak(&self, algorithm: Algorithm) -> anyhow::Result<KeyHandle>;
 

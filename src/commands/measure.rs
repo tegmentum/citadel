@@ -197,15 +197,84 @@ impl TextRenderable for CheckpointOutput {
 /// When `require_baseline` is set, the signing key is gated on the live
 /// PCRs matching that saved baseline — binding the anchoring key to a
 /// known-good measured state.
+#[allow(clippy::too_many_arguments)]
 pub fn sign(
     store_path: &Path,
     backend: &dyn TpmBackend,
     segment_id: u64,
     identity: &str,
     require_baseline: Option<&str>,
+    anti_rollback: Option<u32>,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
-    audit::sign(store_path, backend, segment_id, identity, require_baseline, format)
+    audit::sign(
+        store_path,
+        backend,
+        segment_id,
+        identity,
+        require_baseline,
+        anti_rollback,
+        format,
+    )
+}
+
+/// Detect log truncation/rollback: the live NV counter must not have
+/// advanced past the highest counter bound into a recorded checkpoint
+/// (which would mean checkpoints were signed and then removed).
+pub fn rollback_check(
+    store_path: &Path,
+    backend: &dyn TpmBackend,
+    nv_index: Option<u32>,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let index = nv_index.unwrap_or(ANCHOR_COUNTER_NV_INDEX);
+    let live = backend.nv_read_counter(index)?;
+    let store = tpm_core::store::Store::open(store_path)?;
+    let max_recorded = store.max_checkpoint_counter()?;
+
+    let (ok, detail) = match (live, max_recorded) {
+        (Some(l), Some(m)) if l > m => (
+            false,
+            format!("live NV counter {l} exceeds the latest checkpoint counter {m}: {} checkpoint(s) appear to have been removed", l - m),
+        ),
+        (Some(l), Some(m)) => (true, format!("live NV counter {l} matches the latest checkpoint counter {m}")),
+        _ => (true, "no anti-rollback counters recorded (sign with --anti-rollback to enable)".to_string()),
+    };
+
+    let out = RollbackCheckOutput {
+        nv_index: format!("0x{:08X}", index),
+        live_counter: live,
+        latest_checkpoint_counter: max_recorded,
+        ok,
+        detail,
+    };
+    println!("{}", render(&out, format));
+    if !ok {
+        anyhow::bail!("rollback detected");
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct RollbackCheckOutput {
+    nv_index: String,
+    live_counter: Option<u64>,
+    latest_checkpoint_counter: Option<u64>,
+    ok: bool,
+    detail: String,
+}
+
+impl TextRenderable for RollbackCheckOutput {
+    fn render_text(&self) -> String {
+        format!(
+            "anti-rollback check\n  nv_index:           {}\n  live counter:       {}\n  latest checkpoint:  {}\n  result: {}\n  {}\n",
+            self.nv_index,
+            self.live_counter.map(|c| c.to_string()).unwrap_or_else(|| "-".into()),
+            self.latest_checkpoint_counter.map(|c| c.to_string()).unwrap_or_else(|| "-".into()),
+            if self.ok { "OK" } else { "ROLLBACK DETECTED" },
+            self.detail,
+        )
+    }
 }
 
 /// Prove that a measurement (by seqno) is included under a sealed root.
@@ -413,6 +482,52 @@ mod tests {
     fn rejects_short_line() {
         assert!(parse_ima_line("10 abc ima-ng").is_none());
         assert!(parse_ima_line("").is_none());
+    }
+
+    /// Anti-rollback: a counter bound into a checkpoint round-trips
+    /// through verification, and advancing the live NV counter past the
+    /// recorded checkpoints is detected as truncation/rollback.
+    #[test]
+    fn anti_rollback_binding_round_trips_and_detects_truncation() {
+        use crate::commands::audit;
+        use tpm_core::backend::MockBackend;
+        use tpm_core::store::Store;
+
+        let db = tempfile::NamedTempFile::new().unwrap();
+        let path = db.path();
+        let backend = MockBackend::new();
+        let store = Store::open(path).unwrap();
+
+        crate::commands::identity::init(
+            &store, &backend, "auditor", "generic", "ecc-p256", None, None, None, None,
+            OutputFormat::Json,
+        )
+        .unwrap();
+
+        let app = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(app.path(), b"workload").unwrap();
+        file(path, &backend, app.path(), "binary", "sha256", None, OutputFormat::Json).unwrap();
+        checkpoint(path, &backend, None, "sha256", OutputFormat::Json).unwrap();
+
+        // Sign with anti-rollback: binds NV counter 1 into the checkpoint.
+        sign(path, &backend, 1, "auditor", None, Some(ANCHOR_COUNTER_NV_INDEX), OutputFormat::Json)
+            .unwrap();
+
+        // The checkpoint chain verifies (the bound counter is reconstructed).
+        assert_eq!(
+            audit::verify_checkpoint_chain(path, &backend, MEASUREMENT_STREAM).unwrap(),
+            1
+        );
+
+        // Live NV (1) matches the latest checkpoint counter (1): no rollback.
+        rollback_check(path, &backend, Some(ANCHOR_COUNTER_NV_INDEX), OutputFormat::Json).unwrap();
+
+        // Advance the NV counter without recording a checkpoint, as if a
+        // signed checkpoint were removed: now detected.
+        anchor_counter(&backend, Some(ANCHOR_COUNTER_NV_INDEX), OutputFormat::Json).unwrap();
+        let err = rollback_check(path, &backend, Some(ANCHOR_COUNTER_NV_INDEX), OutputFormat::Json)
+            .expect_err("advancing the live counter past recorded checkpoints is a rollback");
+        assert!(err.to_string().contains("rollback"), "unexpected error: {err}");
     }
 
     #[test]

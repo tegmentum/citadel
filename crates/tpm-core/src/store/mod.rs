@@ -325,6 +325,18 @@ impl Store {
         self.inner.delete_identity(name)
     }
 
+    pub fn set_checkpoint_counter(&self, checkpoint_hash: &str, counter: u64) -> anyhow::Result<()> {
+        self.inner.set_checkpoint_counter(checkpoint_hash, counter)
+    }
+
+    pub fn get_checkpoint_counter(&self, checkpoint_hash: &str) -> anyhow::Result<Option<u64>> {
+        self.inner.get_checkpoint_counter(checkpoint_hash)
+    }
+
+    pub fn max_checkpoint_counter(&self) -> anyhow::Result<Option<u64>> {
+        self.inner.max_checkpoint_counter()
+    }
+
     // -- Secure log delegation --
     //
     // All methods below forward to the sibling SqliteSecureLogStore

@@ -98,3 +98,14 @@ CREATE TABLE identities (
 CREATE INDEX idx_identities_key ON identities(key_object_id);
 "#;
 
+/// V6: anti-rollback counters bound into signed checkpoints. Maps a
+/// checkpoint hash (hex) to the monotonic NV counter value the checkpoint
+/// signature covers, so verification can reconstruct the signed message
+/// and detect rollback against the live counter.
+pub const V6: &str = r#"
+CREATE TABLE checkpoint_counters (
+    checkpoint_hash TEXT PRIMARY KEY,
+    counter         INTEGER NOT NULL
+);
+"#;
+

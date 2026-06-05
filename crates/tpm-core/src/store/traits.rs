@@ -103,4 +103,15 @@ pub trait StoreBackend: Send {
     ) -> anyhow::Result<()>;
     fn set_identity_cert(&self, name: &str, certificate_pem: &str) -> anyhow::Result<()>;
     fn delete_identity(&self, name: &str) -> anyhow::Result<bool>;
+
+    /// Record the anti-rollback counter a checkpoint (by hex hash) was
+    /// signed under.
+    fn set_checkpoint_counter(&self, checkpoint_hash: &str, counter: u64) -> anyhow::Result<()>;
+
+    /// Fetch the anti-rollback counter bound to a checkpoint hash.
+    fn get_checkpoint_counter(&self, checkpoint_hash: &str) -> anyhow::Result<Option<u64>>;
+
+    /// Highest anti-rollback counter recorded across all checkpoints, for
+    /// detecting truncation against the live NV counter.
+    fn max_checkpoint_counter(&self) -> anyhow::Result<Option<u64>>;
 }

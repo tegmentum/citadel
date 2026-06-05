@@ -1081,12 +1081,14 @@ fn decode_hex(s: &str) -> anyhow::Result<Vec<u8>> {
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn sign(
     store_path: &Path,
     backend: &dyn TpmBackend,
     segment_id: u64,
     identity: &str,
     require_baseline: Option<&str>,
+    anti_rollback: Option<u32>,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     let log = open_log(store_path)?;
@@ -1098,6 +1100,10 @@ pub fn sign(
     // live PCRs to match a saved baseline before signing the root.
     if let Some(bl_name) = require_baseline {
         signer = signer.with_pcr_guard(build_pcr_guard(&id_store, bl_name)?);
+    }
+    // Optionally bind a monotonic NV counter into the checkpoint.
+    if let Some(idx) = anti_rollback {
+        signer = signer.with_anti_rollback(idx);
     }
     let (ckpt_hash, sig) = log
         .sign_segment(&signer, identity, segment_id)

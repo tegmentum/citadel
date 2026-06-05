@@ -20,6 +20,7 @@ struct Inner {
     audit_log: Vec<AuditEntry>,
     approvals: Vec<ApprovalRequest>,
     identities: Vec<Identity>,
+    checkpoint_counters: std::collections::HashMap<String, u64>,
     next_audit_id: i64,
 }
 
@@ -53,6 +54,7 @@ impl MemoryStore {
                 audit_log: Vec::new(),
                 approvals: Vec::new(),
                 identities: Vec::new(),
+                checkpoint_counters: std::collections::HashMap::new(),
                 next_audit_id: 1,
             }),
         }
@@ -432,6 +434,36 @@ impl StoreBackend for MemoryStore {
         let len_before = inner.identities.len();
         inner.identities.retain(|i| i.name != name);
         Ok(inner.identities.len() < len_before)
+    }
+
+    fn set_checkpoint_counter(&self, checkpoint_hash: &str, counter: u64) -> anyhow::Result<()> {
+        self.inner
+            .lock()
+            .unwrap()
+            .checkpoint_counters
+            .insert(checkpoint_hash.to_string(), counter);
+        Ok(())
+    }
+
+    fn get_checkpoint_counter(&self, checkpoint_hash: &str) -> anyhow::Result<Option<u64>> {
+        Ok(self
+            .inner
+            .lock()
+            .unwrap()
+            .checkpoint_counters
+            .get(checkpoint_hash)
+            .copied())
+    }
+
+    fn max_checkpoint_counter(&self) -> anyhow::Result<Option<u64>> {
+        Ok(self
+            .inner
+            .lock()
+            .unwrap()
+            .checkpoint_counters
+            .values()
+            .copied()
+            .max())
     }
 
 }

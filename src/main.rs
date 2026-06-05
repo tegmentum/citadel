@@ -707,12 +707,14 @@ fn main() -> anyhow::Result<()> {
                         segment_id,
                         identity,
                         require_baseline,
+                        anti_rollback,
                     } => commands::audit::sign(
                         &store_path,
                         backend.as_ref(),
                         segment_id,
                         &identity,
                         require_baseline.as_deref(),
+                        anti_rollback,
                         format,
                     ),
                     AuditCommand::Verify { stream } => {
@@ -786,14 +788,24 @@ fn main() -> anyhow::Result<()> {
                         segment_id,
                         identity,
                         require_baseline,
+                        anti_rollback,
                     } => commands::measure::sign(
                         &store_path,
                         backend.as_ref(),
                         segment_id,
                         &identity,
                         require_baseline.as_deref(),
+                        anti_rollback,
                         format,
                     ),
+                    MeasureCommand::RollbackCheck { nv_index } => {
+                        commands::measure::rollback_check(
+                            &store_path,
+                            backend.as_ref(),
+                            nv_index,
+                            format,
+                        )
+                    }
                     MeasureCommand::Verify { seqno } => {
                         commands::measure::verify(&store_path, seqno, format)
                     }

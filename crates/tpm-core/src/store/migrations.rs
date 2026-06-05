@@ -11,4 +11,5 @@ pub const MIGRATIONS: &[(i64, &str)] = &[
     (3, schema::V3),
     (4, schema::V4),
     (5, schema::V5),
+    (6, schema::V6),
 ];

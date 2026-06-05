@@ -461,6 +461,17 @@ pub enum MeasureCommand {
         /// anchoring key to a known-good measured state)
         #[arg(long)]
         require_baseline: Option<String>,
+
+        /// Bind a monotonic NV counter into the checkpoint for rollback
+        /// detection. Without a value uses the default counter index.
+        #[arg(long, num_args = 0..=1, default_missing_value = "25165825")]
+        anti_rollback: Option<u32>,
+    },
+    /// Detect log rollback/truncation against the live NV counter
+    RollbackCheck {
+        /// NV counter index (defaults to the anti-rollback counter)
+        #[arg(long)]
+        nv_index: Option<u32>,
     },
     /// Prove a measurement (by seqno) is included under a sealed root
     Verify {
@@ -700,6 +711,10 @@ pub enum AuditCommand {
         /// signing key to a known-good measured state).
         #[arg(long)]
         require_baseline: Option<String>,
+        /// Bind a monotonic NV counter into the checkpoint for rollback
+        /// detection. Without a value uses the default counter index.
+        #[arg(long, num_args = 0..=1, default_missing_value = "25165825")]
+        anti_rollback: Option<u32>,
     },
     /// Verify the full checkpoint chain from genesis to head.
     Verify {

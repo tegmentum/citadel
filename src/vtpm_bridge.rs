@@ -704,6 +704,24 @@ impl TpmBackend for VtpmBackend {
         Ok(u64::from_be_bytes(buf))
     }
 
+    fn nv_read_counter(&self, index: u32) -> anyhow::Result<Option<u64>> {
+        let mut engine = self.engine.lock().unwrap();
+        let resp = match engine.process(&build_nv_read_cmd(index, 8)) {
+            Ok(r) => r,
+            Err(_) => return Ok(None),
+        };
+        if response_rc(&resp) != 0 || resp.len() < 16 {
+            return Ok(None); // not defined / not written
+        }
+        let data_size = u16::from_be_bytes([resp[14], resp[15]]) as usize;
+        if data_size != 8 || 16 + 8 > resp.len() {
+            return Ok(None);
+        }
+        let mut buf = [0u8; 8];
+        buf.copy_from_slice(&resp[16..24]);
+        Ok(Some(u64::from_be_bytes(buf)))
+    }
+
     fn create_ak(&self, algorithm: Algorithm) -> anyhow::Result<KeyHandle> {
         let path = ObjectPath::new("ak").unwrap();
         self.create_key(algorithm, &path)

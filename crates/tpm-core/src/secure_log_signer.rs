@@ -36,6 +36,13 @@ pub struct TpmCheckpointSigner<'a> {
     /// This binds the anchoring key to a known-good measured state so a
     /// tampered/unmeasured host cannot produce valid checkpoints.
     pcr_guard: Option<PcrGuard>,
+    /// Optional anti-rollback: when set to an NV counter index, each
+    /// checkpoint is signed over `H("artr" ‖ ckpt_hash ‖ counter)` with a
+    /// freshly-incremented monotonic counter, and the counter is recorded
+    /// (by checkpoint hash) so verification can reconstruct the message
+    /// and a stale (rolled-back) checkpoint can be detected against the
+    /// live counter.
+    anti_rollback: Option<u32>,
 }
 
 /// A measured-state precondition for checkpoint signing: the live
@@ -55,12 +62,20 @@ impl<'a> TpmCheckpointSigner<'a> {
             backend,
             store,
             pcr_guard: None,
+            anti_rollback: None,
         }
     }
 
     /// Require the live PCRs to match `guard` before any signing.
     pub fn with_pcr_guard(mut self, guard: PcrGuard) -> Self {
         self.pcr_guard = Some(guard);
+        self
+    }
+
+    /// Bind a monotonic NV counter (at `nv_index`) into every signed
+    /// checkpoint for rollback detection.
+    pub fn with_anti_rollback(mut self, nv_index: u32) -> Self {
+        self.anti_rollback = Some(nv_index);
         self
     }
 
@@ -200,19 +215,39 @@ impl<'a> CheckpointSigner for TpmCheckpointSigner<'a> {
             .map_err(|e| SignerError::Storage(e.to_string()))?
             .ok_or_else(|| SignerError::UnknownIdentity(identity_name.to_string()))?;
         let handle = self.handle_for_identity(identity_name)?;
+
+        // Anti-rollback: advance the monotonic counter and bind it into
+        // the message actually signed, then record it by checkpoint hash.
+        let (signed_message, counter) = match self.anti_rollback {
+            Some(idx) => {
+                let c = self
+                    .backend
+                    .nv_increment(idx)
+                    .map_err(|e| SignerError::SignFailed(e.to_string()))?;
+                (bind_counter(message, c), Some(c))
+            }
+            None => (message.to_vec(), None),
+        };
+
         // If the identity's key is bound to a PCR policy (created with
         // `--pcr-bind`), sign under a policy session so the TPM itself
         // enforces the measured state; otherwise sign with the password.
         let signature = match self.pcr_binding_for_identity(identity_name)? {
             Some((bank, indices)) => self
                 .backend
-                .sign_with_policy(&handle, message, &bank, &indices)
+                .sign_with_policy(&handle, &signed_message, &bank, &indices)
                 .map_err(|e| SignerError::SignFailed(e.to_string()))?,
             None => self
                 .backend
-                .sign(&handle, message)
+                .sign(&handle, &signed_message)
                 .map_err(|e| SignerError::SignFailed(e.to_string()))?,
         };
+
+        if let Some(c) = counter {
+            self.store
+                .set_checkpoint_counter(&hex_str(message), c)
+                .map_err(|e| SignerError::Storage(e.to_string()))?;
+        }
         Ok((signature, identity.id.to_string()))
     }
 
@@ -223,10 +258,34 @@ impl<'a> CheckpointSigner for TpmCheckpointSigner<'a> {
         signature: &[u8],
     ) -> Result<bool, SignerError> {
         let handle = self.handle_for_signer_id(signer_identity)?;
+        // Reconstruct the bound message if this checkpoint carries a
+        // recorded anti-rollback counter; else verify the bare message.
+        let signed_message = match self
+            .store
+            .get_checkpoint_counter(&hex_str(message))
+            .map_err(|e| SignerError::Storage(e.to_string()))?
+        {
+            Some(c) => bind_counter(message, c),
+            None => message.to_vec(),
+        };
         self.backend
-            .verify_signature(&handle, message, signature)
+            .verify_signature(&handle, &signed_message, signature)
             .map_err(|e| SignerError::VerifyFailed(e.to_string()))
     }
+}
+
+/// Bind an anti-rollback counter into a checkpoint message:
+/// `SHA-256("artr" ‖ message ‖ counter_be)`.
+fn bind_counter(message: &[u8], counter: u64) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(4 + message.len() + 8);
+    buf.extend_from_slice(b"artr");
+    buf.extend_from_slice(message);
+    buf.extend_from_slice(&counter.to_be_bytes());
+    crate::backend::hash_for_bank("sha256", &buf).expect("sha256 is always available")
+}
+
+fn hex_str(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 #[cfg(test)]
