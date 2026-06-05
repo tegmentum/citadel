@@ -182,6 +182,37 @@ pub fn enroll(
     Ok(())
 }
 
+/// Agent (Citadel) self-enrollment provenance, surfaced in attestation
+/// so a verifier sees whether the signing agent was kernel-corroborated.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AgentProvenance {
+    pub version: Option<String>,
+    pub digest_alg: Option<String>,
+    pub digest: Option<String>,
+    /// `Some(true)` IMA-corroborated, `Some(false)` not, `None` unknown.
+    pub ima_corroborated: Option<bool>,
+}
+
+/// The latest `agent.enroll` entry's provenance from the MMA stream.
+pub fn latest_agent_enrollment(store_path: &Path) -> anyhow::Result<Option<AgentProvenance>> {
+    use tpm_core::store::Store;
+    let store = Store::open(store_path)?;
+    let Some(head) = store.secure_log_head(MEASUREMENT_STREAM)? else {
+        return Ok(None);
+    };
+    let rows = store.secure_log_range(MEASUREMENT_STREAM, 1, head)?;
+    let Some(row) = rows.iter().rev().find(|r| r.event_type == "agent.enroll") else {
+        return Ok(None);
+    };
+    let v: serde_json::Value = serde_json::from_slice(&row.payload)?;
+    Ok(Some(AgentProvenance {
+        version: v.get("version").and_then(|x| x.as_str()).map(String::from),
+        digest_alg: v.get("digest_alg").and_then(|x| x.as_str()).map(String::from),
+        digest: v.get("digest").and_then(|x| x.as_str()).map(String::from),
+        ima_corroborated: v.get("ima_corroborated").and_then(|x| x.as_bool()),
+    }))
+}
+
 /// File-data digest the kernel IMA log recorded for `target`, if any:
 /// `(alg, hex)` from the matching `ascii_runtime_measurements` line.
 fn ima_digest_for_path(ima_path: &Path, target: &Path) -> anyhow::Result<Option<(String, String)>> {

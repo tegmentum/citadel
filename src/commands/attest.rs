@@ -26,6 +26,9 @@ struct MeasurementCheckpoint {
     merkle_root: String,
     signature: String,
     signer_identity: Option<String>,
+    /// Provenance of the signing agent (Citadel) from its MMA enrollment.
+    #[serde(default)]
+    agent: Option<super::measure::AgentProvenance>,
 }
 
 /// A quote optionally bundled with a measurement checkpoint. Written by
@@ -170,6 +173,7 @@ pub fn quote(
                 merkle_root: hex_bytes(&seg.merkle_root),
                 signature: hex_bytes(&seg.signature),
                 signer_identity: seg.signer_identity.clone(),
+                agent: super::measure::latest_agent_enrollment(store_path)?,
             }),
             None => anyhow::bail!(
                 "no signed measurement segment on stream '{}'; run `tpm measure checkpoint` then `tpm measure sign`",
@@ -288,6 +292,7 @@ pub fn verify(
                 signer_identity: c.signer_identity.clone(),
                 checkpoint_chain_ok: result.is_ok(),
                 error: result.err().map(|e| e.to_string()),
+                agent: c.agent.clone(),
             })
         }
         None => None,
@@ -371,6 +376,7 @@ struct MeasurementVerify {
     signer_identity: Option<String>,
     checkpoint_chain_ok: bool,
     error: Option<String>,
+    agent: Option<super::measure::AgentProvenance>,
 }
 
 impl TextRenderable for VerifyResult {
@@ -414,6 +420,19 @@ impl TextRenderable for VerifyResult {
             ));
             if let Some(e) = &m.error {
                 out.push_str(&format!("    error:     {}\n", e));
+            }
+            if let Some(a) = &m.agent {
+                let prov = match a.ima_corroborated {
+                    Some(true) => "IMA-corroborated",
+                    Some(false) => "self-attested (NOT IMA-corroborated)",
+                    None => "self-attested",
+                };
+                out.push_str(&format!(
+                    "    agent:     Citadel {} [{}] — {}\n",
+                    a.version.as_deref().unwrap_or("?"),
+                    a.digest.as_deref().map(|d| &d[..d.len().min(16)]).unwrap_or("?"),
+                    prov,
+                ));
             }
         }
         out.push_str(&format!(
