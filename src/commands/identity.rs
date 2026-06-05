@@ -2,8 +2,11 @@
 //!
 //! An identity composes a key + policy + intended usage + optional cert.
 
+use chrono::Utc;
+use uuid::Uuid;
+
 use tpm_core::backend::TpmBackend;
-use tpm_core::model::IdentityUsage;
+use tpm_core::model::{Algorithm, Identity, IdentityUsage, ObjectKind, ObjectPath, TpmObject};
 use tpm_core::output::format::{render, TextRenderable};
 use tpm_core::output::OutputFormat;
 use tpm_core::service::{delete_identity_svc, init_identity, rotate_identity, InitIdentitySpec};
@@ -11,6 +14,7 @@ use tpm_core::store::Store;
 
 use serde::Serialize;
 
+#[allow(clippy::too_many_arguments)]
 pub fn init(
     store: &Store,
     backend: &dyn TpmBackend,
@@ -20,8 +24,15 @@ pub fn init(
     policy: Option<&str>,
     subject: Option<&str>,
     key_path: Option<&str>,
+    pcr_bind: Option<&[u32]>,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
+    // PCR-bound identities create a TPM-policy-bound key so the TPM
+    // enforces the measured state at sign time (see `init_pcr_bound`).
+    if let Some(indices) = pcr_bind {
+        return init_pcr_bound(store, backend, name, usage, algorithm, subject, key_path, indices, format);
+    }
+
     let usage_parsed: IdentityUsage = usage.parse().map_err(|e: String| anyhow::anyhow!(e))?;
 
     let identity = init_identity(
@@ -35,6 +46,81 @@ pub fn init(
             subject,
             key_path,
         },
+    )?;
+
+    let out = IdentityInitOutput {
+        name: identity.name,
+        id: identity.id.to_string(),
+        usage: identity.usage.to_string(),
+        key_object_id: identity.key_object_id.to_string(),
+        subject: identity.subject,
+    };
+    println!("{}", render(&out, format));
+    Ok(())
+}
+
+/// Create an identity whose signing key is bound (via TPM authPolicy) to
+/// the current sha256 PCR state of `indices`. The TPM will only sign with
+/// it while those PCRs match, so checkpoint signing is measured-state
+/// enforced by hardware, not just the citadel-side gate.
+#[allow(clippy::too_many_arguments)]
+fn init_pcr_bound(
+    store: &Store,
+    backend: &dyn TpmBackend,
+    name: &str,
+    usage: &str,
+    algorithm: &str,
+    subject: Option<&str>,
+    key_path: Option<&str>,
+    indices: &[u32],
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    if store.get_identity(name)?.is_some() {
+        anyhow::bail!("identity already exists: {}", name);
+    }
+    let usage_parsed: IdentityUsage = usage.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+    let alg: Algorithm = algorithm.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+    let key_path_str = key_path
+        .map(String::from)
+        .unwrap_or_else(|| format!("signing/{}", name));
+    let path = ObjectPath::new(&key_path_str)?;
+    if store.get_object(&path)?.is_some() {
+        anyhow::bail!("object already exists: {}", path);
+    }
+
+    let bank = "sha256";
+    // Bind the key to the CURRENT measured state.
+    let auth_policy = backend.pcr_policy_digest(bank, indices)?;
+    let handle = backend.create_key_with_policy(alg, &path, &auth_policy)?;
+
+    let obj = TpmObject {
+        id: Uuid::new_v4(),
+        path: path.clone(),
+        kind: ObjectKind::SigningKey,
+        algorithm: alg,
+        policy_id: None,
+        handle_blob: Some(handle.id),
+        created_at: Utc::now(),
+        metadata: serde_json::json!({ "pcr_policy": { "bank": bank, "indices": indices } }),
+    };
+    store.insert_object(&obj)?;
+
+    let identity = Identity {
+        id: Uuid::new_v4(),
+        name: name.to_string(),
+        key_object_id: obj.id,
+        policy_id: None,
+        usage: usage_parsed,
+        subject: subject.map(String::from),
+        certificate_pem: None,
+        created_at: Utc::now(),
+        rotated_from: None,
+    };
+    store.insert_identity(&identity)?;
+    store.log_action(
+        "identity.init",
+        Some(name),
+        &serde_json::json!({ "usage": identity.usage.as_str(), "key": key_path_str, "pcr_bind": indices }),
     )?;
 
     let out = IdentityInitOutput {

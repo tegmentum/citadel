@@ -83,6 +83,38 @@ impl<'a> TpmCheckpointSigner<'a> {
         Ok(())
     }
 
+    /// If the identity's key object records a PCR-policy binding (stored
+    /// at creation under `metadata.pcr_policy`), return `(bank, indices)`.
+    fn pcr_binding_for_identity(
+        &self,
+        identity_name: &str,
+    ) -> Result<Option<(String, Vec<u32>)>, SignerError> {
+        let identity = self
+            .store
+            .get_identity(identity_name)
+            .map_err(|e| SignerError::Storage(e.to_string()))?
+            .ok_or_else(|| SignerError::UnknownIdentity(identity_name.to_string()))?;
+        let key = self
+            .store
+            .get_object_by_id(&identity.key_object_id)
+            .map_err(|e| SignerError::Storage(e.to_string()))?
+            .ok_or_else(|| SignerError::Storage("identity references missing key".into()))?;
+        let Some(p) = key.metadata.get("pcr_policy") else {
+            return Ok(None);
+        };
+        let bank = p
+            .get("bank")
+            .and_then(|b| b.as_str())
+            .ok_or_else(|| SignerError::Storage("malformed pcr_policy binding".into()))?
+            .to_string();
+        let indices = p
+            .get("indices")
+            .and_then(|i| i.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_u64().map(|n| n as u32)).collect())
+            .unwrap_or_default();
+        Ok(Some((bank, indices)))
+    }
+
     fn handle_for_identity(&self, identity_name: &str) -> Result<KeyHandle, SignerError> {
         let identity = self
             .store
@@ -168,10 +200,19 @@ impl<'a> CheckpointSigner for TpmCheckpointSigner<'a> {
             .map_err(|e| SignerError::Storage(e.to_string()))?
             .ok_or_else(|| SignerError::UnknownIdentity(identity_name.to_string()))?;
         let handle = self.handle_for_identity(identity_name)?;
-        let signature = self
-            .backend
-            .sign(&handle, message)
-            .map_err(|e| SignerError::SignFailed(e.to_string()))?;
+        // If the identity's key is bound to a PCR policy (created with
+        // `--pcr-bind`), sign under a policy session so the TPM itself
+        // enforces the measured state; otherwise sign with the password.
+        let signature = match self.pcr_binding_for_identity(identity_name)? {
+            Some((bank, indices)) => self
+                .backend
+                .sign_with_policy(&handle, message, &bank, &indices)
+                .map_err(|e| SignerError::SignFailed(e.to_string()))?,
+            None => self
+                .backend
+                .sign(&handle, message)
+                .map_err(|e| SignerError::SignFailed(e.to_string()))?,
+        };
         Ok((signature, identity.id.to_string()))
     }
 

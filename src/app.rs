@@ -877,6 +877,11 @@ pub enum IdentityCommand {
         /// Override backing key path (default: signing/<name>)
         #[arg(long)]
         key_path: Option<String>,
+        /// Bind the key to these PCRs (sha256): the TPM will only sign
+        /// while they match their values at creation time (measured-state
+        /// enforced signing). Comma-separated indices.
+        #[arg(long, value_delimiter = ',')]
+        pcr_bind: Option<Vec<u32>>,
     },
     /// Show identity details
     Show {

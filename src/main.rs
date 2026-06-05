@@ -811,6 +811,7 @@ fn main() -> anyhow::Result<()> {
                         policy,
                         subject,
                         key_path,
+                        pcr_bind,
                     } => commands::identity::init(
                         &store,
                         backend.as_ref(),
@@ -820,6 +821,7 @@ fn main() -> anyhow::Result<()> {
                         policy.as_deref(),
                         subject.as_deref(),
                         key_path.as_deref(),
+                        pcr_bind.as_deref(),
                         format,
                     ),
                     IdentityCommand::Show { name } => {
