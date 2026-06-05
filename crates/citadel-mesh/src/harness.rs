@@ -17,7 +17,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use tpm_core::backend::MockBackend;
+use tpm_core::backend::{MockBackend, TpmBackend};
 
 use crate::attest::Attestor;
 use crate::crypto::MeshKeypair;
@@ -71,30 +71,50 @@ impl Mesh {
     /// nodes are added so each learns the others (Phase 0 seed = fully
     /// connected).
     pub fn add_node(&mut self, seed: u8, role: &str, config: NodeConfig) -> NodeId {
+        self.add_node_with_backend(seed, role, config, Box::new(MockBackend::new()))
+    }
+
+    /// Add a node backed by a specific TPM backend (e.g. a real vTPM for the
+    /// Phase 1 hardware acceptance test). Same seam as [`Self::add_node`].
+    pub fn add_node_with_backend(
+        &mut self,
+        seed: u8,
+        role: &str,
+        config: NodeConfig,
+        backend: Box<dyn TpmBackend>,
+    ) -> NodeId {
         let keypair = MeshKeypair::from_seed([seed; 32]);
         let pubkey = keypair.public();
         let id = NodeId::derive(&self.mesh_id, Epoch(1), &pubkey.fingerprint(), &[seed]);
         let membership = Membership::new(id, pubkey, role, 0);
-        let attestor = Attestor::new(Box::new(MockBackend::new())).expect("mock attestor");
+        let attestor = Attestor::new(backend).expect("attestor");
         let node = Node::new(self.mesh_id.clone(), id, keypair, membership, attestor, config);
         self.index.insert(id, self.nodes.len());
         self.nodes.push(node);
         id
     }
 
-    /// Make every node learn every other node (seed membership).
+    /// Make every node learn every other node (seed membership) and adopt a
+    /// uniform golden reference captured from the first (known-good) node, so
+    /// peer attestation has a policy baseline to match against.
     pub fn wire_full_membership(&mut self) {
         let roster: Vec<(NodeId, crate::crypto::MeshPublicKey)> = self
             .nodes
             .iter()
             .map(|n| (n.id(), n.membership().get(&n.id()).unwrap().public_key))
             .collect();
+        let reference = self
+            .nodes
+            .first()
+            .and_then(|n| n.current_reference().ok())
+            .unwrap_or_default();
         for node in &mut self.nodes {
             for (id, key) in &roster {
                 if *id != node.id() {
                     node.learn_peer(*id, *key, "worker", 0);
                 }
             }
+            node.set_peer_reference(reference.clone());
         }
     }
 

@@ -43,6 +43,7 @@ uuid.workspace = true
 tempfile.workspace = true
 serde_json.workspace = true
 rusqlite.workspace = true
+citadel-mesh = { path = "crates/citadel-mesh" }
 
 [workspace.package]
 edition = "2021"

@@ -15,7 +15,7 @@
 //! keeps the node pure and synchronous so the in-process [`crate::harness`]
 //! can run a whole mesh deterministically.
 
-use crate::attest::Attestor;
+use crate::attest::{Attestor, ReferenceMeasurements};
 use crate::crypto::MeshKeypair;
 use crate::id::{MeshId, NodeId};
 use crate::membership::Membership;
@@ -37,6 +37,8 @@ pub struct NodeConfig {
     pub piggyback_limit: usize,
     /// PCR bank used for attestation.
     pub pcr_bank: String,
+    /// PCR indices a challenge asks the subject to quote.
+    pub pcr_selection: Vec<u32>,
     /// The policy revision this node is running.
     pub policy_revision: u64,
 }
@@ -49,6 +51,7 @@ impl Default for NodeConfig {
             suspicion_timeout: 3,
             piggyback_limit: 32,
             pcr_bank: "sha256".to_string(),
+            pcr_selection: vec![0, 7],
             policy_revision: 1,
         }
     }
@@ -96,6 +99,10 @@ pub struct Node {
     pending: Option<PendingProbe>,
     owed: Vec<OwedIndirect>,
     issued_challenges: Vec<AttestationChallenge>,
+    /// The golden measured state this node expects of peers it verifies
+    /// (the Reference Value Provider's output; design §8.1, §14.2). Empty
+    /// until installed from policy — verification is then Inconclusive.
+    peer_reference: ReferenceMeasurements,
     outbox: Vec<Addressed>,
 }
 
@@ -121,6 +128,7 @@ impl Node {
             pending: None,
             owed: Vec::new(),
             issued_challenges: Vec::new(),
+            peer_reference: ReferenceMeasurements::default(),
             outbox: Vec::new(),
         }
     }
@@ -137,6 +145,19 @@ impl Node {
     /// operator harness can inspect or perturb the measured state.
     pub fn attestor(&self) -> &Attestor {
         &self.attestor
+    }
+
+    /// Install the golden reference this node uses to judge peers' quotes
+    /// (from signed policy / a known-good node).
+    pub fn set_peer_reference(&mut self, reference: ReferenceMeasurements) {
+        self.peer_reference = reference;
+    }
+
+    /// Capture this node's own current measured state over the configured
+    /// PCR selection — e.g. to publish it as a golden from a trusted node.
+    pub fn current_reference(&self) -> anyhow::Result<ReferenceMeasurements> {
+        self.attestor
+            .reference_over(&self.config.pcr_bank, &self.config.pcr_selection)
     }
 
     /// Seed knowledge of a peer (from a seed list / enrollment).
@@ -388,7 +409,7 @@ impl Node {
             subject: target,
             nonce,
             pcr_bank: self.config.pcr_bank.clone(),
-            pcr_selection: vec![0, 7],
+            pcr_selection: self.config.pcr_selection.clone(),
             policy_revision: self.config.policy_revision,
             expires_at_tick: now + 5,
         };
@@ -415,7 +436,9 @@ impl Node {
             return;
         };
         let ch = self.issued_challenges.remove(pos);
-        let result = self.attestor.verify(&ch, &ev, self.id, now);
+        let result = self
+            .attestor
+            .verify(&ch, &ev, &self.peer_reference, self.id, now);
         let trust = match result.result {
             Verdict::Pass => TrustState::Trusted,
             Verdict::Warn => TrustState::Degraded,

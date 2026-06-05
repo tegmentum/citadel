@@ -1452,25 +1452,33 @@ Acceptance:
 - Dashboard shows node states.
 ```
 
-### Phase 1: Real TPM Attestation
+### Phase 1: Real TPM Attestation — DONE
 
 Deliverables:
 
 ```text
-TPM quote provider
-AK/EK handling
-PCR selection config
-attestation verifier
-reference measurement matching
+TPM quote provider          ✓ Attestor over Box<dyn TpmBackend> (real vTPM)
+AK/EK handling              ✓ create_ak + quote/verify_quote (AK endorsement: Phase 5)
+PCR selection config        ✓ NodeConfig.pcr_selection, carried in the challenge
+attestation verifier        ✓ Attestor::verify (signature+nonce, reason codes)
+reference measurement match  ✓ ReferenceMeasurements golden, not the verifier's own PCRs
 ```
 
-Acceptance:
+Acceptance (proven by `mesh_peer_attestation_over_real_vtpm`, gated on
+`TPM_VTPM_COMPONENT`, plus mock-backed unit tests in `attest.rs`):
 
 ```text
-- Agent produces real TPM quote.
-- Peer verifies nonce-bound quote.
-- PCR mismatch creates Suspicious state.
+- Agent produces real TPM quote.            ✓ real TPM2_Sign on the vTPM
+- Peer verifies nonce-bound quote.          ✓ separate vTPM instance verifies
+- PCR mismatch creates Suspicious state.    ✓ divergence from golden → Fail → Suspicious
 ```
+
+Key Phase 1 correction: a verifier matches a subject's quoted PCRs against a
+**policy golden** (`ReferenceMeasurements`), not against the verifier's *own*
+measured state — so heterogeneous machines can witness each other. Follow-up
+hardening: cryptographic AK-signature verification inside the vTPM
+`verify_quote` (the backend already has `VerifySignature` via the
+PolicyAuthorize path), and real AK/EK endorsement-chain validation (Phase 5).
 
 ### Phase 2: Gossip Membership
 

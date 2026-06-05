@@ -1797,4 +1797,77 @@ mod tests {
             "NV counter must keep increasing across instances (anti-rollback): {v1} -> {v2}"
         );
     }
+
+    /// Distributed-mesh Phase 1 acceptance (design
+    /// `docs/design/distributed-attestation-mesh.md`, Phase 1):
+    ///
+    /// * an agent produces a *real* nonce-bound TPM quote (real TPM2_Sign on
+    ///   the vTPM), exercised through the mesh `Attestor`;
+    /// * a separate peer (its own vTPM instance) verifies the quote and
+    ///   matches its PCRs against a golden reference → `Pass`;
+    /// * a divergent measured state (a stand-in for tamper / unapproved
+    ///   upgrade) is independently flagged `PCR_MISMATCH` → `Fail`, which the
+    ///   node layer maps to `Suspicious`.
+    ///
+    /// Note: the vTPM's `verify_quote` confirms the attestation binding +
+    /// nonce; cryptographic AK-signature verification in `verify_quote`
+    /// (the backend already has `VerifySignature` via the PolicyAuthorize
+    /// path) is a follow-up hardening. Divergence here is caught by the
+    /// reference match, which is the Phase 1 deliverable.
+    #[test]
+    fn mesh_peer_attestation_over_real_vtpm() {
+        use citadel_mesh::attest::Attestor;
+        use citadel_mesh::types::{AttestationChallenge, ReasonCode, Verdict};
+        use citadel_mesh::NodeId;
+
+        let Ok(component) = std::env::var("TPM_VTPM_COMPONENT") else {
+            eprintln!("skipping: TPM_VTPM_COMPONENT not set");
+            return;
+        };
+        let comp = std::path::Path::new(&component);
+
+        // The attester runs a real vTPM; the verifier is a distinct peer
+        // with its own vTPM instance.
+        let attester = Attestor::new(Box::new(VtpmBackend::new(comp).unwrap())).unwrap();
+        let verifier = Attestor::new(Box::new(VtpmBackend::new(comp).unwrap())).unwrap();
+
+        // Capture the golden reference (the known-good measured state) from
+        // the attester before any divergence — this stands in for the
+        // policy / reference-value provider.
+        let reference = attester.reference_over("sha256", &[0, 7]).unwrap();
+
+        let subject = NodeId([1u8; 32]);
+        let verifier_id = NodeId([2u8; 32]);
+        let challenge = AttestationChallenge {
+            challenger: verifier_id,
+            subject,
+            nonce: vec![0xDE, 0xAD, 0xBE, 0xEF, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+            pcr_bank: "sha256".into(),
+            pcr_selection: vec![0, 7],
+            policy_revision: 1,
+            expires_at_tick: 100,
+        };
+
+        // Healthy: the peer accepts a fresh, nonce-bound real quote.
+        let evidence = attester.produce(&challenge, 1, None, 1).unwrap();
+        let healthy = verifier.verify(&challenge, &evidence, &reference, verifier_id, 2);
+        assert_eq!(
+            healthy.result,
+            Verdict::Pass,
+            "healthy real-vTPM quote should pass: {:?}",
+            healthy.reason_codes
+        );
+
+        // Divergent: extend a PCR on the attester's vTPM, so its next quote
+        // no longer matches the golden — the peer flags it.
+        attester.backend().pcr_extend("sha256", 0, &[0xAA; 32]).unwrap();
+        let tampered = attester.produce(&challenge, 1, None, 3).unwrap();
+        let flagged = verifier.verify(&challenge, &tampered, &reference, verifier_id, 4);
+        assert_eq!(flagged.result, Verdict::Fail, "divergent state must fail");
+        assert!(
+            flagged.reason_codes.contains(&ReasonCode::PcrMismatch),
+            "divergence is a PCR mismatch: {:?}",
+            flagged.reason_codes
+        );
+    }
 }
