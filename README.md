@@ -134,6 +134,7 @@ tpm policy explain boot-policy
 tpm policy show boot-policy
 tpm policy list
 tpm policy delete boot-policy
+tpm policy approve --authority release --pcr 14   # approve the live measured state for PolicyAuthorize-bound keys
 ```
 
 Policy YAML format:
@@ -180,6 +181,16 @@ tpm identity rotate auditor
 tpm identity delete auditor
 ```
 
+A signing key can be bound to a measured state so the TPM itself refuses to sign unless the host matches it:
+
+```bash
+tpm identity init anchor --pcr-bind 14                       # frozen: signs only while PCR 14 matches creation time
+tpm identity init release --authority                        # an offline PolicyAuthorize approver (the upgrade root)
+tpm identity init anchor --authorized-by release --pcr-bind 14   # upgradable: signs any state `release` has approved
+```
+
+`--pcr-bind` freezes the key to one PCR state (an upgrade would brick it). `--authorized-by` binds it to an authority key instead (TPM2_PolicyAuthorize): the same key keeps signing across upgrades, gated on a witnessed approval — see [Measured Merkle Anchor](#measured-merkle-anchor-mma) below.
+
 ### Secure audit log
 
 `tpm audit` is a tamper-evident secure log: entries are hash-chained, sealed into Merkle-rooted segments, and checkpoint-signed by a TPM-backed identity. An anti-rollback head file guards against truncation, payloads can be envelope-encrypted under a master KEK, and segment heads can be co-signed by an external witness. Multiple independent streams (each with a confidentiality tier) are supported.
@@ -201,6 +212,37 @@ tpm audit key ...                               # master KEK for envelope-encryp
 ```
 
 The implementation lives in the standalone `secure-log` workspace (a sibling repo, reused across projects) and is re-exported as `tpm_core::secure_log`; `tpm audit` and the `tpmd` witness endpoint persist to a `secure-log-sqlite` store alongside the metadata database.
+
+### Measured Merkle Anchor (MMA)
+
+MMA extends the TPM's chain of trust past the kernel: applications and artifacts are measured, the measurements branch into a Merkle tree, and the root is checkpoint-signed by a TPM-backed identity and anchored into a PCR. Citadel can also measure *itself* (`measure enroll`), so a quote attests which agent produced the anchor.
+
+```bash
+tpm measure file /usr/bin/app --kind binary       # measure an artifact into the MMA stream
+tpm measure enroll --pcr 14 [--verify-ima]         # self-enroll Citadel's own binary (IMA-corroborated)
+tpm measure checkpoint [--extend-pcr 14]           # seal pending measurements into a Merkle segment, anchor the root
+tpm measure sign --identity anchor 1               # TPM-sign the segment's root (the anchoring key)
+tpm measure verify 1                               # verify a measurement is included under a signed root
+tpm measure rollback-check                         # detect anchor-counter truncation
+```
+
+#### Upgrading without re-keying (the upgrade ceremony)
+
+A measurement is blind to intent: a legitimate upgrade and a tamper are the same observable event — a previously-unseen measurement. Only an **authorization** distinguishes them. So an MMA signing key can be bound to an offline **authority** (TPM2_PolicyAuthorize) rather than to one frozen PCR state: it signs under *any* state the authority approves, and an upgrade is a new approval — not a key ceremony. Approvals land in the witnessed MMA log, so every authorized state change is public and attributable; an unapproved state is exactly the one with **no witnessed approval**, and the key refuses to sign it.
+
+```bash
+# One-time setup: an offline approver, and a signing key bound to it.
+tpm identity init release --authority                          # hold this key offline (HSM / air-gapped / quorum)
+tpm identity init anchor --authorized-by release --pcr-bind 14
+
+# Each release: build, deploy, then authorize the new measured state.
+tpm measure enroll --pcr 14 --verify-ima                       # the new binary's measurement enters the MMA
+tpm policy approve --authority release --pcr 14                # authority signs the new state → witnessed in the log
+tpm measure checkpoint --extend-pcr 14
+tpm measure sign --identity anchor 1                           # the SAME key signs — no re-key across the upgrade
+```
+
+The TPM signing key never changes across upgrades; the MMA log, anti-rollback counter, and checkpoint chain stay continuous, and `tpm attest verify` surfaces the approving authority and whether the signing state was logged-approved. Because a compromised authority makes attacks indistinguishable from upgrades, keep it offline and prefer M-of-N quorum with reproducible builds. See [`docs/design/mma-upgrade.md`](docs/design/mma-upgrade.md) for the full threat model.
 
 ### Maintenance
 
