@@ -55,6 +55,11 @@ pub struct VtpmBackend {
     /// across separate CLI invocations. Without it the vTPM is ephemeral
     /// and keys cannot be reloaded between processes.
     state_path: Option<PathBuf>,
+    /// Exclusive advisory lock held for this backend's lifetime when
+    /// persisting, so concurrent invocations against the same store
+    /// serialize their restore/use/save cycle instead of racing on the
+    /// state file. Dropped (released) after `persist`.
+    _lock: Option<std::fs::File>,
 }
 
 impl VtpmBackend {
@@ -72,6 +77,13 @@ impl VtpmBackend {
     /// resume fails (incompatible/no saved volatile), it falls back to a
     /// fresh boot (`Startup(CLEAR)`) with permanent state only.
     pub fn open(component_path: &Path, state_path: Option<&Path>) -> anyhow::Result<Self> {
+        // Serialize concurrent invocations against the same persisted
+        // state: hold an exclusive lock across restore -> use -> save.
+        let lock = match state_path {
+            Some(sp) => Some(acquire_state_lock(sp)?),
+            None => None,
+        };
+
         let snapshot = state_path
             .and_then(|sp| std::fs::read(sp).ok())
             .map(|blob| StateSnapshot::decode(&blob))
@@ -93,6 +105,7 @@ impl VtpmBackend {
             engine: Mutex::new(engine),
             initialized: true,
             state_path: state_path.map(|p| p.to_path_buf()),
+            _lock: lock,
         })
     }
 
@@ -200,6 +213,26 @@ fn boot(component_path: &Path, permanent: &[u8], resume: bool) -> anyhow::Result
     }
     send_command(&mut engine, &build_selftest_cmd())?;
     Ok(engine)
+}
+
+/// Acquire an exclusive advisory lock for a state file, blocking until
+/// it is available. The lock lives in a sibling `<state>.lock` file so
+/// it is independent of the atomic rename used to write the state.
+fn acquire_state_lock(state_path: &Path) -> anyhow::Result<std::fs::File> {
+    let mut lock_path = state_path.as_os_str().to_owned();
+    lock_path.push(".lock");
+    let lock_path = PathBuf::from(lock_path);
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    f.lock()
+        .map_err(|e| anyhow::anyhow!("locking vTPM state {}: {}", lock_path.display(), e))?;
+    Ok(f)
 }
 
 /// Extract the TPM response code from a raw response buffer.
