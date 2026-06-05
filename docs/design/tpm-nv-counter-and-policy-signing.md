@@ -131,6 +131,18 @@ checkpoint-binding follow-on is a separate ~1–2 day cross-repo change.
 
 ## Item 2 — TPM-enforced policy-session signing
 
+> **Status: DONE** (`feat(vtpm): TPM-enforced policy-session signing ...`,
+> `feat(mock): software policy-signing ...`, `feat(identity): wire ...`).
+> Validated end-to-end on the real vTPM: an identity created with
+> `tpm identity init --pcr-bind <indices>` signs checkpoints only while
+> the bound PCRs match; after they change the **TPM** refuses with
+> `TPM_RC_POLICY_FAIL (0x099d)`. The marshalling worked first try, which
+> also confirmed `backend::pcr_policy_digest` matches the TPM's PolicyPCR
+> digest exactly. **Remaining (follow-on):** `PolicyAuthorize`
+> upgradability so a legitimately-updated expected state can be
+> re-authorized without rotating the key; and the `tpm-hw` (tss-esapi)
+> equivalent (needs hardware).
+
 ### Goal
 
 Replace (or back up) the citadel-side measured-state gate
