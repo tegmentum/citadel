@@ -1475,10 +1475,15 @@ Acceptance (proven by `mesh_peer_attestation_over_real_vtpm`, gated on
 
 Key Phase 1 correction: a verifier matches a subject's quoted PCRs against a
 **policy golden** (`ReferenceMeasurements`), not against the verifier's *own*
-measured state — so heterogeneous machines can witness each other. Follow-up
-hardening: cryptographic AK-signature verification inside the vTPM
-`verify_quote` (the backend already has `VerifySignature` via the
-PolicyAuthorize path), and real AK/EK endorsement-chain validation (Phase 5).
+measured state — so heterogeneous machines can witness each other.
+
+Follow-up hardening completed: the vTPM `verify_quote` now **cryptographically
+verifies the AK signature** (LoadExternal + TPM2_VerifySignature over the
+attestation digest, plus the digest-binds-these-PCRs+nonce check), so a
+forged/corrupted quote is rejected as `QUOTE_SIGNATURE_INVALID`
+(`forged_quote_signature_is_rejected_on_real_vtpm`). Still deferred: real
+AK/EK **endorsement-chain** validation that binds the AK to genuine hardware
+(Phase 5 enrollment) — until then the AK public is taken from the quote.
 
 ### Phase 2: Gossip Membership
 

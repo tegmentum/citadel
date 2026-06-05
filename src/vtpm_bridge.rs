@@ -872,13 +872,31 @@ impl TpmBackend for VtpmBackend {
         nonce: &[u8],
     ) -> anyhow::Result<QuoteVerification> {
         let nonce_matches = quote.nonce == nonce;
+
+        // The attestation digest must bind exactly these PCR values and this
+        // nonce (so a valid signature can't be replayed over a different
+        // state), AND it must be a genuine ECDSA signature under the quote's
+        // AK. We verify the signature cryptographically via LoadExternal +
+        // TPM2_VerifySignature (the same path `verify_signature` uses), so a
+        // forged or corrupted quote — or the cross-process random fallback —
+        // is rejected rather than waved through. Endorsement of the AK to
+        // real hardware (EK/AK chain) is a separate, later concern.
         let mut to_sign = Vec::new();
         for v in &quote.pcr_values {
             to_sign.extend_from_slice(&v.digest);
         }
         to_sign.extend_from_slice(nonce);
         let expected = sha256_digest(&to_sign);
-        let attestation_valid = quote.attestation == expected;
+        let attestation_binds = quote.attestation == expected;
+
+        let ak_handle = KeyHandle {
+            id: quote.ak_public.clone(),
+            path: String::new(),
+        };
+        let signature_cryptographically_valid = self
+            .verify_signature(&ak_handle, &quote.attestation, &quote.signature)
+            .unwrap_or(false);
+        let attestation_valid = attestation_binds && signature_cryptographically_valid;
 
         let pcr_matches: Vec<PcrMatchResult> = if let Some(first) = quote.pcr_values.first() {
             let indices: Vec<u32> = quote.pcr_values.iter().map(|v| v.index).collect();
@@ -1809,11 +1827,10 @@ mod tests {
     ///   upgrade) is independently flagged `PCR_MISMATCH` → `Fail`, which the
     ///   node layer maps to `Suspicious`.
     ///
-    /// Note: the vTPM's `verify_quote` confirms the attestation binding +
-    /// nonce; cryptographic AK-signature verification in `verify_quote`
-    /// (the backend already has `VerifySignature` via the PolicyAuthorize
-    /// path) is a follow-up hardening. Divergence here is caught by the
-    /// reference match, which is the Phase 1 deliverable.
+    /// The vTPM's `verify_quote` cryptographically verifies the AK signature
+    /// (LoadExternal + TPM2_VerifySignature) and the attestation binding;
+    /// divergence is then caught by the reference match. (AK-to-hardware
+    /// endorsement remains a later, Phase 5 concern.)
     #[test]
     fn mesh_peer_attestation_over_real_vtpm() {
         use citadel_mesh::attest::Attestor;
@@ -1868,6 +1885,52 @@ mod tests {
             flagged.reason_codes.contains(&ReasonCode::PcrMismatch),
             "divergence is a PCR mismatch: {:?}",
             flagged.reason_codes
+        );
+    }
+
+    /// `verify_quote` now cryptographically verifies the AK signature, so a
+    /// quote whose signature has been forged/corrupted (but whose attestation
+    /// digest still binds the PCRs+nonce) is rejected as
+    /// `QUOTE_SIGNATURE_INVALID` rather than accepted.
+    #[test]
+    fn forged_quote_signature_is_rejected_on_real_vtpm() {
+        use citadel_mesh::attest::Attestor;
+        use citadel_mesh::types::{AttestationChallenge, ReasonCode, Verdict};
+        use citadel_mesh::NodeId;
+
+        let Ok(component) = std::env::var("TPM_VTPM_COMPONENT") else {
+            eprintln!("skipping: TPM_VTPM_COMPONENT not set");
+            return;
+        };
+        let comp = std::path::Path::new(&component);
+
+        let attester = Attestor::new(Box::new(VtpmBackend::new(comp).unwrap())).unwrap();
+        let verifier = Attestor::new(Box::new(VtpmBackend::new(comp).unwrap())).unwrap();
+        let reference = attester.reference_over("sha256", &[0, 7]).unwrap();
+
+        let subject = NodeId([1u8; 32]);
+        let challenge = AttestationChallenge {
+            challenger: NodeId([2u8; 32]),
+            subject,
+            nonce: vec![7u8; 16],
+            pcr_bank: "sha256".into(),
+            pcr_selection: vec![0, 7],
+            policy_revision: 1,
+            expires_at_tick: 100,
+        };
+
+        let mut evidence = attester.produce(&challenge, 1, None, 1).unwrap();
+        // Corrupt the signature bytes (the attestation digest still binds the
+        // honest PCRs+nonce, so only the crypto check can catch this).
+        for b in evidence.quote.signature.iter_mut() {
+            *b ^= 0xFF;
+        }
+        let res = verifier.verify(&challenge, &evidence, &reference, NodeId([2u8; 32]), 2);
+        assert_eq!(res.result, Verdict::Fail, "a forged signature must fail");
+        assert!(
+            res.reason_codes.contains(&ReasonCode::QuoteSignatureInvalid),
+            "forged signature → QUOTE_SIGNATURE_INVALID: {:?}",
+            res.reason_codes
         );
     }
 }
