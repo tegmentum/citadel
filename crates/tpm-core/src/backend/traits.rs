@@ -34,6 +34,32 @@ pub trait TpmBackend: Send + Sync {
 
     fn list_handles(&self) -> anyhow::Result<Vec<KeyHandle>>;
 
+    /// Create a signing key whose use is gated by a TPM `authPolicy`
+    /// (e.g. a PolicyPCR digest), so the key can only sign while the TPM
+    /// is in the bound state. Default: not supported.
+    fn create_key_with_policy(
+        &self,
+        _algorithm: Algorithm,
+        _path: &ObjectPath,
+        _auth_policy: &[u8],
+    ) -> anyhow::Result<KeyHandle> {
+        anyhow::bail!("policy-bound keys are not supported by this backend")
+    }
+
+    /// Sign `data` with a policy-bound key, satisfying its authPolicy via
+    /// `PolicyPCR` over `bank`/`indices`. The TPM itself refuses (returns
+    /// a policy error) if the live PCRs differ from the bound state.
+    /// Default: not supported.
+    fn sign_with_policy(
+        &self,
+        _handle: &KeyHandle,
+        _data: &[u8],
+        _bank: &str,
+        _indices: &[u32],
+    ) -> anyhow::Result<Vec<u8>> {
+        anyhow::bail!("policy signing is not supported by this backend")
+    }
+
     /// Seal data under a policy. Returns an opaque sealed blob.
     fn seal(&self, data: &[u8], policy_digest: Option<&[u8]>) -> anyhow::Result<SealedData>;
 

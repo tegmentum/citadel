@@ -30,6 +30,15 @@ const TPM2_CC_NV_DEFINE_SPACE: u32 = 0x0000012A;
 const TPM2_CC_NV_INCREMENT: u32 = 0x00000134;
 const TPM2_CC_NV_READ: u32 = 0x0000014E;
 const TPM2_CC_NV_READ_PUBLIC: u32 = 0x00000169;
+const TPM2_CC_START_AUTH_SESSION: u32 = 0x00000176;
+const TPM2_CC_POLICY_PCR: u32 = 0x0000017F;
+const TPM_SE_POLICY: u8 = 0x01;
+
+// objectAttributes for an ECC/RSA signing key. The default has
+// userWithAuth (0x40); the policy-bound variant clears it so the key can
+// only be used by satisfying its authPolicy (a policy session).
+const OBJ_ATTR_SIGN_USERAUTH: u32 = 0x0004_0072;
+const OBJ_ATTR_SIGN_POLICY: u32 = 0x0004_0032; // userWithAuth cleared
 
 // TPMA_NV attribute bits (TPM 2.0 Part 2). Note OWNERREAD is bit 17 and
 // AUTHREAD is bit 18 — an earlier attempt swapped these, which is why
@@ -150,6 +159,29 @@ impl VtpmBackend {
         std::fs::write(&tmp, StateSnapshot { permanent, resumable }.encode())?;
         std::fs::rename(&tmp, &sp)?;
         Ok(())
+    }
+
+    /// Create a child signing key, optionally bound to `auth_policy`
+    /// (empty = password key; non-empty = policy-only key).
+    fn create_key_inner(
+        &self,
+        algorithm: Algorithm,
+        path: &ObjectPath,
+        auth_policy: &[u8],
+    ) -> anyhow::Result<KeyHandle> {
+        let mut engine = self.engine.lock().unwrap();
+        let srk = create_primary_srk(&mut engine)?;
+        let (pub_blob, priv_blob) = create_child_key(&mut engine, srk, algorithm, auth_policy)?;
+        flush_context(&mut engine, srk)?;
+
+        let key_data = serde_json::json!({
+            "public": pub_blob,
+            "private": priv_blob,
+        });
+        Ok(KeyHandle {
+            id: serde_json::to_vec(&key_data)?,
+            path: path.as_str().to_string(),
+        })
     }
 }
 
@@ -305,8 +337,9 @@ fn create_child_key(
     engine: &mut VtpmEngine,
     parent: u32,
     alg: Algorithm,
+    auth_policy: &[u8],
 ) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
-    let resp = send_command(engine, &build_create_cmd(parent, alg))?;
+    let resp = send_command(engine, &build_create_cmd(parent, alg, auth_policy))?;
     if resp.len() < 16 {
         anyhow::bail!("Create response too short: {} bytes", resp.len());
     }
@@ -341,6 +374,7 @@ fn tpm_hash_and_sign(
     engine: &mut VtpmEngine,
     key_handle: u32,
     data: &[u8],
+    auth_session: u32,
 ) -> anyhow::Result<Vec<u8>> {
     let hash_resp = send_command(engine, &build_hash_cmd(data))?;
     if hash_resp.len() < 12 {
@@ -352,7 +386,7 @@ fn tpm_hash_and_sign(
 
     let resp = send_command(
         engine,
-        &build_sign_cmd_with_ticket(key_handle, &digest, &ticket),
+        &build_sign_cmd_with_ticket(key_handle, &digest, &ticket, auth_session),
     )?;
     // The TPM2_Sign response (TPM_ST_SESSIONS) is:
     //   header(10) | parameterSize(4) | TPMT_SIGNATURE | responseAuth
@@ -381,19 +415,53 @@ impl TpmBackend for VtpmBackend {
     }
 
     fn create_key(&self, algorithm: Algorithm, path: &ObjectPath) -> anyhow::Result<KeyHandle> {
+        self.create_key_inner(algorithm, path, &[])
+    }
+
+    fn create_key_with_policy(
+        &self,
+        algorithm: Algorithm,
+        path: &ObjectPath,
+        auth_policy: &[u8],
+    ) -> anyhow::Result<KeyHandle> {
+        self.create_key_inner(algorithm, path, auth_policy)
+    }
+
+    fn sign_with_policy(
+        &self,
+        handle: &KeyHandle,
+        data: &[u8],
+        bank: &str,
+        indices: &[u32],
+    ) -> anyhow::Result<Vec<u8>> {
+        let hash_alg = bank_to_alg_id(bank)?;
         let mut engine = self.engine.lock().unwrap();
         let srk = create_primary_srk(&mut engine)?;
-        let (pub_blob, priv_blob) = create_child_key(&mut engine, srk, algorithm)?;
-        flush_context(&mut engine, srk)?;
 
-        let key_data = serde_json::json!({
-            "public": pub_blob,
-            "private": priv_blob,
-        });
-        Ok(KeyHandle {
-            id: serde_json::to_vec(&key_data)?,
-            path: path.as_str().to_string(),
-        })
+        let result: anyhow::Result<Vec<u8>> = (|| {
+            let key_data: serde_json::Value = serde_json::from_slice(&handle.id)?;
+            let pub_blob: Vec<u8> = serde_json::from_value(key_data["public"].clone())?;
+            let priv_blob: Vec<u8> = serde_json::from_value(key_data["private"].clone())?;
+            let kh = load_key(&mut engine, srk, &pub_blob, &priv_blob)?;
+
+            // Start a policy session and evaluate live PCRs into it. If the
+            // PCRs differ from what the key was bound to, TPM2_Sign below
+            // fails with a policy error — the TPM enforces the gate.
+            let start = send_command(&mut engine, &build_start_auth_session_cmd())?;
+            let session = u32::from_be_bytes([start[10], start[11], start[12], start[13]]);
+
+            let sign_res: anyhow::Result<Vec<u8>> = (|| {
+                send_command(&mut engine, &build_policy_pcr_cmd(session, hash_alg, indices))?;
+                tpm_hash_and_sign(&mut engine, kh, data, session)
+            })();
+
+            flush_context(&mut engine, session).ok();
+            flush_context(&mut engine, kh).ok();
+            sign_res
+        })();
+
+        flush_context(&mut engine, srk).ok();
+        result.map_err(|e| anyhow::anyhow!("measured-state policy not satisfied (TPM): {e}"))
     }
 
     fn sign(&self, handle: &KeyHandle, data: &[u8]) -> anyhow::Result<Vec<u8>> {
@@ -405,7 +473,7 @@ impl TpmBackend for VtpmBackend {
             let pub_blob: Vec<u8> = serde_json::from_value(key_data["public"].clone())?;
             let priv_blob: Vec<u8> = serde_json::from_value(key_data["private"].clone())?;
             let kh = load_key(&mut engine, srk, &pub_blob, &priv_blob)?;
-            let sig = tpm_hash_and_sign(&mut engine, kh, data)?;
+            let sig = tpm_hash_and_sign(&mut engine, kh, data, TPM_RS_PW)?;
             flush_context(&mut engine, kh).ok();
             Ok(sig)
         })();
@@ -793,6 +861,61 @@ fn build_pcr_extend_cmd(hash_alg: u16, pcr_index: u32, digest: &[u8]) -> Vec<u8>
     c
 }
 
+fn bank_to_alg_id(bank: &str) -> anyhow::Result<u16> {
+    match bank {
+        "sha256" => Ok(0x000B),
+        "sha384" => Ok(0x000C),
+        "sha1" => Ok(0x0004),
+        other => anyhow::bail!("unsupported PCR bank: {other}"),
+    }
+}
+
+/// TPM2_StartAuthSession for an unbound, unsalted SHA-256 **policy**
+/// session (used to satisfy a key's PolicyPCR authPolicy).
+fn build_start_auth_session_cmd() -> Vec<u8> {
+    let mut c = Vec::new();
+    c.extend_from_slice(&TPM_ST_NO_SESSIONS.to_be_bytes());
+    c.extend_from_slice(&0u32.to_be_bytes());
+    c.extend_from_slice(&TPM2_CC_START_AUTH_SESSION.to_be_bytes());
+    c.extend_from_slice(&TPM_RH_NULL.to_be_bytes()); // tpmKey
+    c.extend_from_slice(&TPM_RH_NULL.to_be_bytes()); // bind
+    // nonceCaller: TPM2B_NONCE (>= 16 bytes)
+    c.extend_from_slice(&16u16.to_be_bytes());
+    c.extend_from_slice(&[0u8; 16]);
+    c.extend_from_slice(&0u16.to_be_bytes()); // encryptedSalt (empty)
+    c.push(TPM_SE_POLICY); // sessionType
+    c.extend_from_slice(&TPM_ALG_NULL.to_be_bytes()); // symmetric = NULL
+    c.extend_from_slice(&TPM_ALG_SHA256.to_be_bytes()); // authHash
+    let size = c.len() as u32;
+    c[2..6].copy_from_slice(&size.to_be_bytes());
+    c
+}
+
+/// TPM2_PolicyPCR on `session` for the given bank/indices. The TPM folds
+/// the *live* PCR values into the session policyDigest.
+fn build_policy_pcr_cmd(session: u32, hash_alg: u16, indices: &[u32]) -> Vec<u8> {
+    let mut c = Vec::new();
+    c.extend_from_slice(&TPM_ST_NO_SESSIONS.to_be_bytes());
+    c.extend_from_slice(&0u32.to_be_bytes());
+    c.extend_from_slice(&TPM2_CC_POLICY_PCR.to_be_bytes());
+    c.extend_from_slice(&session.to_be_bytes()); // policySession
+    c.extend_from_slice(&0u16.to_be_bytes()); // pcrDigest (empty: TPM computes)
+    // pcrs: TPML_PCR_SELECTION
+    c.extend_from_slice(&1u32.to_be_bytes()); // count
+    c.extend_from_slice(&hash_alg.to_be_bytes());
+    c.push(3); // sizeofSelect
+    let mut bitmap = [0u8; 3];
+    for &i in indices {
+        if i < 24 {
+            bitmap[(i / 8) as usize] |= 1 << (i % 8);
+        }
+    }
+    c.extend_from_slice(&bitmap);
+    let size = c.len() as u32;
+    c[2..6].copy_from_slice(&size.to_be_bytes());
+    c
+}
+
 /// Empty-password authorization area (`TPM_RS_PW`, continueSession).
 fn pw_auth_area() -> Vec<u8> {
     let mut a = Vec::new();
@@ -957,7 +1080,7 @@ fn build_create_primary_cmd() -> Vec<u8> {
     c
 }
 
-fn build_create_cmd(parent_handle: u32, algorithm: Algorithm) -> Vec<u8> {
+fn build_create_cmd(parent_handle: u32, algorithm: Algorithm, auth_policy: &[u8]) -> Vec<u8> {
     let mut c = Vec::new();
     c.extend_from_slice(&TPM_ST_SESSIONS.to_be_bytes());
     c.extend_from_slice(&0u32.to_be_bytes());
@@ -975,14 +1098,33 @@ fn build_create_cmd(parent_handle: u32, algorithm: Algorithm) -> Vec<u8> {
     c.extend_from_slice(&4u16.to_be_bytes());
     c.extend_from_slice(&0u16.to_be_bytes());
     c.extend_from_slice(&0u16.to_be_bytes());
+
+    // A policy-bound key clears userWithAuth and carries an authPolicy
+    // (TPM2B_DIGEST); otherwise it uses password auth with an empty policy.
+    let (attrs, policy_field) = if auth_policy.is_empty() {
+        (OBJ_ATTR_SIGN_USERAUTH, Vec::new())
+    } else {
+        let mut p = Vec::new();
+        p.extend_from_slice(&(auth_policy.len() as u16).to_be_bytes());
+        p.extend_from_slice(auth_policy);
+        (OBJ_ATTR_SIGN_POLICY, p)
+    };
+    let authpolicy_bytes = |out: &mut Vec<u8>| {
+        if policy_field.is_empty() {
+            out.extend_from_slice(&0u16.to_be_bytes());
+        } else {
+            out.extend_from_slice(&policy_field);
+        }
+    };
+
     // inPublic
     let mut pub_area = Vec::new();
     match algorithm {
         Algorithm::EccP256 | Algorithm::EccP384 => {
             pub_area.extend_from_slice(&TPM_ALG_ECC.to_be_bytes());
             pub_area.extend_from_slice(&TPM_ALG_SHA256.to_be_bytes());
-            pub_area.extend_from_slice(&0x00040072u32.to_be_bytes());
-            pub_area.extend_from_slice(&0u16.to_be_bytes());
+            pub_area.extend_from_slice(&attrs.to_be_bytes());
+            authpolicy_bytes(&mut pub_area);
             pub_area.extend_from_slice(&TPM_ALG_NULL.to_be_bytes());
             pub_area.extend_from_slice(&TPM_ALG_ECDSA.to_be_bytes());
             pub_area.extend_from_slice(&TPM_ALG_SHA256.to_be_bytes());
@@ -998,8 +1140,8 @@ fn build_create_cmd(parent_handle: u32, algorithm: Algorithm) -> Vec<u8> {
             };
             pub_area.extend_from_slice(&TPM_ALG_RSA.to_be_bytes());
             pub_area.extend_from_slice(&TPM_ALG_SHA256.to_be_bytes());
-            pub_area.extend_from_slice(&0x00040072u32.to_be_bytes());
-            pub_area.extend_from_slice(&0u16.to_be_bytes());
+            pub_area.extend_from_slice(&attrs.to_be_bytes());
+            authpolicy_bytes(&mut pub_area);
             pub_area.extend_from_slice(&TPM_ALG_NULL.to_be_bytes());
             pub_area.extend_from_slice(&TPM_ALG_RSASSA.to_be_bytes());
             pub_area.extend_from_slice(&TPM_ALG_SHA256.to_be_bytes());
@@ -1051,14 +1193,22 @@ fn build_hash_cmd(data: &[u8]) -> Vec<u8> {
     c
 }
 
-fn build_sign_cmd_with_ticket(key_handle: u32, digest: &[u8], ticket: &[u8]) -> Vec<u8> {
+fn build_sign_cmd_with_ticket(
+    key_handle: u32,
+    digest: &[u8],
+    ticket: &[u8],
+    auth_session: u32,
+) -> Vec<u8> {
     let mut c = Vec::new();
     c.extend_from_slice(&TPM_ST_SESSIONS.to_be_bytes());
     c.extend_from_slice(&0u32.to_be_bytes());
     c.extend_from_slice(&TPM2_CC_SIGN.to_be_bytes());
     c.extend_from_slice(&key_handle.to_be_bytes());
+    // Auth area: either TPM_RS_PW (password key) or a policy session
+    // handle (policy-bound key). Same structure: handle, empty nonce,
+    // continueSession, empty hmac/password.
     let mut auth = Vec::new();
-    auth.extend_from_slice(&TPM_RS_PW.to_be_bytes());
+    auth.extend_from_slice(&auth_session.to_be_bytes());
     auth.extend_from_slice(&0u16.to_be_bytes());
     auth.push(0x01);
     auth.extend_from_slice(&0u16.to_be_bytes());
@@ -1305,6 +1455,46 @@ mod tests {
         backend.nv_increment(0x0180_0002).unwrap();
         let v3 = backend.nv_increment(TEST_NV_INDEX).unwrap();
         assert!(v3 > v2, "counter must keep increasing: {v2} -> {v3}");
+    }
+
+    #[test]
+    fn policy_bound_key_signs_only_in_bound_pcr_state() {
+        let Ok(component) = std::env::var("TPM_VTPM_COMPONENT") else {
+            eprintln!("skipping: TPM_VTPM_COMPONENT not set");
+            return;
+        };
+        let backend = VtpmBackend::new(std::path::Path::new(&component)).unwrap();
+        let bank = "sha256";
+        let indices = [14u32];
+        let path = ObjectPath::new("signing/policy-bound").unwrap();
+
+        // Bind the key to the CURRENT measured state (PolicyPCR digest of
+        // the current PCR 14). This must equal what the TPM's PolicyPCR
+        // computes, or signing would never succeed.
+        let policy = backend.pcr_policy_digest(bank, &indices).unwrap();
+        let handle = backend
+            .create_key_with_policy(Algorithm::EccP256, &path, &policy)
+            .unwrap();
+
+        // Signs while PCR 14 still matches the bound state.
+        let sig = backend
+            .sign_with_policy(&handle, b"checkpoint-root", bank, &indices)
+            .expect("policy-bound key should sign while PCRs match");
+        assert!(
+            sig.len() >= 2 && sig[0] == 0x00 && sig[1] == 0x18,
+            "expected a real ECDSA signature, got {} bytes",
+            sig.len()
+        );
+
+        // Change PCR 14 — the TPM itself must now refuse to sign.
+        backend.pcr_extend(bank, 14, &[0x11u8; 32]).unwrap();
+        let err = backend
+            .sign_with_policy(&handle, b"checkpoint-root", bank, &indices)
+            .expect_err("TPM must refuse to sign once the bound PCR changes");
+        assert!(
+            err.to_string().contains("policy"),
+            "expected a TPM policy refusal, got: {err}"
+        );
     }
 
     #[test]
