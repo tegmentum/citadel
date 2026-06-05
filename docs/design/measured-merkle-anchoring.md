@@ -245,6 +245,13 @@ makes the existing `policy create --pcr` path real end-to-end.
   quote and the bundled checkpoint's signature chain
   (`audit::verify_checkpoint_chain`). Bare quotes remain backward compatible.
   Validated end-to-end on mock.
+- **vTPM persistence (post-plan)** — the in-process vTPM is now a *persistent*
+  backend: permanent state (keys/NV/seeds) and saved PCRs (0–15) survive across
+  CLI invocations (`<store>.tpmstate`; `Shutdown(STATE)`/`Startup(STATE)`). With
+  the ECDSA `verify_signature` fix and `TPM_RC_RETRY` handling, the whole
+  measure→sign→verify / seal / attest / **cross-invocation seal-to-attested-set**
+  flow is validated end-to-end on the real vTPM (`--backend vtpm`), not just the
+  mock. Anchor measurements into a PCR in 0–15 for cross-invocation persistence.
 - **Phase 5 — PARTIAL** (`feat(measure): root-in-PCR ...`):
   - *Done:* `measure checkpoint --extend-pcr <index>` anchors the Merkle root
     into a PCR so secrets can be sealed to the attested set; capstone test
