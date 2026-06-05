@@ -1,0 +1,18 @@
+[package]
+name = "citadel-mesh"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+description = "Citadel distributed attestation mesh: node identity, SWIM-inspired gossip membership, peer witnessing, and attestation evidence types"
+
+[dependencies]
+tpm-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+blake3 = "1"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+
+[dev-dependencies]

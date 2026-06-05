@@ -6,6 +6,7 @@ members = [
     "crates/tpm-tui",
     "crates/tpm-wasi",
     "crates/tpmd",
+    "crates/citadel-mesh",
 ]
 
 [package]
