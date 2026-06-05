@@ -20,11 +20,16 @@
 //! * [`membership`] — the member table and SWIM merge precedence.
 //! * [`types`] — signed `GossipEnvelope`, messages, and attestation records.
 //! * [`attest`] — mock attester/verifier over a [`tpm_core`] backend.
+//! * [`witness`] — HRW witness assignment for quorum-based trust.
+//! * [`erasure`] — Reed-Solomon evidence fragments (any K of N reconstruct).
+//! * [`evidence`] — hash-chained evidence records, receipts, reconstruction.
 //! * [`node`] — the agent: the SWIM tick + envelope handling.
 //! * [`harness`] — an in-memory mesh of nodes for deterministic tests.
 
 pub mod attest;
 pub mod crypto;
+pub mod erasure;
+pub mod evidence;
 pub mod harness;
 pub mod id;
 pub mod membership;

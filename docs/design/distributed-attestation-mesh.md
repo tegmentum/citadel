@@ -1536,24 +1536,35 @@ open question §21.8, decentralized option taken). Trust is decided by the
 witness selection (§10.4) and witness rotation triggers (§10.3) layer on top
 of this base assignment later.
 
-### Phase 4: Distributed Evidence
+### Phase 4: Distributed Evidence — DONE
 
 Deliverables:
 
 ```text
-hash-chained evidence records
-fragmenting/erasure coding
-evidence receipts
-reconstruction checks
+hash-chained evidence records  ✓ evidence.rs: EvidenceChain (append-only, linked)
+fragmenting/erasure coding      ✓ erasure.rs: Reed-Solomon (data/parity), any K of N
+evidence receipts               ✓ EvidenceReceipt (holder-signed, verifiable)
+reconstruction checks           ✓ audit_reconstruction → ReconstructionProof + durability
 ```
 
-Acceptance:
+Acceptance (proven by `tests/phase4.rs` + `erasure.rs`/`evidence.rs` units):
 
 ```text
-- Evidence survives loss of N-K fragment holders.
-- Reconstruction proof is emitted.
-- Local evidence chain rewrite is detected.
+- Evidence survives loss of N-K fragment holders. ✓ N=20,K=7: lose 13, rebuild from 7
+- Reconstruction proof is emitted.                ✓ audit_reconstruction (success + hash)
+- Local evidence chain rewrite is detected.       ✓ partial → broken links; full relink →
+                                                    contradicts a witnessed chain head
 ```
+
+Two complementary detections: a *partial* rewrite breaks the hash-chain
+links (`verify_integrity`); a *fully relinked* rewrite still no longer
+matches the head a witness already countersigned (`contradicts_witness` vs
+`ChainHeadWitness`). Fragment holders are assigned by HRW on the record id
+(independent of the witness assignment), so each record spreads to a
+different, failure-domain-spreadable set. This is the durability/forensic
+layer the LtHash log-shipping design (`distributed-log-shipping-lthash.md`)
+builds on; the LtHash accumulator + anti-entropy reconciliation engine
+(`lthash-rs`) is the next integration.
 
 ### Phase 5: Enrollment and Probation
 
