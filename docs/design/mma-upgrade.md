@@ -142,27 +142,54 @@ Upgrades are already supported, with a deliberate trade-off:
   signing identity bound to the new measured state. Plan for this until
   PolicyAuthorize removes the re-key.
 
-## Implementation plan for PolicyAuthorize
+## Implementation status & remaining wiring
 
-All vTPM-testable (no hardware needed); reuses the session/marshalling
-muscle from `sign_with_policy`.
+### DONE — the TPM protocol (`feat(vtpm): TPM2_PolicyAuthorize ...`)
 
-1. **Authority key**: a `tpm identity init --usage policy-authority` (or a
-   dedicated command) creating a signing key whose public *name* is the
-   PolicyAuthorize anchor. Export its pubName.
-2. **Bind**: `identity init --pcr-bind --authorized-by <authority>` →
-   create the MMA key with `authPolicy = PolicyAuthorize(authorityName)`
-   instead of a fixed PolicyPCR digest.
-3. **Approve**: `tpm policy approve --authority <authority> --baseline
-   <pcrs>` → sign the PolicyPCR digest with the authority key, emit the
-   approval blob.
-4. **Sign**: extend `sign_with_policy` to, when the key is
-   PolicyAuthorize-bound, run `PolicyPCR` → `TPM2_PolicyAuthorize`
-   (load the authority pub via `LoadExternal`, `VerifySignature` over the
-   approved policy → ticket, then `PolicyAuthorize`) → `Sign`.
-5. **Provenance**: record the approving authority + approved digest in the
-   `agent.enroll` / checkpoint metadata so `attest verify` shows "agent
-   approved by <authority>".
+The backend half is implemented and validated in-process on the real vTPM:
 
-Effort: ~2–3 days (StartAuthSession already done; adds PolicyAuthorize +
-approval tooling). This is the natural next security increment.
+- `create_authority_key` — external-loadable approver key.
+- `create_key_authorized(authority_pub)` — key with `authPolicy =
+  PolicyAuthorize(authorityName)`.
+- `approve_policy(authority, approvedPolicy, policyRef)` — the authority
+  signs `H(approvedPolicy ‖ policyRef)`.
+- `sign_authorized(...)` — `LoadExternal(authority, OWNER)` →
+  `VerifySignature` → ticket → `StartAuthSession` + `PolicyPCR` +
+  `PolicyAuthorize` → `Sign`.
+
+Test proves: an authorized key signs in an approved state, the TPM refuses
+an unapproved state, and after the authority approves a NEW state the SAME
+key signs again (the upgrade, no re-key). Two bring-up bugs fixed:
+VerifySignature is NO_SESSIONS (ticket at offset 10); the authority must
+load under a real hierarchy (OWNER), which needs its public's
+fixedTPM/fixedParent clear.
+
+### REMAINING — CLI + witness-logged approvals + signer integration
+
+1. **`public_blob(handle)`** backend method (portable authority public),
+   so citadel can store/pass the authority pub backend-agnostically; plus
+   **mock impls** of the four methods for a software test path.
+2. **Authority + binding (CLI)**: `tpm identity init <auth> --authority`
+   (via `create_authority_key`); `tpm identity init <name> --authorized-by
+   <auth> --pcr-bind <pcrs>` (via `create_key_authorized`), recording
+   `{policy_authorize: {authority, bank, indices}}` in the key object
+   metadata.
+3. **`tpm policy approve --authority <auth> --pcr <pcrs>`**: compute the
+   PolicyPCR digest of the (current/baseline) state, `approve_policy` with
+   the authority key, and **append the approval to the witnessed MMA log**
+   (`audit::append_value`, event `policy.approve`, payload
+   `{approved_policy, policy_ref, signature, authority}`). This is the
+   transparency half from the threat model — approvals are public,
+   append-only, witness-able, not just handed to the TPM.
+4. **Signer integration**: in `TpmCheckpointSigner`, when the identity is
+   PolicyAuthorize-bound (metadata), resolve the authority pub, compute the
+   current PolicyPCR digest `V`, scan the MMA log for the latest
+   `policy.approve` whose `approved_policy == V`, and call `sign_authorized`
+   with that approval. No valid logged approval for `V` ⇒ no signature
+   (the detection signal from the threat model).
+5. **Provenance**: surface the approving authority + whether the signing
+   state was logged-approved in `attest verify` (extends the existing
+   `agent:` line).
+
+Effort: ~1–2 days of mechanical wiring (protocol + StartAuthSession already
+done). All vTPM-testable.
