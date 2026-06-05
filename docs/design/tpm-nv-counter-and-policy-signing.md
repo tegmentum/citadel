@@ -117,6 +117,50 @@ rollback:
 This follow-on is cross-repo (secure-log) and is the larger half; the
 NV primitive (above) is the prerequisite and is self-contained.
 
+#### Concrete design (grounded in the secure-log code)
+
+The checkpoint already has a reserved slot: `CheckpointFields.policy_hash`
+(`crates/secure-log/src/model.rs`), which `sign_segment`
+(`crates/secure-log/src/native.rs`) currently always passes as
+`ZERO_HASH` and which `encode_checkpoint` already folds into the signed
+checkpoint hash. So the binding needs *no new hashed field* — only to
+populate, store, and re-read that slot.
+
+**secure-log crate:**
+1. `sign_segment(signer, identity, segment_id, policy_hash: &[u8])` —
+   take the bound-state hash instead of hardcoding `ZERO_HASH`, and
+   persist it on the segment row.
+2. Store `policy_hash` (and the raw `anti_rollback_counter: u64`) on the
+   segment so verification can reconstruct the exact `CheckpointFields`
+   and check monotonicity.
+3. `verify_checkpoint_chain` — read the stored `policy_hash` per segment
+   and use it in `build_fields` (today it rebuilds with `ZERO_HASH`, so
+   it would already break if we signed with a non-zero value without
+   storing it — hence the storage is mandatory, not optional).
+
+**secure-log-sqlite:** one migration adding `policy_hash BLOB` and
+`anti_rollback_counter INTEGER` to the segments table; update segment
+insert/get.
+
+**citadel:**
+- `measure sign`: read the NV counter (`backend.nv_increment` or a
+  read-only variant), set `policy_hash = H("artr" ‖ counter_be)`, pass
+  both to `sign_segment`.
+- `measure verify` / `attest verify`: after the signature verifies, read
+  the live NV counter and reject if the checkpoint's stored counter is
+  below it (rollback) — the signature already proves the stored counter
+  is authentic.
+
+**Cross-repo sequencing:** land + push the secure-log change, bump
+citadel's git dep + `Cargo.lock`, then wire citadel. Backwards compat:
+existing segments have `policy_hash = NULL` → treat as `ZERO_HASH` so old
+checkpoints still verify.
+
+**Risk:** schema migration on a published crate — get the migration and
+the `ZERO_HASH`-vs-stored reconstruction exactly right, or old/new
+checkpoints fail to verify. Best done as a focused pass with the
+cross-repo build verified end-to-end (the clean-clone test).
+
 ### Risks
 
 - Further component-specific NV-auth quirks beyond the attribute fix —
