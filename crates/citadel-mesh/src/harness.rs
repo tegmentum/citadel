@@ -19,12 +19,14 @@ use std::collections::{HashMap, HashSet};
 
 use tpm_core::backend::{MockBackend, TpmBackend};
 
-use crate::attest::Attestor;
-use crate::crypto::MeshKeypair;
+use crate::attest::{Attestor, ReferenceMeasurements};
+use crate::crypto::{MeshKeypair, MeshPublicKey};
+use crate::enrollment::{self, AdmissionOutcome, EnrollmentChallenge};
 use crate::id::{Epoch, MeshId, NodeId};
 use crate::membership::Membership;
 use crate::node::{Node, NodeConfig, WitnessSummary};
 use crate::state::{LivenessState, TrustState};
+use crate::witness;
 
 /// Per-node snapshot for the "dashboard" view (design §17.2).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,6 +55,12 @@ pub struct Mesh {
     dead: HashSet<NodeId>,
     /// Safety bound on the per-step settle loop.
     settle_cap: usize,
+    /// Wall-clock-free logical tick, advanced once per [`Mesh::step`].
+    tick: u64,
+    /// The golden reference adopted at wiring (for enrolling new nodes).
+    golden: ReferenceMeasurements,
+    /// Config template (the first node's) used for enrolled candidates.
+    template_config: Option<NodeConfig>,
 }
 
 impl Mesh {
@@ -63,6 +71,9 @@ impl Mesh {
             index: HashMap::new(),
             dead: HashSet::new(),
             settle_cap: 100_000,
+            tick: 0,
+            golden: ReferenceMeasurements::default(),
+            template_config: None,
         }
     }
 
@@ -83,15 +94,31 @@ impl Mesh {
         config: NodeConfig,
         backend: Box<dyn TpmBackend>,
     ) -> NodeId {
-        let keypair = MeshKeypair::from_seed([seed; 32]);
-        let pubkey = keypair.public();
-        let id = NodeId::derive(&self.mesh_id, Epoch(1), &pubkey.fingerprint(), &[seed]);
-        let membership = Membership::new(id, pubkey, role, 0);
-        let attestor = Attestor::new(backend).expect("attestor");
-        let node = Node::new(self.mesh_id.clone(), id, keypair, membership, attestor, config);
+        if self.template_config.is_none() {
+            self.template_config = Some(config.clone());
+        }
+        let node = self.make_node(seed, role, config, backend);
+        let id = node.id();
         self.index.insert(id, self.nodes.len());
         self.nodes.push(node);
         id
+    }
+
+    /// Construct a node without inserting it into the mesh (used for both
+    /// `add_node` and enrolling a candidate).
+    fn make_node(
+        &self,
+        seed: u8,
+        role: &str,
+        config: NodeConfig,
+        backend: Box<dyn TpmBackend>,
+    ) -> Node {
+        let keypair = MeshKeypair::from_seed([seed; 32]);
+        let pubkey = keypair.public();
+        let id = NodeId::derive(&self.mesh_id, Epoch(config.mesh_epoch), &pubkey.fingerprint(), &[seed]);
+        let membership = Membership::new(id, pubkey, role, 0);
+        let attestor = Attestor::new(backend).expect("attestor");
+        Node::new(self.mesh_id.clone(), id, keypair, membership, attestor, config)
     }
 
     /// Make every node learn every other node (seed membership) and adopt a
@@ -108,6 +135,7 @@ impl Mesh {
             .first()
             .and_then(|n| n.current_reference().ok())
             .unwrap_or_default();
+        self.golden = reference.clone();
         for node in &mut self.nodes {
             for (id, key) in &roster {
                 if *id != node.id() {
@@ -141,6 +169,7 @@ impl Mesh {
 
     /// Advance the whole mesh one step.
     pub fn step(&mut self) {
+        self.tick += 1;
         // 1) tick every live node and collect its outbound messages.
         let mut queue: Vec<crate::node::Addressed> = Vec::new();
         for node in &mut self.nodes {
@@ -209,6 +238,109 @@ impl Mesh {
         self.node(observer).witness_summary(subject)
     }
 
+    // -- enrollment (design §7) -----------------------------------------
+
+    /// Whether `witness` is eligible to vote on admissions — i.e. an
+    /// established, trusted member (not probationary/unknown), as judged by
+    /// the founding authority's view. A node on probation cannot vote.
+    pub fn is_eligible_voter(&self, witness: NodeId) -> bool {
+        let authority = self.nodes[0].id();
+        witness == authority
+            || matches!(
+                self.trust_of(authority, witness),
+                Some(TrustState::Trusted) | Some(TrustState::Degraded)
+            )
+    }
+
+    /// Attempt to enroll a new node (healthy candidate). See
+    /// [`Self::enroll_inner`].
+    pub fn enroll(&mut self, seed: u8, role: &str) -> (AdmissionOutcome, NodeId) {
+        self.enroll_inner(seed, role, false)
+    }
+
+    /// Attempt to enroll a candidate whose measured state diverges from the
+    /// golden (a tampered/unauthorized image) — admission should be refused.
+    pub fn enroll_tampered(&mut self, seed: u8, role: &str) -> (AdmissionOutcome, NodeId) {
+        self.enroll_inner(seed, role, true)
+    }
+
+    fn enroll_inner(&mut self, seed: u8, role: &str, tamper: bool) -> (AdmissionOutcome, NodeId) {
+        let tick = self.tick;
+        let cfg = self.template_config.clone().unwrap_or_default();
+
+        // Build the candidate (not yet in the mesh) and give it the golden
+        // reference so it could later witness others.
+        let mut candidate = self.make_node(seed, role, cfg.clone(), Box::new(MockBackend::new()));
+        candidate.set_peer_reference(self.golden.clone());
+        if tamper {
+            candidate
+                .attestor()
+                .backend()
+                .pcr_extend("sha256", 0, &[0xAA; 32])
+                .unwrap();
+        }
+        let candidate_id = candidate.id();
+        let candidate_key = candidate
+            .membership()
+            .get(&candidate_id)
+            .expect("self in membership")
+            .public_key;
+
+        // Assign admission witnesses from the existing roster (HRW).
+        let roster: Vec<NodeId> = self.nodes.iter().map(|n| n.id()).collect();
+        let ws = witness::assign(
+            candidate_id,
+            &roster,
+            Epoch(cfg.mesh_epoch),
+            cfg.witness_count.max(1),
+        );
+
+        let challenge = EnrollmentChallenge {
+            mesh_id: self.mesh_id.clone(),
+            candidate: candidate_id,
+            nonce: enroll_nonce(candidate_id, tick),
+            pcr_bank: cfg.pcr_bank.clone(),
+            pcr_selection: cfg.pcr_selection.clone(),
+            policy_revision: cfg.policy_revision,
+            admission_witnesses: ws.witnesses.clone(),
+            quorum_threshold: ws.quorum_threshold,
+        };
+        let claim = candidate
+            .make_enrollment_claim(&challenge, role, "v1")
+            .expect("candidate produces a claim");
+
+        // Collect each witness's signed vote; only eligible (trusted)
+        // witnesses count toward the quorum.
+        let mut votes = Vec::new();
+        let mut eligible = HashSet::new();
+        for w in &ws.witnesses {
+            votes.push(self.node(*w).vote_on_enrollment(&claim, &challenge, tick));
+            if self.is_eligible_voter(*w) {
+                eligible.insert(*w);
+            }
+        }
+        let outcome = enrollment::decide_admission(&votes, &eligible, ws.quorum_threshold);
+
+        if outcome.admitted {
+            let roster_keys: Vec<(NodeId, MeshPublicKey)> = self
+                .nodes
+                .iter()
+                .map(|n| (n.id(), n.membership().get(&n.id()).unwrap().public_key))
+                .collect();
+            // Existing members admit the candidate as probationary.
+            for n in &mut self.nodes {
+                n.admit_probationary(candidate_id, candidate_key, role, tick);
+            }
+            // The candidate learns the existing members.
+            for (id, key) in &roster_keys {
+                candidate.learn_peer(*id, *key, role, tick);
+            }
+            self.index.insert(candidate_id, self.nodes.len());
+            self.nodes.push(candidate);
+        }
+        (outcome, candidate_id)
+    }
+
     /// Aggregate fleet view from `observer`'s membership (design §17.1).
     pub fn fleet_view(&self, observer: NodeId) -> FleetView {
         let mut v = FleetView::default();
@@ -228,4 +360,13 @@ impl Mesh {
         }
         v
     }
+}
+
+/// Deterministic enrollment nonce from the candidate id and the mesh tick.
+fn enroll_nonce(candidate: NodeId, tick: u64) -> Vec<u8> {
+    let mut h = blake3::Hasher::new();
+    h.update(b"citadel-enroll-nonce\x00");
+    h.update(&candidate.0);
+    h.update(&tick.to_be_bytes());
+    h.finalize().as_bytes()[..16].to_vec()
 }

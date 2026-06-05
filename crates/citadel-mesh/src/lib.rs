@@ -23,11 +23,13 @@
 //! * [`witness`] — HRW witness assignment for quorum-based trust.
 //! * [`erasure`] — Reed-Solomon evidence fragments (any K of N reconstruct).
 //! * [`evidence`] — hash-chained evidence records, receipts, reconstruction.
+//! * [`enrollment`] — quorum admission, probation, duplicate-identity checks.
 //! * [`node`] — the agent: the SWIM tick + envelope handling.
 //! * [`harness`] — an in-memory mesh of nodes for deterministic tests.
 
 pub mod attest;
 pub mod crypto;
+pub mod enrollment;
 pub mod erasure;
 pub mod evidence;
 pub mod harness;

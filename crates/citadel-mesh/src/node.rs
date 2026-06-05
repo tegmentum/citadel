@@ -19,6 +19,9 @@ use std::collections::HashMap;
 
 use crate::attest::{Attestor, ReferenceMeasurements};
 use crate::crypto::MeshKeypair;
+use crate::enrollment::{
+    self, AdmissionReason, AdmissionVerdict, EnrollmentChallenge, EnrollmentClaim, EnrollmentVote,
+};
 use crate::id::{Epoch, MeshId, NodeId};
 use crate::membership::Membership;
 use crate::state::{LivenessState, TrustState};
@@ -49,6 +52,9 @@ pub struct NodeConfig {
     pub witness_count: usize,
     /// Ticks between a witness re-challenging each of its subjects.
     pub attestation_interval: u64,
+    /// Ticks a newly-admitted node stays probationary (passing attestation)
+    /// before it may be promoted to `Trusted` (design §7.5).
+    pub probation_period: u64,
 }
 
 impl Default for NodeConfig {
@@ -64,6 +70,7 @@ impl Default for NodeConfig {
             mesh_epoch: 1,
             witness_count: 3,
             attestation_interval: 4,
+            probation_period: 6,
         }
     }
 }
@@ -134,6 +141,9 @@ pub struct Node {
     witness_reports: HashMap<NodeId, HashMap<NodeId, Verdict>>,
     /// Last tick this node (as a witness) challenged each subject.
     last_challenge: HashMap<NodeId, u64>,
+    /// Tick at which each subject was admitted to probation — used to gate
+    /// promotion to `Trusted` after the probation window.
+    probation_start: HashMap<NodeId, u64>,
     outbox: Vec<Addressed>,
 }
 
@@ -165,6 +175,7 @@ impl Node {
             peer_reference: ReferenceMeasurements::default(),
             witness_reports: HashMap::new(),
             last_challenge: HashMap::new(),
+            probation_start: HashMap::new(),
             outbox: Vec::new(),
         }
     }
@@ -562,17 +573,39 @@ impl Node {
         }
         let fails = relevant.iter().filter(|v| matches!(v, Verdict::Fail)).count();
         let passes = relevant.iter().filter(|v| matches!(v, Verdict::Pass)).count();
-        // ≥1/3 critical objections → Suspicious; else ≥80% pass → Trusted;
+        // Is the subject still serving its probation window?
+        let on_probation = matches!(
+            self.membership.get(&subject).map(|m| m.trust),
+            Some(TrustState::Probationary) | Some(TrustState::ProvisionallyAdmitted)
+        );
+        let probation_elapsed = self
+            .probation_start
+            .get(&subject)
+            .is_none_or(|start| self.tick.saturating_sub(*start) >= self.config.probation_period);
+
+        // ≥1/3 critical objections → Suspicious; else ≥80% pass → Trusted
+        // (but a probationer is only *promoted* once its window elapses);
         // ≥60% → Degraded; otherwise withhold trust as Suspicious.
         let trust = if fails * 3 >= reported {
             TrustState::Suspicious
         } else if passes * 5 >= reported * 4 {
-            TrustState::Trusted
+            if on_probation && !probation_elapsed {
+                TrustState::Probationary // passing, but not yet promotable
+            } else {
+                TrustState::Trusted
+            }
         } else if passes * 5 >= reported * 3 {
-            TrustState::Degraded
+            if on_probation {
+                TrustState::Probationary
+            } else {
+                TrustState::Degraded
+            }
         } else {
             TrustState::Suspicious
         };
+        if trust == TrustState::Trusted {
+            self.probation_start.remove(&subject);
+        }
         self.membership.set_trust(&subject, trust);
     }
 
@@ -605,6 +638,116 @@ impl Node {
     /// Expose this node's witness assignment for `subject` (testing / ops).
     pub fn assigned_witnesses(&self, subject: NodeId) -> Vec<NodeId> {
         self.witnesses_for(subject).witnesses
+    }
+
+    // -- enrollment (design §7) -----------------------------------------
+
+    /// Fingerprint of this node's mesh key — its attestation identity for
+    /// duplicate-detection during enrollment.
+    pub fn ak_fingerprint(&self) -> [u8; 32] {
+        self.keypair.public().fingerprint()
+    }
+
+    /// As a joining candidate, answer an [`EnrollmentChallenge`] with a
+    /// signed, nonce-bound [`EnrollmentClaim`].
+    pub fn make_enrollment_claim(
+        &self,
+        challenge: &EnrollmentChallenge,
+        role: &str,
+        agent_version: &str,
+    ) -> anyhow::Result<EnrollmentClaim> {
+        let ach = AttestationChallenge {
+            challenger: self.id,
+            subject: self.id,
+            nonce: challenge.nonce.clone(),
+            pcr_bank: challenge.pcr_bank.clone(),
+            pcr_selection: challenge.pcr_selection.clone(),
+            policy_revision: challenge.policy_revision,
+            expires_at_tick: self.tick + 5,
+        };
+        let evidence =
+            self.attestor
+                .produce(&ach, self.config.policy_revision, Some(agent_version.to_string()), self.tick)?;
+        Ok(EnrollmentClaim::create(
+            &self.keypair,
+            challenge.mesh_id.clone(),
+            self.id,
+            self.ak_fingerprint(),
+            role,
+            agent_version,
+            challenge.nonce.clone(),
+            evidence,
+            self.tick,
+        ))
+    }
+
+    /// As an admission witness, assess a candidate's claim and cast a signed
+    /// [`EnrollmentVote`] (design §7.4 steps 7–8).
+    pub fn vote_on_enrollment(
+        &self,
+        claim: &EnrollmentClaim,
+        challenge: &EnrollmentChallenge,
+        tick: u64,
+    ) -> EnrollmentVote {
+        let reason = self.assess_claim(claim, challenge, tick);
+        let verdict = if reason == AdmissionReason::Ok {
+            AdmissionVerdict::Approve
+        } else {
+            AdmissionVerdict::Reject
+        };
+        EnrollmentVote::sign(&self.keypair, self.id, claim.candidate, verdict, reason, tick)
+    }
+
+    fn assess_claim(
+        &self,
+        claim: &EnrollmentClaim,
+        challenge: &EnrollmentChallenge,
+        tick: u64,
+    ) -> AdmissionReason {
+        if !claim.verify_signature() {
+            return AdmissionReason::BadSignature;
+        }
+        if claim.nonce != challenge.nonce {
+            return AdmissionReason::NonceMismatch;
+        }
+        // Duplicate/cloned identity: the candidate's fingerprint must not
+        // already belong to a known member.
+        let existing: Vec<[u8; 32]> =
+            self.membership.iter().map(|m| m.public_key.fingerprint()).collect();
+        if enrollment::is_duplicate_identity(&claim.ak_fingerprint, &existing) {
+            return AdmissionReason::DuplicateIdentity;
+        }
+        // Measured-state attestation against our golden reference.
+        let ach = AttestationChallenge {
+            challenger: self.id,
+            subject: claim.candidate,
+            nonce: challenge.nonce.clone(),
+            pcr_bank: challenge.pcr_bank.clone(),
+            pcr_selection: challenge.pcr_selection.clone(),
+            policy_revision: challenge.policy_revision,
+            expires_at_tick: tick + 5,
+        };
+        let result = self
+            .attestor
+            .verify(&ach, &claim.evidence, &self.peer_reference, self.id, tick);
+        if result.result != Verdict::Pass {
+            return AdmissionReason::AttestationFailed;
+        }
+        AdmissionReason::Ok
+    }
+
+    /// Admit a node into this view as **probationary**: learn it and start
+    /// its probation clock (design §7.5).
+    pub fn admit_probationary(
+        &mut self,
+        node_id: NodeId,
+        key: crate::crypto::MeshPublicKey,
+        role: &str,
+        tick: u64,
+    ) {
+        self.membership.learn(node_id, key, role, tick);
+        self.membership.set_trust(&node_id, TrustState::Probationary);
+        self.probation_start.insert(node_id, tick);
     }
 
     fn make_nonce(&self, target: NodeId) -> Vec<u8> {

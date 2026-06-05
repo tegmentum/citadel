@@ -1566,25 +1566,33 @@ layer the LtHash log-shipping design (`distributed-log-shipping-lthash.md`)
 builds on; the LtHash accumulator + anti-entropy reconciliation engine
 (`lthash-rs`) is the next integration.
 
-### Phase 5: Enrollment and Probation
+### Phase 5: Enrollment and Probation — DONE
 
-Deliverables:
-
-```text
-enrollment claim
-challenge flow
-enrollment voting
-probation state
-promotion logic
-```
-
-Acceptance:
+Deliverables (in `enrollment.rs` + `node.rs`/`harness.rs`):
 
 ```text
-- New node joins only after quorum approval.
-- New node cannot vote during probation.
-- Duplicate identity attempt is flagged.
+enrollment claim   ✓ EnrollmentChallenge / signed EnrollmentClaim (nonce-bound quote)
+challenge flow     ✓ harness enroll(): challenge → claim → witness votes → decide
+enrollment voting  ✓ EnrollmentVote (signed); decide_admission tallies eligible quorum
+probation state    ✓ admitted nodes start Probationary; may_vote()/is_eligible_voter false
+promotion logic    ✓ aggregate_trust promotes Probationary→Trusted after the window
 ```
+
+Acceptance (proven by `tests/phase5.rs` + `enrollment.rs` units):
+
+```text
+- New node joins only after quorum approval.  ✓ healthy admitted; tampered refused, not added
+- New node cannot vote during probation.       ✓ a probationer is not an eligible voter
+- Duplicate identity attempt is flagged.       ✓ DUPLICATE_IDENTITY on a cloned fingerprint
+```
+
+Admission witnesses are assigned by HRW (like attestation witnesses), and a
+candidate is admitted only on a quorum of **eligible** (already-trusted)
+votes — a probationary node's vote does not count toward admitting another.
+A clean probationer is promoted to `Trusted` only after attesting cleanly
+across the probation window. Real AK/EK endorsement-chain validation (so the
+attestation key is bound to genuine hardware, closing the `AK_UNTRUSTED`
+gap) is the remaining hardening on this path.
 
 ### Phase 6: Quarantine
 
