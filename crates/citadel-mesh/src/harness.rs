@@ -27,7 +27,7 @@ use crate::id::{Epoch, MeshId, NodeId};
 use crate::membership::Membership;
 use crate::node::{Node, NodeConfig, WitnessSummary};
 use crate::quarantine::{self, QuarantineDecision, QuarantineScope};
-use crate::reference::{PcrClass, Validity};
+use crate::reference::{PcrClass, ReferenceManifest, Validity};
 use crate::state::{LivenessState, TrustState};
 use crate::witness;
 
@@ -378,6 +378,19 @@ impl Mesh {
         for n in &mut self.nodes {
             n.set_pcr_class(index, class);
         }
+    }
+
+    /// Install the reference-manifest authorities across every node (§10.2).
+    pub fn set_reference_authorities_all(&mut self, authorities: TrustAnchors) {
+        for n in &mut self.nodes {
+            n.set_reference_authorities(authorities.clone());
+        }
+    }
+
+    /// Originate a signed reference manifest from `from`: adopt it locally and
+    /// gossip it to the fleet (each node adopts it only if it trusts the issuer).
+    pub fn broadcast_reference_manifest(&mut self, from: NodeId, manifest: ReferenceManifest) {
+        self.node_mut(from).broadcast_reference_manifest(manifest);
     }
 
     /// Simulate remediation (a clean reimage): replace `subject`'s backend so

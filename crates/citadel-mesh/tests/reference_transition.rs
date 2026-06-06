@@ -4,11 +4,12 @@
 //! identical to tamper — but an *authorized* new measured state keeps the node
 //! trusted, while an *unauthorized* one is distrusted by the witness quorum.
 
+use citadel_mesh::attest::TrustAnchors;
 use citadel_mesh::harness::Mesh;
 use citadel_mesh::node::NodeConfig;
-use citadel_mesh::reference::{PcrClass, Validity};
+use citadel_mesh::reference::{PcrClass, ReferenceEntry, ReferenceManifest, Validity};
 use citadel_mesh::state::TrustState;
-use citadel_mesh::NodeId;
+use citadel_mesh::{MeshKeypair, NodeId};
 
 fn mesh_of(n: u8) -> (Mesh, Vec<NodeId>) {
     let mut mesh = Mesh::new("prod-east-1");
@@ -122,6 +123,75 @@ fn authorizing_after_the_fact_restores_trust() {
                 mesh.trust_of(observer, node),
                 Some(TrustState::Trusted),
                 "{observer} restores trust in {node} once its state is authorized"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_signed_manifest_authorizes_an_upgrade_fleet_wide() {
+    // §10.2: acceptance comes from a signed manifest gossiped across the fleet,
+    // not from an operator poking each verifier.
+    let (mut mesh, ids) = mesh_of(6);
+    mesh.run(12);
+    let node = ids[4];
+
+    let authority = MeshKeypair::from_seed([200u8; 32]);
+    mesh.set_reference_authorities_all(TrustAnchors::with(authority.public()));
+
+    // The node upgrades; the authority signs a manifest accepting the new state
+    // and one node gossips it to the fleet.
+    mesh.measured_state_change(node, "sha256", 0, &[0x11; 32]);
+    let new_digest = mesh.pcr_digest(node, "sha256", 0);
+    let manifest = ReferenceManifest::issue(
+        &authority,
+        "prod",
+        vec![ReferenceEntry { index: 0, digest: new_digest, validity: Validity::always() }],
+        vec![],
+    );
+    mesh.broadcast_reference_manifest(ids[0], manifest);
+    mesh.run(12);
+
+    for &observer in &ids {
+        if observer != node {
+            assert_eq!(
+                mesh.trust_of(observer, node),
+                Some(TrustState::Trusted),
+                "{observer} trusts {node} after the signed manifest"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_manifest_from_an_untrusted_issuer_is_ignored() {
+    let (mut mesh, ids) = mesh_of(6);
+    mesh.run(12);
+    let node = ids[4];
+
+    // The fleet trusts `authority`, but a `rogue` key signs the manifest.
+    let authority = MeshKeypair::from_seed([200u8; 32]);
+    let rogue = MeshKeypair::from_seed([201u8; 32]);
+    mesh.set_reference_authorities_all(TrustAnchors::with(authority.public()));
+
+    mesh.measured_state_change(node, "sha256", 0, &[0x22; 32]);
+    let new_digest = mesh.pcr_digest(node, "sha256", 0);
+    let manifest = ReferenceManifest::issue(
+        &rogue,
+        "prod",
+        vec![ReferenceEntry { index: 0, digest: new_digest, validity: Validity::always() }],
+        vec![],
+    );
+    mesh.broadcast_reference_manifest(ids[0], manifest);
+    mesh.run(12);
+
+    // The rogue manifest is not adopted; the unauthorized state is distrusted.
+    for &observer in &ids {
+        if observer != node {
+            assert_eq!(
+                mesh.trust_of(observer, node),
+                Some(TrustState::Suspicious),
+                "{observer} ignores the rogue manifest and distrusts {node}"
             );
         }
     }

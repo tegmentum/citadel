@@ -111,6 +111,11 @@ pub enum GossipMessage {
     /// after the new placement is durable, so evidence never dips below the
     /// reconstruction threshold during migration.
     LogFragmentDrop { record_id: [u8; 32] },
+    /// A signed authorization to adopt new accepted measured states (design
+    /// `measured-state-transitions.md` §10.2). Gossiped so every verifier that
+    /// trusts the issuer converges on the same accepted set. Boxed: it carries
+    /// reference entries/profiles and a certificate chain.
+    ReferenceManifest(Box<crate::reference::ReferenceManifest>),
 }
 
 // -- Attestation records (design §8) --

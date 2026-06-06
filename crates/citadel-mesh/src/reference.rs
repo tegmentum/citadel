@@ -24,6 +24,8 @@ use serde::{Deserialize, Serialize};
 use tpm_core::backend::PcrValue;
 
 use crate::attest::ReferenceMeasurements;
+use crate::crypto::{MeshKeypair, MeshPublicKey, Signature};
+use crate::types::EndorserCert;
 
 /// Validity window for a reference source, bounded by either or both clocks.
 /// An unset bound is unbounded on that side; both set ⇒ both must hold.
@@ -157,6 +159,94 @@ pub struct ReferenceEntry {
     pub validity: Validity,
 }
 
+/// A signed authorization to adopt new accepted states (design §10.2). The
+/// manifest — not an operator poking values directly — is what a verifier
+/// trusts: acceptance comes from *provenance* (signed by an authority whose key
+/// is anchored, directly or via a publisher certificate chain) rather than from
+/// enumeration. Validity windows on the carried entries express the
+/// staged/overlap/retire lifecycle (§3, §6).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReferenceManifest {
+    /// The boot profile this manifest authorizes states for (a free-form tag;
+    /// profile *assignment* is Layer 4). Empty = fleet-wide.
+    pub profile: String,
+    /// Standalone accepted entries to adopt.
+    pub entries: Vec<ReferenceEntry>,
+    /// Coupled profiles to adopt.
+    pub profiles: Vec<ReferenceProfile>,
+    /// The authority (publisher / fleet-update key) that signed this manifest.
+    pub issuer: MeshPublicKey,
+    /// Certificates from the issuer upward toward an anchored root (the
+    /// publisher certificate chain). Empty = the issuer must be anchored directly.
+    pub chain: Vec<EndorserCert>,
+    pub signature: Signature,
+}
+
+impl ReferenceManifest {
+    fn signing_bytes(
+        profile: &str,
+        entries: &[ReferenceEntry],
+        profiles: &[ReferenceProfile],
+        issuer: &MeshPublicKey,
+    ) -> Vec<u8> {
+        serde_json::to_vec(&("reference-manifest", profile, entries, profiles, issuer))
+            .expect("serializable")
+    }
+
+    /// Sign a manifest as `authority` (issuer anchored directly).
+    pub fn issue(
+        authority: &MeshKeypair,
+        profile: impl Into<String>,
+        entries: Vec<ReferenceEntry>,
+        profiles: Vec<ReferenceProfile>,
+    ) -> Self {
+        Self::issue_chained(authority, profile, entries, profiles, Vec::new())
+    }
+
+    /// Sign a manifest carrying the issuer's certificate `chain` up to a root.
+    pub fn issue_chained(
+        authority: &MeshKeypair,
+        profile: impl Into<String>,
+        entries: Vec<ReferenceEntry>,
+        profiles: Vec<ReferenceProfile>,
+        chain: Vec<EndorserCert>,
+    ) -> Self {
+        let profile = profile.into();
+        let issuer = authority.public();
+        let signature =
+            authority.sign(&Self::signing_bytes(&profile, &entries, &profiles, &issuer));
+        ReferenceManifest { profile, entries, profiles, issuer, chain, signature }
+    }
+
+    /// Whether the issuer's signature over the manifest is valid.
+    pub fn verify_signature(&self) -> bool {
+        self.issuer.verify(
+            &Self::signing_bytes(&self.profile, &self.entries, &self.profiles, &self.issuer),
+            &self.signature,
+        )
+    }
+
+    /// Whether the issuer is trusted under `is_anchored`: anchored directly, or
+    /// its certificate chain links (each valid and connecting) up to an
+    /// anchored issuer (a publisher→…→root chain).
+    pub fn issuer_chains_to_anchor(&self, is_anchored: impl Fn(&MeshPublicKey) -> bool) -> bool {
+        if is_anchored(&self.issuer) {
+            return true;
+        }
+        let mut current = self.issuer;
+        for cert in &self.chain {
+            if cert.endorser != current || !cert.verify() {
+                return false;
+            }
+            if is_anchored(&cert.issuer) {
+                return true;
+            }
+            current = cert.issuer;
+        }
+        false
+    }
+}
+
 /// A set of `(index, digest)` pairs accepted only together.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReferenceProfile {
@@ -268,14 +358,35 @@ impl AcceptedReferences {
         self.entries.is_empty() && self.profiles.is_empty()
     }
 
-    /// Add a standalone accepted digest for an index.
+    /// Add a standalone accepted digest for an index. Idempotent: an identical
+    /// `(index, digest, validity)` entry is not duplicated (so re-applying a
+    /// gossiped manifest is safe).
     pub fn accept_entry(&mut self, index: u32, digest: Vec<u8>, validity: Validity) {
-        self.entries.push(ReferenceEntry { index, digest, validity });
+        let entry = ReferenceEntry { index, digest, validity };
+        if !self.entries.contains(&entry) {
+            self.entries.push(entry);
+        }
     }
 
-    /// Add a coupled profile (accepted only when fully satisfied).
+    /// Add a coupled profile (accepted only when fully satisfied). Idempotent
+    /// by profile id.
     pub fn accept_profile(&mut self, pcrs: BTreeMap<u32, Vec<u8>>, validity: Validity) {
-        self.profiles.push(ReferenceProfile::new(pcrs, validity));
+        let profile = ReferenceProfile::new(pcrs, validity);
+        if !self.profiles.iter().any(|p| p.id == profile.id) {
+            self.profiles.push(profile);
+        }
+    }
+
+    /// Adopt the entries and profiles a (verified, authorized) manifest carries.
+    pub fn adopt_manifest(&mut self, manifest: &ReferenceManifest) {
+        for e in &manifest.entries {
+            self.accept_entry(e.index, e.digest.clone(), e.validity.clone());
+        }
+        for p in &manifest.profiles {
+            if !self.profiles.iter().any(|q| q.id == p.id) {
+                self.profiles.push(p.clone());
+            }
+        }
     }
 
     /// Set the appraisal class for a PCR index (design §10.1).
@@ -623,6 +734,56 @@ mod tests {
         assert_eq!(
             r.appraise(&[pcr(0, b"x")], 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
             ReferenceOutcome::Unknown
+        );
+    }
+
+    #[test]
+    fn manifest_signs_verifies_and_detects_tamper() {
+        let authority = MeshKeypair::from_seed([200u8; 32]);
+        let entries = vec![ReferenceEntry { index: 4, digest: b"k2".to_vec(), validity: Validity::always() }];
+        let m = ReferenceManifest::issue(&authority, "prod", entries, vec![]);
+        assert!(m.verify_signature());
+
+        // Tamper an entry → signature no longer matches.
+        let mut t = m.clone();
+        t.entries[0].digest = b"forged".to_vec();
+        assert!(!t.verify_signature());
+    }
+
+    #[test]
+    fn manifest_issuer_anchored_directly_or_via_chain() {
+        let root = MeshKeypair::from_seed([1u8; 32]);
+        let publisher = MeshKeypair::from_seed([2u8; 32]);
+        let entries = vec![ReferenceEntry { index: 4, digest: b"k2".to_vec(), validity: Validity::always() }];
+
+        // Direct: issued by an anchored key.
+        let direct = ReferenceManifest::issue(&root, "", entries.clone(), vec![]);
+        assert!(direct.issuer_chains_to_anchor(|k| *k == root.public()));
+        assert!(!direct.issuer_chains_to_anchor(|k| *k == publisher.public()));
+
+        // Chained: publisher cert signed by the anchored root.
+        let cert = EndorserCert::issue(&root, publisher.public());
+        let chained = ReferenceManifest::issue_chained(&publisher, "", entries, vec![], vec![cert]);
+        assert!(chained.issuer_chains_to_anchor(|k| *k == root.public()));
+        // A broken chain (root not anchored) does not validate.
+        assert!(!chained.issuer_chains_to_anchor(|k| *k == MeshKeypair::from_seed([9u8; 32]).public()));
+    }
+
+    #[test]
+    fn adopt_manifest_is_idempotent_and_appraises() {
+        let authority = MeshKeypair::from_seed([200u8; 32]);
+        let m = ReferenceManifest::issue(
+            &authority,
+            "",
+            vec![ReferenceEntry { index: 0, digest: b"fw2".to_vec(), validity: Validity::always() }],
+            vec![],
+        );
+        let mut r = refs();
+        r.adopt_manifest(&m);
+        r.adopt_manifest(&m); // idempotent
+        assert_eq!(
+            r.appraise(&[pcr(0, b"fw2")], 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            ReferenceOutcome::Accepted
         );
     }
 

@@ -18,7 +18,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::attest::{Attestor, ReferenceMeasurements, TrustAnchors};
-use crate::reference::{AcceptedReferences, PcrClass, ReferenceMatchPolicy, RetiredAction, Validity};
+use crate::reference::{
+    AcceptedReferences, PcrClass, ReferenceManifest, ReferenceMatchPolicy, RetiredAction, Validity,
+};
 use crate::crypto::MeshKeypair;
 use crate::enrollment::{
     self, AdmissionReason, AdmissionVerdict, EnrollmentChallenge, EnrollmentClaim, EnrollmentVote,
@@ -197,6 +199,10 @@ pub struct Node {
     /// Endorsers this node trusts to vouch for peers' AKs (design §8.1). Empty
     /// = endorsement not required (the early-phase self-certifying AK).
     anchors: TrustAnchors,
+    /// Authorities this node trusts to sign reference manifests (design §10.2).
+    /// `None` = fall back to `anchors` (one authority for both surfaces);
+    /// `Some` = a separate authority set (separation of duties).
+    reference_authorities: Option<TrustAnchors>,
     /// This node's own AK endorsement, attached to the evidence it produces.
     endorsement: Option<Endorsement>,
     /// Latest attestation verdict per `subject → verifier` heard on the mesh
@@ -311,6 +317,7 @@ impl Node {
             issued_challenges: Vec::new(),
             peer_reference: AcceptedReferences::default(),
             anchors: TrustAnchors::default(),
+            reference_authorities: None,
             endorsement: None,
             witness_reports: HashMap::new(),
             last_challenge: HashMap::new(),
@@ -367,6 +374,44 @@ impl Node {
     /// event-log policy), or volatile (ignored) (design §10.1).
     pub fn set_pcr_class(&mut self, index: u32, class: PcrClass) {
         self.peer_reference.set_pcr_class(index, class);
+    }
+
+    /// Install the authorities this node trusts to sign reference manifests
+    /// (design §10.2). Separate from the AK-endorsement anchors; if never set,
+    /// manifests are judged against those anchors instead.
+    pub fn set_reference_authorities(&mut self, authorities: TrustAnchors) {
+        self.reference_authorities = Some(authorities);
+    }
+
+    /// The authority set used to judge reference manifests (separate set if
+    /// configured, else the AK-endorsement anchors).
+    fn reference_anchors(&self) -> &TrustAnchors {
+        self.reference_authorities.as_ref().unwrap_or(&self.anchors)
+    }
+
+    /// Adopt a signed reference manifest if it verifies and its issuer chains to
+    /// a trusted reference authority. Returns whether it was adopted. Idempotent
+    /// — re-applying the same manifest is a no-op (design §10.2).
+    pub fn apply_reference_manifest(&mut self, manifest: &ReferenceManifest) -> bool {
+        if !manifest.verify_signature() {
+            return false;
+        }
+        let trusted = {
+            let anchors = self.reference_anchors();
+            manifest.issuer_chains_to_anchor(|k| anchors.trusts(k))
+        };
+        if !trusted {
+            return false; // unsigned-by-anyone-we-trust → ignored
+        }
+        self.peer_reference.adopt_manifest(manifest);
+        true
+    }
+
+    /// Adopt a manifest locally and gossip it to peers, so every verifier that
+    /// trusts the issuer converges on the same accepted set.
+    pub fn broadcast_reference_manifest(&mut self, manifest: ReferenceManifest) {
+        self.apply_reference_manifest(&manifest);
+        self.broadcast(GossipMessage::ReferenceManifest(Box::new(manifest)));
     }
 
     /// Install the endorsers this node trusts to vouch for peers' AKs. With a
@@ -1194,6 +1239,9 @@ impl Node {
             }
             GossipMessage::LogFragmentReply(lf) => self.on_fragment_reply(env.sender, *lf),
             GossipMessage::LogFragmentDrop { record_id } => self.on_fragment_drop(record_id),
+            GossipMessage::ReferenceManifest(m) => {
+                self.apply_reference_manifest(&m);
+            }
         }
     }
 
