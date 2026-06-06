@@ -1,8 +1,10 @@
 mod app;
 mod commands;
 mod plan;
+// The vTPM backend now lives in its own crate so it can be shared with the
+// daemon; alias it here to keep the existing `vtpm_bridge::` call sites.
 #[cfg(feature = "vtpm")]
-mod vtpm_bridge;
+use vtpm_backend as vtpm_bridge;
 
 use clap::CommandFactory;
 

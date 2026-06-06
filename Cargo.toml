@@ -8,6 +8,7 @@ members = [
     "crates/tpmd",
     "crates/citadel-mesh",
     "crates/citadel-agent",
+    "crates/vtpm-backend",
 ]
 
 [package]
@@ -19,7 +20,7 @@ license = "Apache-2.0"
 [features]
 default = []
 tpm-hw = ["tpm-core/tpm-hw"]
-vtpm = ["dep:vtpm-wasm"]
+vtpm = ["dep:vtpm-backend"]
 
 [[bin]]
 name = "tpm"
@@ -29,7 +30,7 @@ path = "src/main.rs"
 tpm-core.workspace = true
 tpm-tui.workspace = true
 secure-log-sqlite = { git = "https://github.com/tegmentum/secure-log.git", branch = "main" }
-vtpm-wasm = { git = "https://github.com/tegmentum/vtpm-wasm.git", branch = "main", optional = true }
+vtpm-backend = { path = "crates/vtpm-backend", optional = true }
 clap.workspace = true
 clap_complete.workspace = true
 serde.workspace = true
@@ -44,7 +45,6 @@ uuid.workspace = true
 tempfile.workspace = true
 serde_json.workspace = true
 rusqlite.workspace = true
-citadel-mesh = { path = "crates/citadel-mesh" }
 
 [workspace.package]
 edition = "2021"

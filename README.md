@@ -309,10 +309,19 @@ The dashboard shows health score, backend status, object counts, and the active 
 `tpmd` is an HTTP daemon that exposes TPM operations as a REST API with authentication, approval workflows, and audit logging.
 
 ```bash
-tpmd                              # start on 127.0.0.1:7701
+tpmd                              # start on 127.0.0.1:7701 (mock backend)
 TPMD_LISTEN=0.0.0.0:8443 tpmd    # custom address
 TPMD_API_KEY=secret tpmd          # require X-API-Key header
 TPMD_TLS_CERT=cert.pem TPMD_TLS_KEY=key.pem tpmd  # TLS with an on-disk key
+```
+
+By default `tpmd` runs the software (mock) backend. Build with `--features
+vtpm` and set `TPMD_BACKEND=vtpm` (+ `TPM_VTPM_COMPONENT`) to run on the real
+libtpms-WASM vTPM — required for real signing, including the TPM-held TLS key
+below. vTPM state persists at `TPMD_VTPM_STATE` (default `<store>.tpmstate`).
+
+```bash
+TPMD_BACKEND=vtpm TPM_VTPM_COMPONENT=/path/to/tpm.component.wasm tpmd
 ```
 
 #### TLS with a TPM-held server key

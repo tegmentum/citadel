@@ -151,7 +151,17 @@ the harness); becomes truly distributed once item 1 lands.
 
 ---
 
-## Item 4 — `tpmd` real backend
+## Item 4 — `tpmd` real backend — DONE
+
+Done: the vTPM backend was extracted from the `tpm` bin into its own crate
+`crates/vtpm-backend` (the bin now aliases it behind its `vtpm` feature; the
+moved tests, incl. the two mesh+vTPM ones, came along). `tpmd` gained a
+`vtpm` feature and selects its backend at runtime via `TPMD_BACKEND`
+(`mock` | `vtpm`); `vtpm` reads `TPM_VTPM_COMPONENT` and persists state at
+`TPMD_VTPM_STATE` (default `<store>.tpmstate`), constructed as the shared
+`Arc<dyn TpmBackend>` behind both the API and the TLS layer — so the TPM-held
+TLS key (item-less work, already implemented) is now usable end-to-end.
+`citadel-agent` could adopt the same `vtpm-backend` dep as a follow-up.
 
 **Goal.** Let `tpmd` (and the agent) run on a real TPM so the TPM-held TLS key
 (already implemented) and real attestation work end-to-end — today `tpmd`

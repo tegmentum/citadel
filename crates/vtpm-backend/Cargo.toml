@@ -1,0 +1,17 @@
+[package]
+name = "vtpm-backend"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+description = "Citadel vTPM backend: a TpmBackend over libtpms compiled to a WASM component, run via wasmtime (vtpm-wasm)"
+
+[dependencies]
+tpm-core.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+vtpm-wasm = { git = "https://github.com/tegmentum/vtpm-wasm.git", branch = "main" }
+
+[dev-dependencies]
+tempfile.workspace = true
+citadel-mesh = { path = "../citadel-mesh" }

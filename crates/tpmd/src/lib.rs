@@ -108,7 +108,7 @@ pub async fn run() -> anyhow::Result<()> {
         .unwrap_or_else(|_| default_store_path());
 
     let store = Store::open(&store_path)?;
-    let backend: Arc<dyn TpmBackend> = Arc::new(MockBackend::new());
+    let backend: Arc<dyn TpmBackend> = build_backend(&store_path)?;
     // The TLS layer (when a TPM-backed identity is configured) signs the
     // handshake with the same backend the API uses — one key custodian.
     let tls_backend = backend.clone();
@@ -180,6 +180,51 @@ pub async fn run() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Select the TPM backend from `TPMD_BACKEND` (`mock` | `vtpm`):
+///
+/// * `mock` (default) — the software backend; fine for the API, but cannot
+///   produce real signatures (so not for TPM-backed TLS).
+/// * `vtpm` — the libtpms-WASM vTPM (requires the `vtpm` build feature),
+///   reading `TPM_VTPM_COMPONENT` and persisting state at `TPMD_VTPM_STATE`
+///   (default: `<store>.tpmstate`). Produces real ECDSA signatures, so it can
+///   terminate TPM-backed TLS.
+fn build_backend(store_path: &std::path::Path) -> anyhow::Result<Arc<dyn TpmBackend>> {
+    let kind = std::env::var("TPMD_BACKEND").unwrap_or_else(|_| "mock".to_string());
+    backend_for(&kind, store_path)
+}
+
+fn backend_for(kind: &str, store_path: &std::path::Path) -> anyhow::Result<Arc<dyn TpmBackend>> {
+    match kind {
+        "mock" => Ok(Arc::new(MockBackend::new())),
+        "vtpm" => build_vtpm_backend(store_path),
+        other => anyhow::bail!("unknown TPMD_BACKEND '{other}' (expected mock|vtpm)"),
+    }
+}
+
+#[cfg(feature = "vtpm")]
+fn build_vtpm_backend(store_path: &std::path::Path) -> anyhow::Result<Arc<dyn TpmBackend>> {
+    let component = std::env::var("TPM_VTPM_COMPONENT").map_err(|_| {
+        anyhow::anyhow!("TPMD_BACKEND=vtpm requires TPM_VTPM_COMPONENT (path to the vTPM component)")
+    })?;
+    let state = std::env::var("TPMD_VTPM_STATE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            let mut p = store_path.to_path_buf();
+            let mut name = p.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+            name.push(".tpmstate");
+            p.set_file_name(name);
+            p
+        });
+    tracing::info!("backend: vTPM ({}), state {}", component, state.display());
+    let backend = vtpm_backend::VtpmBackend::open(std::path::Path::new(&component), Some(&state))?;
+    Ok(Arc::new(backend))
+}
+
+#[cfg(not(feature = "vtpm"))]
+fn build_vtpm_backend(_store_path: &std::path::Path) -> anyhow::Result<Arc<dyn TpmBackend>> {
+    anyhow::bail!("TPMD_BACKEND=vtpm requires tpmd built with --features vtpm")
 }
 
 /// Resolve the certificate (PEM) presented for a TPM-backed TLS identity:
@@ -1119,4 +1164,30 @@ async fn check_api_key(
         }
     }
     Ok(next.run(req).await)
+}
+
+#[cfg(test)]
+mod backend_selection_tests {
+    use super::backend_for;
+
+    fn err_string(kind: &str) -> String {
+        let p = std::path::Path::new("/tmp/tpmd-test.db");
+        match backend_for(kind, p) {
+            Ok(_) => panic!("expected an error for backend '{kind}'"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    #[test]
+    fn mock_is_default_and_unknown_errors() {
+        let p = std::path::Path::new("/tmp/tpmd-test.db");
+        assert!(backend_for("mock", p).is_ok());
+        assert!(err_string("bogus").contains("unknown TPMD_BACKEND"));
+    }
+
+    #[cfg(not(feature = "vtpm"))]
+    #[test]
+    fn vtpm_without_feature_is_a_clear_error() {
+        assert!(err_string("vtpm").contains("--features vtpm"));
+    }
 }

@@ -3,8 +3,14 @@ name = "tpmd"
 edition.workspace = true
 version.workspace = true
 
+[features]
+default = []
+# Run on the libtpms-WASM vTPM (selectable at runtime via TPMD_BACKEND=vtpm).
+vtpm = ["dep:vtpm-backend"]
+
 [dependencies]
 tpm-core.workspace = true
+vtpm-backend = { path = "../vtpm-backend", optional = true }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
