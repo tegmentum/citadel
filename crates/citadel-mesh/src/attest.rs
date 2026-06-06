@@ -21,15 +21,51 @@
 //! (a stand-in for tamper / an un-approved upgrade) is independently flagged
 //! `PCR_MISMATCH` by every witness.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use tpm_core::backend::{KeyHandle, PcrValue, TpmBackend};
 use tpm_core::model::Algorithm;
 
+use crate::crypto::MeshPublicKey;
 use crate::id::NodeId;
 use crate::types::{
-    AttestationChallenge, AttestationEvidence, AttestationResult, ReasonCode, Verdict,
+    AttestationChallenge, AttestationEvidence, AttestationResult, Endorsement, ReasonCode, Verdict,
 };
+
+/// The set of endorsers a verifier trusts to vouch for attestation keys (the
+/// RATS *Endorser* role: hardware EK / manufacturer / operator roots). When
+/// non-empty, a quote is accepted only if its AK carries an [`Endorsement`]
+/// from one of these — otherwise `AK_UNTRUSTED`. Empty = endorsement not
+/// required (self-certifying AK, as in the early phases).
+#[derive(Clone, Debug, Default)]
+pub struct TrustAnchors {
+    endorsers: HashSet<MeshPublicKey>,
+}
+
+impl TrustAnchors {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A set trusting a single endorser.
+    pub fn with(endorser: MeshPublicKey) -> Self {
+        let mut s = HashSet::new();
+        s.insert(endorser);
+        TrustAnchors { endorsers: s }
+    }
+
+    pub fn trust(&mut self, endorser: MeshPublicKey) {
+        self.endorsers.insert(endorser);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.endorsers.is_empty()
+    }
+
+    pub fn trusts(&self, endorser: &MeshPublicKey) -> bool {
+        self.endorsers.contains(endorser)
+    }
+}
 
 /// Expected PCR digests for a known-good measured state — the reference a
 /// verifier matches a subject's quote against (design §14.2). In a full
@@ -82,6 +118,12 @@ impl Attestor {
         self.backend.as_ref()
     }
 
+    /// The public identifier of this attestor's AK — the bytes that appear as
+    /// `quote.ak_public`. An endorser signs an [`Endorsement`] over this.
+    pub fn ak_public(&self) -> Vec<u8> {
+        self.ak.id.clone()
+    }
+
     /// Capture this node's *current* measured state as a reference (e.g. to
     /// publish a known-good golden from a trusted node, or as a node's own
     /// expected baseline).
@@ -97,6 +139,7 @@ impl Attestor {
         challenge: &AttestationChallenge,
         loaded_policy_revision: u64,
         agent_measurement: Option<String>,
+        endorsement: Option<Endorsement>,
         tick: u64,
     ) -> anyhow::Result<AttestationEvidence> {
         let quote = self.backend.quote(
@@ -112,6 +155,7 @@ impl Attestor {
             agent_measurement,
             loaded_policy_revision,
             timestamp_tick: tick,
+            endorsement,
         })
     }
 
@@ -119,15 +163,34 @@ impl Attestor {
     /// PCRs against `reference` (the policy golden) rather than this node's
     /// own state. Produces a signable [`AttestationResult`] with explanatory
     /// reason codes (design §8.4).
+    #[allow(clippy::too_many_arguments)]
     pub fn verify(
         &self,
         challenge: &AttestationChallenge,
         evidence: &AttestationEvidence,
         reference: &ReferenceMeasurements,
+        anchors: &TrustAnchors,
         me: NodeId,
         tick: u64,
     ) -> AttestationResult {
         let mut reasons = Vec::new();
+
+        // Endorsement: with trust anchors configured, the quote's AK must
+        // carry a valid endorsement from a trusted endorser binding it to
+        // this subject — otherwise the AK is untrusted (design §8.4).
+        if !anchors.is_empty() {
+            let endorsed = match &evidence.endorsement {
+                Some(e) => {
+                    e.verify_signature()
+                        && e.binds(challenge.subject, &evidence.quote.ak_public)
+                        && anchors.trusts(&e.endorser)
+                }
+                None => false,
+            };
+            if !endorsed {
+                reasons.push(ReasonCode::AkUntrusted);
+            }
+        }
 
         // The evidence must answer *this* challenge for *this* subject.
         if evidence.subject != challenge.subject {
@@ -250,8 +313,8 @@ mod tests {
         let reference = golden(&attester);
 
         let ch = challenge(nid(1), 5);
-        let ev = attester.produce(&ch, 5, None, 1).unwrap();
-        let res = verifier.verify(&ch, &ev, &reference, nid(2), 2);
+        let ev = attester.produce(&ch, 5, None, None, 1).unwrap();
+        let res = verifier.verify(&ch, &ev, &reference, &TrustAnchors::new(), nid(2), 2);
         assert_eq!(res.result, Verdict::Pass, "reasons: {:?}", res.reason_codes);
     }
 
@@ -266,8 +329,8 @@ mod tests {
         attester.backend().pcr_extend("sha256", 0, &[0xAA; 32]).unwrap();
 
         let ch = challenge(nid(1), 5);
-        let ev = attester.produce(&ch, 5, None, 1).unwrap();
-        let res = verifier.verify(&ch, &ev, &reference, nid(2), 2);
+        let ev = attester.produce(&ch, 5, None, None, 1).unwrap();
+        let res = verifier.verify(&ch, &ev, &reference, &TrustAnchors::new(), nid(2), 2);
         assert_eq!(res.result, Verdict::Fail);
         assert!(res.reason_codes.contains(&ReasonCode::PcrMismatch));
     }
@@ -278,9 +341,9 @@ mod tests {
         let verifier = Attestor::new(Box::new(MockBackend::new())).unwrap();
 
         let ch = challenge(nid(1), 5);
-        let ev = attester.produce(&ch, 5, None, 1).unwrap();
+        let ev = attester.produce(&ch, 5, None, None, 1).unwrap();
         // No golden to compare against → cannot assert good.
-        let res = verifier.verify(&ch, &ev, &ReferenceMeasurements::default(), nid(2), 2);
+        let res = verifier.verify(&ch, &ev, &ReferenceMeasurements::default(), &TrustAnchors::new(), nid(2), 2);
         assert_eq!(res.result, Verdict::Inconclusive);
     }
 
@@ -291,10 +354,10 @@ mod tests {
         let reference = golden(&attester);
 
         let ch = challenge(nid(1), 5);
-        let mut ev = attester.produce(&ch, 5, None, 1).unwrap();
+        let mut ev = attester.produce(&ch, 5, None, None, 1).unwrap();
         // Evidence carries a different nonce than the challenge wanted.
         ev.challenge_nonce = vec![9, 9, 9];
-        let res = verifier.verify(&ch, &ev, &reference, nid(2), 2);
+        let res = verifier.verify(&ch, &ev, &reference, &TrustAnchors::new(), nid(2), 2);
         assert_eq!(res.result, Verdict::Fail);
         assert!(res.reason_codes.contains(&ReasonCode::NonceMismatch));
     }
@@ -307,9 +370,81 @@ mod tests {
 
         let ch = challenge(nid(1), 10);
         // Attester is on an older policy revision than the challenge wants.
-        let ev = attester.produce(&ch, 8, None, 1).unwrap();
-        let res = verifier.verify(&ch, &ev, &reference, nid(2), 2);
+        let ev = attester.produce(&ch, 8, None, None, 1).unwrap();
+        let res = verifier.verify(&ch, &ev, &reference, &TrustAnchors::new(), nid(2), 2);
         assert_eq!(res.result, Verdict::Warn);
         assert!(res.reason_codes.contains(&ReasonCode::PolicyRevisionStale));
+    }
+
+    use crate::crypto::MeshKeypair;
+
+    #[test]
+    fn endorsed_ak_passes_and_unendorsed_is_ak_untrusted() {
+        let attester = Attestor::new(Box::new(MockBackend::new())).unwrap();
+        let verifier = Attestor::new(Box::new(MockBackend::new())).unwrap();
+        let reference = golden(&attester);
+        let endorser = MeshKeypair::from_seed([200u8; 32]);
+        let anchors = TrustAnchors::with(endorser.public());
+        let ch = challenge(nid(1), 5);
+
+        // Endorsed (over the attester's actual AK) → trusted.
+        let endorsement = Endorsement::issue(&endorser, nid(1), attester.ak_public());
+        let ev = attester.produce(&ch, 5, None, Some(endorsement), 1).unwrap();
+        assert_eq!(verifier.verify(&ch, &ev, &reference, &anchors, nid(2), 2).result, Verdict::Pass);
+
+        // Unendorsed against an anchored verifier → AK_UNTRUSTED / Fail.
+        let bare = attester.produce(&ch, 5, None, None, 1).unwrap();
+        let res = verifier.verify(&ch, &bare, &reference, &anchors, nid(2), 2);
+        assert_eq!(res.result, Verdict::Fail);
+        assert!(res.reason_codes.contains(&ReasonCode::AkUntrusted));
+    }
+
+    #[test]
+    fn endorsement_from_an_untrusted_endorser_fails() {
+        let attester = Attestor::new(Box::new(MockBackend::new())).unwrap();
+        let verifier = Attestor::new(Box::new(MockBackend::new())).unwrap();
+        let reference = golden(&attester);
+        let trusted = MeshKeypair::from_seed([200u8; 32]);
+        let rogue = MeshKeypair::from_seed([201u8; 32]);
+        let anchors = TrustAnchors::with(trusted.public());
+        let ch = challenge(nid(1), 5);
+
+        let endorsement = Endorsement::issue(&rogue, nid(1), attester.ak_public());
+        let ev = attester.produce(&ch, 5, None, Some(endorsement), 1).unwrap();
+        let res = verifier.verify(&ch, &ev, &reference, &anchors, nid(2), 2);
+        assert_eq!(res.result, Verdict::Fail);
+        assert!(res.reason_codes.contains(&ReasonCode::AkUntrusted));
+    }
+
+    #[test]
+    fn endorsement_for_the_wrong_ak_fails() {
+        let attester = Attestor::new(Box::new(MockBackend::new())).unwrap();
+        let verifier = Attestor::new(Box::new(MockBackend::new())).unwrap();
+        let reference = golden(&attester);
+        let endorser = MeshKeypair::from_seed([200u8; 32]);
+        let anchors = TrustAnchors::with(endorser.public());
+        let ch = challenge(nid(1), 5);
+
+        // A validly-signed endorsement, but for a different AK.
+        let endorsement = Endorsement::issue(&endorser, nid(1), vec![9, 9, 9, 9]);
+        assert!(endorsement.verify_signature());
+        let ev = attester.produce(&ch, 5, None, Some(endorsement), 1).unwrap();
+        let res = verifier.verify(&ch, &ev, &reference, &anchors, nid(2), 2);
+        assert_eq!(res.result, Verdict::Fail);
+        assert!(res.reason_codes.contains(&ReasonCode::AkUntrusted));
+    }
+
+    #[test]
+    fn no_anchors_means_endorsement_not_required() {
+        let attester = Attestor::new(Box::new(MockBackend::new())).unwrap();
+        let verifier = Attestor::new(Box::new(MockBackend::new())).unwrap();
+        let reference = golden(&attester);
+        let ch = challenge(nid(1), 5);
+        // Empty anchors → a bare (unendorsed) quote still passes.
+        let bare = attester.produce(&ch, 5, None, None, 1).unwrap();
+        assert_eq!(
+            verifier.verify(&ch, &bare, &reference, &TrustAnchors::new(), nid(2), 2).result,
+            Verdict::Pass
+        );
     }
 }

@@ -74,7 +74,25 @@ Phase 0/2/3 acceptance, now over sockets.
 
 ---
 
-## Item 2 — AK/EK endorsement chain
+## Item 2 — AK/EK endorsement chain — FIRST CUT DONE
+
+Done (mesh enforcement layer): `Endorsement` (an endorser signs
+`(subject, ak_public)`), `TrustAnchors` (the trusted endorser set), and
+`AttestationEvidence.endorsement`. `Attestor::verify` now flags
+`AK_UNTRUSTED` (→ `Fail`) when anchors are configured and the quote's AK
+lacks a valid endorsement from a trusted endorser; `enrollment` refuses such
+a candidate (`AdmissionReason::AkUntrusted`). Empty anchors keep the
+early-phase self-certifying behaviour, so all prior tests pass. Tested
+(`tests/endorsement.rs` + units): an endorsed mesh converges trusted; an
+unendorsed node is `AK_UNTRUSTED`/suspicious cluster-wide; an unendorsed
+candidate is refused; untrusted-endorser and wrong-AK endorsements are
+rejected.
+
+Remaining (the hardware half): produce the endorsement from real hardware —
+map `tpm_core::vtpm_credential` (a hw-TPM signing a vTPM identity) so it
+covers the *per-quote AK* (credential activation / AK-in-statement), and
+validate a manufacturer **EK certificate** chain as the anchor. This is the
+deferred Step (b); the enforcement seam above is ready for it.
 
 **Goal.** Close the `AK_UNTRUSTED` gap: a verifier accepts a quote only if the
 attestation key chains to an **endorsed** key rooted in real hardware, so a

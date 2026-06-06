@@ -161,6 +161,7 @@ pub enum AdmissionVerdict {
 pub enum AdmissionReason {
     Ok,
     AttestationFailed,
+    AkUntrusted,
     DuplicateIdentity,
     RoleNotAuthorized,
     NonceMismatch,

@@ -19,9 +19,10 @@ use std::collections::{HashMap, HashSet};
 
 use tpm_core::backend::{MockBackend, TpmBackend};
 
-use crate::attest::{Attestor, ReferenceMeasurements};
+use crate::attest::{Attestor, ReferenceMeasurements, TrustAnchors};
 use crate::crypto::{MeshKeypair, MeshPublicKey};
 use crate::enrollment::{self, AdmissionOutcome, EnrollmentChallenge};
+use crate::types::Endorsement;
 use crate::id::{Epoch, MeshId, NodeId};
 use crate::membership::Membership;
 use crate::node::{Node, NodeConfig, WitnessSummary};
@@ -264,6 +265,24 @@ impl Mesh {
     /// The quarantine scope on `subject` as the founding authority sees it.
     pub fn quarantine_of(&self, subject: NodeId) -> Option<QuarantineScope> {
         self.node(self.nodes[0].id()).quarantine_of(subject)
+    }
+
+    // -- endorsement (design §8.1, AK trust roots) ----------------------
+
+    /// Make every node require endorsement from `anchors` (so unendorsed AKs
+    /// are flagged `AK_UNTRUSTED`).
+    pub fn set_anchors_all(&mut self, anchors: TrustAnchors) {
+        for n in &mut self.nodes {
+            n.set_trust_anchors(anchors.clone());
+        }
+    }
+
+    /// As `endorser`, endorse a node's AK and attach the endorsement to it, so
+    /// anchored verifiers accept its quotes.
+    pub fn endorse(&mut self, node_id: NodeId, endorser: &MeshKeypair) {
+        let ak = self.node(node_id).ak_public();
+        let endorsement = Endorsement::issue(endorser, node_id, ak);
+        self.node_mut(node_id).set_endorsement(endorsement);
     }
 
     /// Propose and vote on quarantining `subject` at `scope`. The subject's

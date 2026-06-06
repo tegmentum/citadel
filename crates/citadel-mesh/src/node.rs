@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 
-use crate::attest::{Attestor, ReferenceMeasurements};
+use crate::attest::{Attestor, ReferenceMeasurements, TrustAnchors};
 use crate::crypto::MeshKeypair;
 use crate::enrollment::{
     self, AdmissionReason, AdmissionVerdict, EnrollmentChallenge, EnrollmentClaim, EnrollmentVote,
@@ -26,7 +26,9 @@ use crate::id::{Epoch, MeshId, NodeId};
 use crate::membership::Membership;
 use crate::quarantine::{Ballot, QuarantineProposal, QuarantineScope, QuarantineVote};
 use crate::state::{LivenessState, TrustState};
-use crate::types::{AttestationChallenge, GossipEnvelope, GossipMessage, ReasonCode, Verdict};
+use crate::types::{
+    AttestationChallenge, Endorsement, GossipEnvelope, GossipMessage, ReasonCode, Verdict,
+};
 use crate::witness;
 use tpm_core::backend::TpmBackend;
 
@@ -138,6 +140,11 @@ pub struct Node {
     /// (the Reference Value Provider's output; design §8.1, §14.2). Empty
     /// until installed from policy — verification is then Inconclusive.
     peer_reference: ReferenceMeasurements,
+    /// Endorsers this node trusts to vouch for peers' AKs (design §8.1). Empty
+    /// = endorsement not required (the early-phase self-certifying AK).
+    anchors: TrustAnchors,
+    /// This node's own AK endorsement, attached to the evidence it produces.
+    endorsement: Option<Endorsement>,
     /// Latest attestation verdict per `subject → verifier` heard on the mesh
     /// (own + gossiped). Aggregated by assigned-witness quorum into trust.
     witness_reports: HashMap<NodeId, HashMap<NodeId, Verdict>>,
@@ -178,6 +185,8 @@ impl Node {
             owed: Vec::new(),
             issued_challenges: Vec::new(),
             peer_reference: ReferenceMeasurements::default(),
+            anchors: TrustAnchors::default(),
+            endorsement: None,
             witness_reports: HashMap::new(),
             last_challenge: HashMap::new(),
             probation_start: HashMap::new(),
@@ -204,6 +213,24 @@ impl Node {
     /// (from signed policy / a known-good node).
     pub fn set_peer_reference(&mut self, reference: ReferenceMeasurements) {
         self.peer_reference = reference;
+    }
+
+    /// Install the endorsers this node trusts to vouch for peers' AKs. With a
+    /// non-empty set, peers must present a valid endorsement or be flagged
+    /// `AK_UNTRUSTED`.
+    pub fn set_trust_anchors(&mut self, anchors: TrustAnchors) {
+        self.anchors = anchors;
+    }
+
+    /// Attach this node's own AK endorsement, included in the evidence it
+    /// produces so endorsement-requiring verifiers accept it.
+    pub fn set_endorsement(&mut self, endorsement: Endorsement) {
+        self.endorsement = Some(endorsement);
+    }
+
+    /// The public identifier of this node's AK, for an endorser to endorse.
+    pub fn ak_public(&self) -> Vec<u8> {
+        self.attestor.ak_public()
     }
 
     /// Capture this node's own current measured state over the configured
@@ -403,7 +430,7 @@ impl Node {
                 }
             }
             GossipMessage::AttestChallenge(ch) => self.on_challenge(ch, now),
-            GossipMessage::AttestEvidence(ev) => self.on_evidence(ev, now),
+            GossipMessage::AttestEvidence(ev) => self.on_evidence(*ev, now),
             GossipMessage::AttestResult(res) => {
                 // A witness's verdict: record it and re-aggregate the
                 // subject's trust from its assigned witnesses.
@@ -478,8 +505,11 @@ impl Node {
         if ch.subject != self.id || now > ch.expires_at_tick {
             return;
         }
-        if let Ok(ev) = self.attestor.produce(&ch, self.config.policy_revision, None, now) {
-            self.emit(ch.challenger, GossipMessage::AttestEvidence(ev));
+        if let Ok(ev) =
+            self.attestor
+                .produce(&ch, self.config.policy_revision, None, self.endorsement.clone(), now)
+        {
+            self.emit(ch.challenger, GossipMessage::AttestEvidence(Box::new(ev)));
         }
     }
 
@@ -495,7 +525,7 @@ impl Node {
         let ch = self.issued_challenges.remove(pos);
         let result = self
             .attestor
-            .verify(&ch, &ev, &self.peer_reference, self.id, now);
+            .verify(&ch, &ev, &self.peer_reference, &self.anchors, self.id, now);
         let verdict = result.result;
         // Our own direct observation — provisional until (and unless) the
         // assigned-witness quorum decides otherwise in `aggregate_trust`.
@@ -678,7 +708,13 @@ impl Node {
         };
         let evidence =
             self.attestor
-                .produce(&ach, self.config.policy_revision, Some(agent_version.to_string()), self.tick)?;
+                .produce(
+                    &ach,
+                    self.config.policy_revision,
+                    Some(agent_version.to_string()),
+                    self.endorsement.clone(),
+                    self.tick,
+                )?;
         Ok(EnrollmentClaim::create(
             &self.keypair,
             challenge.mesh_id.clone(),
@@ -740,7 +776,10 @@ impl Node {
         };
         let result = self
             .attestor
-            .verify(&ach, &claim.evidence, &self.peer_reference, self.id, tick);
+            .verify(&ach, &claim.evidence, &self.peer_reference, &self.anchors, self.id, tick);
+        if result.reason_codes.contains(&ReasonCode::AkUntrusted) {
+            return AdmissionReason::AkUntrusted;
+        }
         if result.result != Verdict::Pass {
             return AdmissionReason::AttestationFailed;
         }
@@ -841,7 +880,7 @@ impl Node {
             expires_at_tick: tick + 5,
         };
         self.attestor
-            .verify(&ach, &claim.evidence, &self.peer_reference, self.id, tick)
+            .verify(&ach, &claim.evidence, &self.peer_reference, &self.anchors, self.id, tick)
             .result
             == Verdict::Pass
     }

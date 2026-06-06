@@ -1833,7 +1833,7 @@ mod tests {
     /// endorsement remains a later, Phase 5 concern.)
     #[test]
     fn mesh_peer_attestation_over_real_vtpm() {
-        use citadel_mesh::attest::Attestor;
+        use citadel_mesh::attest::{Attestor, TrustAnchors};
         use citadel_mesh::types::{AttestationChallenge, ReasonCode, Verdict};
         use citadel_mesh::NodeId;
 
@@ -1866,8 +1866,8 @@ mod tests {
         };
 
         // Healthy: the peer accepts a fresh, nonce-bound real quote.
-        let evidence = attester.produce(&challenge, 1, None, 1).unwrap();
-        let healthy = verifier.verify(&challenge, &evidence, &reference, verifier_id, 2);
+        let evidence = attester.produce(&challenge, 1, None, None, 1).unwrap();
+        let healthy = verifier.verify(&challenge, &evidence, &reference, &TrustAnchors::default(), verifier_id, 2);
         assert_eq!(
             healthy.result,
             Verdict::Pass,
@@ -1878,8 +1878,8 @@ mod tests {
         // Divergent: extend a PCR on the attester's vTPM, so its next quote
         // no longer matches the golden — the peer flags it.
         attester.backend().pcr_extend("sha256", 0, &[0xAA; 32]).unwrap();
-        let tampered = attester.produce(&challenge, 1, None, 3).unwrap();
-        let flagged = verifier.verify(&challenge, &tampered, &reference, verifier_id, 4);
+        let tampered = attester.produce(&challenge, 1, None, None, 3).unwrap();
+        let flagged = verifier.verify(&challenge, &tampered, &reference, &TrustAnchors::default(), verifier_id, 4);
         assert_eq!(flagged.result, Verdict::Fail, "divergent state must fail");
         assert!(
             flagged.reason_codes.contains(&ReasonCode::PcrMismatch),
@@ -1894,7 +1894,7 @@ mod tests {
     /// `QUOTE_SIGNATURE_INVALID` rather than accepted.
     #[test]
     fn forged_quote_signature_is_rejected_on_real_vtpm() {
-        use citadel_mesh::attest::Attestor;
+        use citadel_mesh::attest::{Attestor, TrustAnchors};
         use citadel_mesh::types::{AttestationChallenge, ReasonCode, Verdict};
         use citadel_mesh::NodeId;
 
@@ -1919,13 +1919,13 @@ mod tests {
             expires_at_tick: 100,
         };
 
-        let mut evidence = attester.produce(&challenge, 1, None, 1).unwrap();
+        let mut evidence = attester.produce(&challenge, 1, None, None, 1).unwrap();
         // Corrupt the signature bytes (the attestation digest still binds the
         // honest PCRs+nonce, so only the crypto check can catch this).
         for b in evidence.quote.signature.iter_mut() {
             *b ^= 0xFF;
         }
-        let res = verifier.verify(&challenge, &evidence, &reference, NodeId([2u8; 32]), 2);
+        let res = verifier.verify(&challenge, &evidence, &reference, &TrustAnchors::default(), NodeId([2u8; 32]), 2);
         assert_eq!(res.result, Verdict::Fail, "a forged signature must fail");
         assert!(
             res.reason_codes.contains(&ReasonCode::QuoteSignatureInvalid),

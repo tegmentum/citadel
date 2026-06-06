@@ -76,8 +76,9 @@ pub enum GossipMessage {
     PingReqAck { target: NodeId, alive: bool },
     /// A witness/peer challenges the recipient to attest.
     AttestChallenge(AttestationChallenge),
-    /// The attester's evidence in response to a challenge.
-    AttestEvidence(AttestationEvidence),
+    /// The attester's evidence in response to a challenge (boxed: it carries
+    /// the quote + endorsement and dwarfs the SWIM control variants).
+    AttestEvidence(Box<AttestationEvidence>),
     /// A verifier's verdict over received evidence (gossiped).
     AttestResult(AttestationResult),
 }
@@ -106,6 +107,60 @@ pub struct AttestationEvidence {
     pub agent_measurement: Option<String>,
     pub loaded_policy_revision: u64,
     pub timestamp_tick: u64,
+    /// Endorsement chaining the quote's AK to a trust root (design §8.2
+    /// `ak_certificate_or_chain`). `None` when unendorsed — a verifier with
+    /// trust anchors then flags `AK_UNTRUSTED`.
+    #[serde(default)]
+    pub endorsement: Option<Endorsement>,
+}
+
+/// An endorsement binding a node's attestation key to a trust root: an
+/// **endorser** (a hardware EK / manufacturer / operator authority) signs
+/// `(subject, ak_public)`. A verifier accepts a quote only if its AK carries
+/// an endorsement from an endorser in its trust-anchor set — closing the
+/// `AK_UNTRUSTED` gap where the AK is otherwise taken from the quote itself.
+///
+/// For the vTPM this maps onto `tpm_core::vtpm_credential` (a hardware TPM
+/// signing a vTPM identity statement); binding the *per-quote AK* into that
+/// hardware-signed statement is the remaining hardware step.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Endorsement {
+    pub subject: NodeId,
+    pub ak_public: Vec<u8>,
+    pub endorser: MeshPublicKey,
+    pub signature: Signature,
+}
+
+impl Endorsement {
+    fn signing_bytes(subject: &NodeId, ak_public: &[u8], endorser: &MeshPublicKey) -> Vec<u8> {
+        serde_json::to_vec(&("ak-endorsement", subject, ak_public, endorser))
+            .expect("serializable")
+    }
+
+    /// As an endorser, sign an endorsement of `subject`'s `ak_public`.
+    pub fn issue(endorser_kp: &MeshKeypair, subject: NodeId, ak_public: Vec<u8>) -> Self {
+        let endorser = endorser_kp.public();
+        let signature = endorser_kp.sign(&Self::signing_bytes(&subject, &ak_public, &endorser));
+        Endorsement {
+            subject,
+            ak_public,
+            endorser,
+            signature,
+        }
+    }
+
+    /// Whether the endorser's signature over `(subject, ak_public)` is valid.
+    pub fn verify_signature(&self) -> bool {
+        self.endorser.verify(
+            &Self::signing_bytes(&self.subject, &self.ak_public, &self.endorser),
+            &self.signature,
+        )
+    }
+
+    /// Whether this endorsement is for exactly `subject` and `ak_public`.
+    pub fn binds(&self, subject: NodeId, ak_public: &[u8]) -> bool {
+        self.subject == subject && self.ak_public == ak_public
+    }
 }
 
 /// A verifier's signed verdict over a subject's evidence (design §8.4).
