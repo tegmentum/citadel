@@ -42,6 +42,20 @@ enum Cmd {
     Tick,
     Deliver(Box<GossipEnvelope>),
     Status(oneshot::Sender<Vec<MemberRow>>),
+    AppendEvent([u8; 32]),
+    LogState(oneshot::Sender<LogState>),
+}
+
+/// This node's log-shipping view: the root of its own measurement log and of
+/// each peer log it replicates (hex).
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct LogState {
+    pub own_root: String,
+    pub replicas: std::collections::HashMap<String, String>,
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 /// A row of the agent's membership view (for `GET /v1/mesh/status`).
@@ -85,6 +99,21 @@ impl AgentHandle {
             rx.await.unwrap_or_default()
         } else {
             Vec::new()
+        }
+    }
+
+    /// Append a measurement event to this node's own log.
+    pub async fn append_event(&self, payload_hash: [u8; 32]) {
+        let _ = self.cmd.send(Cmd::AppendEvent(payload_hash)).await;
+    }
+
+    /// Snapshot this node's own log root and the replica roots it holds.
+    pub async fn log_state(&self) -> LogState {
+        let (tx, rx) = oneshot::channel();
+        if self.cmd.send(Cmd::LogState(tx)).await.is_ok() {
+            rx.await.unwrap_or_default()
+        } else {
+            LogState::default()
         }
     }
 
@@ -134,6 +163,13 @@ pub fn spawn_node(
                 Cmd::Status(reply) => {
                     let _ = reply.send(snapshot(&node));
                 }
+                Cmd::AppendEvent(payload) => {
+                    node.append_event(payload);
+                    drain_outbox(&mut node, &transport);
+                }
+                Cmd::LogState(reply) => {
+                    let _ = reply.send(log_state(&node));
+                }
             }
         }
     });
@@ -160,6 +196,17 @@ fn snapshot(node: &Node) -> Vec<MemberRow> {
             trust: m.trust.as_str().to_string(),
         })
         .collect()
+}
+
+fn log_state(node: &Node) -> LogState {
+    LogState {
+        own_root: hex(&node.own_log_root()),
+        replicas: node
+            .replica_roots()
+            .into_iter()
+            .map(|(id, root)| (id.to_hex(), hex(&root)))
+            .collect(),
+    }
 }
 
 // -- in-process transport ----------------------------------------------------

@@ -316,6 +316,11 @@ impl Node {
         self.replicas.get(&peer).map(|l| l.root())
     }
 
+    /// The LtHash root of every peer log this node currently replicates.
+    pub fn replica_roots(&self) -> Vec<(NodeId, Vec<u8>)> {
+        self.replicas.iter().map(|(id, log)| (*id, log.root())).collect()
+    }
+
     /// Periodically advertise this node's per-window log digests to peers.
     fn advertise_logs(&mut self, now: u64) {
         if self.config.log_advertise_interval == 0 || self.own_log.is_empty() {

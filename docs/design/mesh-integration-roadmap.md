@@ -157,9 +157,11 @@ flagged. **Now wired into the mesh**: nodes gossip per-window digests, keep
 **replicas of peers' logs** in sync by pulling only divergent windows, and a
 node forking a sealed window is detected and set `Suspicious`
 (`tests/logship_mesh.rs`: a log replicates to every peer; incremental events
-stay in sync; an equivocator is distrusted). Remaining: erasure-code the
-transferred records into the Phase-4 store, sub-window binary-search pulls,
-and running it over the live HTTP transport.
+stay in sync; an equivocator is distrusted). **Also validated over the live
+HTTP transport** (`citadel-agent/tests/logship_http.rs`: events appended to
+one agent replicate to its peers over real sockets — the agent actor gained
+`append_event` / `log_state`). Remaining: erasure-code the transferred
+records into the Phase-4 store and sub-window binary-search pulls.
 
 **Goal.** Implement `distributed-log-shipping-lthash.md`: nodes accumulate
 their measurement log into windowed LtHash roots, advertise them, and
