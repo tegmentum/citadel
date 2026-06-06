@@ -94,6 +94,18 @@ pub enum GossipMessage {
     LogPull { boot_id: u64, lo: u64, hi: u64 },
     /// The advertiser returns its records to a replica.
     LogRecords(Vec<crate::logship::EventRecord>),
+    /// Origin → holder: store this erasure-coded shard of a sealed log window
+    /// (bounded-fan-out durable evidence; design §12.4). Boxed: it carries a
+    /// shard payload.
+    LogFragmentStore(Box<crate::logship::LogFragment>),
+    /// Holder → origin: a signed acknowledgement that a shard is stored, so
+    /// the origin can track the window's durability.
+    LogFragmentAck(Box<crate::evidence::EvidenceReceipt>),
+    /// Recoverer → holder: please return your stored shard(s) for `record_id`.
+    LogFragmentRequest { record_id: [u8; 32] },
+    /// Holder → recoverer: a stored shard, returned for reconstruction. Boxed
+    /// for the same reason as [`Self::LogFragmentStore`].
+    LogFragmentReply(Box<crate::logship::LogFragment>),
 }
 
 // -- Attestation records (design §8) --

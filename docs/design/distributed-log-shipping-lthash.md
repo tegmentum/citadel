@@ -8,11 +8,16 @@ Status: Implemented & wired into the mesh — `crates/citadel-mesh`
 node that forks a sealed window (`CHECKPOINT_EQUIVOCATION`) by setting it
 `Suspicious`. Deterministically tested (unit + in-mesh integration: a log
 replicates to every peer, incremental events stay in sync, a forking node is
-detected and distrusted). Remaining: erasure-code the transferred records
-into the Phase-4 evidence store, sub-window (binary-search) pulls over the
-network instead of whole-window, and reconciliation over the live
-`citadel-agent` HTTP transport (the in-process harness exercises the same
-node logic today).
+detected and distrusted). Sealed windows are additionally **erasure-coded and
+scattered to a bounded set of HRW-assigned holders** (Reed–Solomon, default
+3-of-5), tracked for durability via signed holder receipts, and reconstructed
+over the network from the survivors after holder loss — bounded fan-out
+durable evidence rather than a full replica on every peer
+(`evidence_replication` path; `logship_erasure.rs`). Holder selection honours
+the `RestrictEvidenceHolding` quarantine scope. Live reconciliation already
+binary-searches sub-windows over the network (pulling only the divergent
+leaf ranges). Remaining: running it all over the live `citadel-agent` HTTP
+transport (the in-process harness exercises the same node logic today).
 Project: Citadel
 Audience: Architecture, Security, Platform, Runtime Engineers
 Related: `distributed-attestation-mesh.md`, `measured-merkle-anchoring.md`, `mma-upgrade.md`
@@ -410,13 +415,23 @@ violation.
 
 ## 14. Log Preservation
 
-All events are replicated. Replication factor `R = 5`. Example:
+A sealed window is preserved on a **bounded set of holders** chosen by
+rendezvous (HRW) hashing keyed on the window's content id — not full-replicated
+to every peer. Example (record id `→` its 5 assigned holders):
 
 ```text
-Node 17
-    ↓ stored on
-17, 24, 102, 488, 932
+window(node 17, boot 3, win 0)
+    ↓ record_id = BLAKE3(encode_records(window))
+    ↓ stored on (HRW)
+24, 102, 488, 932, 17
 ```
+
+**Implemented** (`node.rs` `ship_sealed_windows` / `eligible_holders`, gated by
+`evidence_replication`): on seal, the origin erasure-codes the window and emits
+one shard per holder via `LogFragmentStore`; each holder returns a signed
+`EvidenceReceipt` (`LogFragmentAck`) so the origin tracks live durability
+(`window_durability`). Holder selection skips nodes quarantined at/above
+`RestrictEvidenceHolding`.
 
 ---
 
@@ -424,6 +439,16 @@ Node 17
 
 Cold storage uses Reed-Solomon. Example: 10 data shards + 4 parity shards
 survives 4 shard losses without reconstruction failure.
+
+**Implemented** (`erasure.rs`; wired in `node.rs`): each sealed window is split
+into `data + parity` shards (configurable via `evidence_data_shards` /
+`evidence_parity_shards`, default 3-of-5). Any `data` shards reconstruct it, so
+the window survives losing up to `parity` holders. A recoverer rebuilds over
+the network by requesting shards from the assigned holders
+(`request_reconstruction` → `LogFragmentRequest`/`LogFragmentReply`),
+reconstructing once a threshold returns and verifying the result against the
+record id before folding the records into its replica
+(`logship_erasure.rs`).
 
 ---
 

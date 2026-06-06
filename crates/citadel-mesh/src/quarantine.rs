@@ -55,6 +55,12 @@ impl QuarantineScope {
         self.severity() >= QuarantineScope::RestrictMeshVoting.severity()
     }
 
+    /// At/above this scope the node may no longer be assigned evidence
+    /// fragments to hold — it is excluded from the durable-evidence holder set.
+    pub fn restricts_evidence_holding(&self) -> bool {
+        self.severity() >= QuarantineScope::RestrictEvidenceHolding.severity()
+    }
+
     /// At/above this scope the node is effectively isolated from the mesh.
     pub fn isolates(&self) -> bool {
         self.severity() >= QuarantineScope::NetworkIsolate.severity()

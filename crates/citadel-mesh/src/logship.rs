@@ -18,6 +18,7 @@ use lthash_rs::{LtHash, LtHash16};
 use serde::{Deserialize, Serialize};
 use sha3::Shake256;
 
+use crate::erasure::EvidenceFragment;
 use crate::id::NodeId;
 
 /// The LtHash variant used for measurement-log accumulators.
@@ -134,6 +135,20 @@ impl EventLog {
             })
             .collect()
     }
+}
+
+/// One erasure-coded shard of a *sealed* log window, in flight to (or stored
+/// by) a holder. It carries the window's identity alongside the shard so a
+/// holder can place it and a reconstructor can route the rebuilt records back
+/// to the right replica — the unit of the bounded-fan-out durable evidence
+/// vault (design §12.4). The shard's `record_id` is `BLAKE3` of the window's
+/// [`encode_records`] payload, so it is also the reconstruction key.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogFragment {
+    pub node_id: NodeId,
+    pub boot_id: u64,
+    pub window_id: u64,
+    pub fragment: EvidenceFragment,
 }
 
 /// Canonical bytes of a set of records — used to preserve a window as a

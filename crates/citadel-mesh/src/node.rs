@@ -15,15 +15,17 @@
 //! keeps the node pure and synchronous so the in-process [`crate::harness`]
 //! can run a whole mesh deterministically.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::attest::{Attestor, ReferenceMeasurements, TrustAnchors};
 use crate::crypto::MeshKeypair;
 use crate::enrollment::{
     self, AdmissionReason, AdmissionVerdict, EnrollmentChallenge, EnrollmentClaim, EnrollmentVote,
 };
+use crate::erasure::{self, ErasureScheme, EvidenceFragment};
+use crate::evidence::{self, assign_holders, EvidenceReceipt};
 use crate::id::{Epoch, MeshId, NodeId};
-use crate::logship::{DigestAdvertisement, EventLog, EventRecord};
+use crate::logship::{decode_records, encode_records, DigestAdvertisement, EventLog, EventRecord, LogFragment};
 use crate::membership::Membership;
 use crate::quarantine::{Ballot, QuarantineProposal, QuarantineScope, QuarantineVote};
 use crate::state::{LivenessState, TrustState};
@@ -67,6 +69,17 @@ pub struct NodeConfig {
     /// Ticks between advertising this node's log digests (`0` disables
     /// log-shipping).
     pub log_advertise_interval: u64,
+    /// Ship sealed log windows as erasure-coded fragments to a bounded set of
+    /// assigned holders (durable evidence vault; design §12.4) rather than
+    /// relying on full-window replication to every peer. `false` keeps the
+    /// legacy full-replica behaviour.
+    pub evidence_replication: bool,
+    /// Reed–Solomon data shards: any this many of `data + parity` fragments
+    /// reconstruct a window.
+    pub evidence_data_shards: usize,
+    /// Reed–Solomon parity shards: holder losses tolerated before a window
+    /// becomes unreconstructable.
+    pub evidence_parity_shards: usize,
 }
 
 impl Default for NodeConfig {
@@ -86,6 +99,9 @@ impl Default for NodeConfig {
             boot_id: 1,
             log_window_size: 16,
             log_advertise_interval: 5,
+            evidence_replication: false,
+            evidence_data_shards: 3,
+            evidence_parity_shards: 2,
         }
     }
 }
@@ -180,7 +196,26 @@ pub struct Node {
     /// Count of own-log records this node has served to replicas (the bytes
     /// the binary search actually transferred) — for observability/tests.
     log_records_served: usize,
+    /// As an **origin**: sealed windows this node has erasure-shipped, keyed by
+    /// `(boot, window)`, tracking which fragment indices holders have
+    /// acknowledged (the live durability of each window).
+    shipped_windows: HashMap<(u64, u64), ShippedWindow>,
+    /// As a **holder**: shards this node stores for peers' sealed windows,
+    /// keyed by `record_id` then fragment index.
+    held_fragments: HashMap<[u8; 32], HashMap<usize, LogFragment>>,
+    /// As a **recoverer**: shards gathered for an in-flight reconstruction.
+    gathering: HashMap<[u8; 32], HashMap<usize, LogFragment>>,
+    /// Records this node has successfully reconstructed from holders.
+    recovered: HashSet<[u8; 32]>,
     outbox: Vec<Addressed>,
+}
+
+/// An origin's record of one sealed window it erasure-shipped to holders.
+struct ShippedWindow {
+    record_id: [u8; 32],
+    scheme: ErasureScheme,
+    /// Fragment indices a holder has acknowledged storing.
+    acked: HashSet<usize>,
 }
 
 /// Sub-range width at which network reconciliation stops bisecting and pulls
@@ -225,6 +260,10 @@ impl Node {
             sealed_roots: HashMap::new(),
             last_log_advert: 0,
             log_records_served: 0,
+            shipped_windows: HashMap::new(),
+            held_fragments: HashMap::new(),
+            gathering: HashMap::new(),
+            recovered: HashSet::new(),
             outbox: Vec::new(),
         }
     }
@@ -405,6 +444,233 @@ impl Node {
         self.log_records_served
     }
 
+    // -- durable evidence: erasure-coded sealed windows (design §12.4) ---
+
+    /// The erasure scheme this node uses for durable window evidence.
+    fn evidence_scheme(&self) -> Option<ErasureScheme> {
+        ErasureScheme::new(self.config.evidence_data_shards, self.config.evidence_parity_shards).ok()
+    }
+
+    /// The fragment **holders** for `record_id`: a bounded set chosen by
+    /// rendezvous hashing over the current roster, *excluding* any node
+    /// quarantined at/above `RestrictEvidenceHolding`. Deterministic, so every
+    /// node (origin or recoverer) computes the same set.
+    fn eligible_holders(&self, record_id: [u8; 32]) -> Vec<NodeId> {
+        let Some(scheme) = self.evidence_scheme() else {
+            return Vec::new();
+        };
+        let roster: Vec<NodeId> = self
+            .membership
+            .iter()
+            .map(|m| m.node_id)
+            .filter(|n| {
+                !self
+                    .quarantine
+                    .get(n)
+                    .is_some_and(|s| s.restricts_evidence_holding())
+            })
+            .collect();
+        assign_holders(record_id, &roster, scheme.total())
+    }
+
+    /// On each tick (when `evidence_replication` is on), erasure-code any newly
+    /// *sealed* own-log window and scatter its shards to the assigned holders —
+    /// bounded fan-out durable evidence, not a full copy on every peer.
+    fn ship_sealed_windows(&mut self, _now: u64) {
+        if !self.config.evidence_replication || self.own_log.is_empty() {
+            return;
+        }
+        let Some(scheme) = self.evidence_scheme() else {
+            return;
+        };
+        let size = self.config.log_window_size;
+        let boot = self.config.boot_id;
+        let max_seq = self.own_log.max_sequence();
+        for window_id in self.own_log.windows() {
+            let key = (boot, window_id);
+            if self.shipped_windows.contains_key(&key) {
+                continue; // already shipped — sealed windows are immutable
+            }
+            let lo = window_id.saturating_mul(size);
+            let hi = lo.saturating_add(size);
+            if max_seq + 1 < hi {
+                continue; // window not yet sealed
+            }
+            let records = self.own_log.records_in(lo, hi);
+            if records.is_empty() {
+                continue;
+            }
+            let payload = encode_records(&records);
+            let record_id = evidence::payload_hash(&payload);
+            let Ok(fragments) = scheme.encode(record_id, &payload) else {
+                continue;
+            };
+            let holders = self.eligible_holders(record_id);
+            if holders.is_empty() {
+                continue;
+            }
+            self.shipped_windows.insert(
+                key,
+                ShippedWindow {
+                    record_id,
+                    scheme,
+                    acked: HashSet::new(),
+                },
+            );
+            // One shard per holder, round-robin if there are fewer holders
+            // than shards (a small mesh); distinct holders in a large one.
+            for fragment in fragments {
+                let holder = holders[fragment.index % holders.len()];
+                let lf = LogFragment {
+                    node_id: self.id,
+                    boot_id: boot,
+                    window_id,
+                    fragment,
+                };
+                if holder == self.id {
+                    // We're an assigned holder: store locally and self-ack.
+                    let index = lf.fragment.index;
+                    self.held_fragments.entry(record_id).or_default().insert(index, lf);
+                    if let Some(sw) = self.shipped_windows.get_mut(&key) {
+                        sw.acked.insert(index);
+                    }
+                } else {
+                    self.emit(holder, GossipMessage::LogFragmentStore(Box::new(lf)));
+                }
+            }
+        }
+    }
+
+    /// As a holder: store a shard and return a signed receipt to the origin.
+    fn on_fragment_store(&mut self, sender: NodeId, lf: LogFragment) {
+        if !lf.fragment.integrity_ok() {
+            return; // corrupted in flight — drop it
+        }
+        let receipt = EvidenceReceipt::sign(&self.keypair, self.id, &lf.fragment, self.tick);
+        let record_id = lf.fragment.record_id;
+        let index = lf.fragment.index;
+        self.held_fragments.entry(record_id).or_default().insert(index, lf);
+        self.emit(sender, GossipMessage::LogFragmentAck(Box::new(receipt)));
+    }
+
+    /// As an origin: record a holder's acknowledgement, advancing the
+    /// window's tracked durability.
+    fn on_fragment_ack(&mut self, sender: NodeId, receipt: EvidenceReceipt) {
+        let Some(member) = self.membership.get(&sender) else {
+            return;
+        };
+        if receipt.holder != sender || !receipt.verify(&member.public_key) {
+            return; // forged or misattributed receipt
+        }
+        for sw in self.shipped_windows.values_mut() {
+            if sw.record_id == receipt.record_id {
+                sw.acked.insert(receipt.fragment_index);
+                break;
+            }
+        }
+    }
+
+    /// As a holder: answer a reconstruction request with the shard(s) we hold.
+    fn on_fragment_request(&mut self, sender: NodeId, record_id: [u8; 32]) {
+        let frags: Vec<LogFragment> = self
+            .held_fragments
+            .get(&record_id)
+            .map(|m| m.values().cloned().collect())
+            .unwrap_or_default();
+        for lf in frags {
+            self.emit(sender, GossipMessage::LogFragmentReply(Box::new(lf)));
+        }
+    }
+
+    /// As a recoverer: gather a returned shard and, once a reconstruction
+    /// threshold is in hand, rebuild the window — verifying it against the
+    /// record id — and fold the records into our replica of the origin's log.
+    fn on_fragment_reply(&mut self, _sender: NodeId, lf: LogFragment) {
+        if !lf.fragment.integrity_ok() {
+            return;
+        }
+        let record_id = lf.fragment.record_id;
+        if self.recovered.contains(&record_id) {
+            return; // already rebuilt
+        }
+        let threshold = lf.fragment.threshold;
+        let node_id = lf.node_id;
+        {
+            let entry = self.gathering.entry(record_id).or_default();
+            entry.insert(lf.fragment.index, lf);
+            if entry.len() < threshold {
+                return; // not enough shards yet
+            }
+        }
+        let frags: Vec<EvidenceFragment> = self
+            .gathering
+            .get(&record_id)
+            .map(|m| m.values().map(|f| f.fragment.clone()).collect())
+            .unwrap_or_default();
+        if let Ok(payload) = erasure::reconstruct(&frags) {
+            if evidence::payload_hash(&payload) == record_id {
+                if let Ok(records) = decode_records(&payload) {
+                    let replica = self
+                        .replicas
+                        .entry(node_id)
+                        .or_insert_with(|| EventLog::new(self.config.log_window_size));
+                    for r in records {
+                        replica.append(r);
+                    }
+                    self.recovered.insert(record_id);
+                }
+            }
+        }
+        self.gathering.remove(&record_id);
+    }
+
+    /// Begin reconstructing a window's records from its holders: ask each
+    /// assigned holder for its shard (seeded with any shard we hold). The
+    /// rebuilt records land in our replica once a threshold of shards returns.
+    pub fn request_reconstruction(&mut self, record_id: [u8; 32]) {
+        let holders = self.eligible_holders(record_id);
+        let mine: Vec<LogFragment> = self
+            .held_fragments
+            .get(&record_id)
+            .map(|m| m.values().cloned().collect())
+            .unwrap_or_default();
+        for lf in mine {
+            self.on_fragment_reply(self.id, lf);
+        }
+        for holder in holders {
+            self.emit(holder, GossipMessage::LogFragmentRequest { record_id });
+        }
+    }
+
+    /// The record id of a sealed window this node erasure-shipped, if any.
+    pub fn shipped_record_id(&self, boot_id: u64, window_id: u64) -> Option<[u8; 32]> {
+        self.shipped_windows.get(&(boot_id, window_id)).map(|w| w.record_id)
+    }
+
+    /// A shipped window's durability: acknowledged shards / reconstruction
+    /// threshold (`>= 1.0` means it can still be rebuilt). `None` if not
+    /// shipped from this node.
+    pub fn window_durability(&self, boot_id: u64, window_id: u64) -> Option<f64> {
+        self.shipped_windows
+            .get(&(boot_id, window_id))
+            .map(|w| erasure::durability(w.acked.len(), w.scheme.data))
+    }
+
+    /// Number of distinct shards this node stores for `record_id` (as a holder).
+    pub fn held_fragment_count(&self, record_id: [u8; 32]) -> usize {
+        self.held_fragments.get(&record_id).map(|m| m.len()).unwrap_or(0)
+    }
+
+    /// Whether this node has reconstructed `record_id` from holders.
+    pub fn has_recovered(&self, record_id: [u8; 32]) -> bool {
+        self.recovered.contains(&record_id)
+    }
+
+    /// The assigned fragment holders for `record_id` (deterministic; ops/tests).
+    pub fn fragment_holders(&self, record_id: [u8; 32]) -> Vec<NodeId> {
+        self.eligible_holders(record_id)
+    }
+
     pub fn current_tick(&self) -> u64 {
         self.tick
     }
@@ -426,6 +692,7 @@ impl Node {
         self.drop_stale_owed(now);
         self.run_witness_duties(now);
         self.advertise_logs(now);
+        self.ship_sealed_windows(now);
 
         // Start a new direct probe on the interval if idle.
         if self.pending.is_none() && now.is_multiple_of(self.config.probe_interval) {
@@ -621,6 +888,12 @@ impl Node {
                         .append(r);
                 }
             }
+            GossipMessage::LogFragmentStore(lf) => self.on_fragment_store(env.sender, *lf),
+            GossipMessage::LogFragmentAck(receipt) => self.on_fragment_ack(env.sender, *receipt),
+            GossipMessage::LogFragmentRequest { record_id } => {
+                self.on_fragment_request(env.sender, record_id)
+            }
+            GossipMessage::LogFragmentReply(lf) => self.on_fragment_reply(env.sender, *lf),
         }
     }
 
