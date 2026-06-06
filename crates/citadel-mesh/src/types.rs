@@ -106,6 +106,11 @@ pub enum GossipMessage {
     /// Holder → recoverer: a stored shard, returned for reconstruction. Boxed
     /// for the same reason as [`Self::LogFragmentStore`].
     LogFragmentReply(Box<crate::logship::LogFragment>),
+    /// Origin → holder: this shard's placement has been superseded (the window
+    /// migrated to a new policy and re-shipped elsewhere); drop it. Sent only
+    /// after the new placement is durable, so evidence never dips below the
+    /// reconstruction threshold during migration.
+    LogFragmentDrop { record_id: [u8; 32] },
 }
 
 // -- Attestation records (design §8) --

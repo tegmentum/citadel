@@ -277,6 +277,15 @@ impl Mesh {
         }
     }
 
+    /// Retarget durable-evidence placement across every node: the policy for
+    /// new windows (`offbox`) plus the per-node migration concurrency. Models
+    /// an operator flipping the placement policy on a live mesh.
+    pub fn set_evidence_placement_all(&mut self, offbox: bool, migration_rate: usize) {
+        for n in &mut self.nodes {
+            n.set_evidence_placement(offbox, migration_rate);
+        }
+    }
+
     /// As `endorser`, endorse a node's AK and attach the endorsement to it, so
     /// anchored verifiers accept its quotes.
     pub fn endorse(&mut self, node_id: NodeId, endorser: &MeshKeypair) {

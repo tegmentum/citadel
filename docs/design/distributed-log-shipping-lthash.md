@@ -14,7 +14,12 @@ scattered to a bounded set of HRW-assigned holders** (Reed–Solomon, default
 over the network from the survivors after holder loss — bounded fan-out
 durable evidence rather than a full replica on every peer
 (`evidence_replication` path; `logship_erasure.rs`). Holder selection honours
-the `RestrictEvidenceHolding` quarantine scope. Live reconciliation already
+the `RestrictEvidenceHolding` quarantine scope. Placement is **self-describing**
+(each window records the `FullRoster`/`OffBox` policy its holders were chosen
+under), so the policy can be flipped on a live mesh and old windows still find
+their holders; a rate-limited **migration** (re-ship then drop) bleeds existing
+windows to a new policy without dropping below the reconstruction threshold
+(`logship_migration.rs`). Live reconciliation already
 binary-searches sub-windows over the network (pulling only the divergent
 leaf ranges). Remaining: running it all over the live `citadel-agent` HTTP
 transport (the in-process harness exercises the same node logic today).
@@ -432,6 +437,34 @@ one shard per holder via `LogFragmentStore`; each holder returns a signed
 `EvidenceReceipt` (`LogFragmentAck`) so the origin tracks live durability
 (`window_durability`). Holder selection skips nodes quarantined at/above
 `RestrictEvidenceHolding`.
+
+### Placement policy (self-describing)
+
+Holders are chosen under a `PlacementPolicy` recorded *on the window* (a
+`WindowPlacement`: record id, subject, policy):
+
+* **`FullRoster`** — holders drawn from the whole roster; the subject may hold
+  a shard of its own evidence.
+* **`OffBox`** — the subject is excluded from its own holder set, so no node is
+  ever custodian of evidence about itself (separation of custody).
+
+Because each window carries the policy it was placed under, a recoverer replays
+the *exact* holder set the origin used (`request_reconstruction(&placement)`),
+even after the mesh's current policy changes — which is what makes flipping the
+policy safe on a live mesh. Trade-off: `OffBox` removes one candidate, so in a
+mesh whose roster is no larger than the shard count it can force shards to
+double up on holders (weaker fault tolerance); at scale the subject is rarely
+its own holder anyway, so the two policies converge. Set `evidence_offbox`.
+
+### Migration
+
+Flipping `evidence_offbox` only changes *new* windows; already-shipped windows
+migrate gradually under `evidence_migration_rate` (windows in flight at once;
+`0` disables). Each migration is **re-ship then drop**: the window is
+erasure-shipped to its new holder set first and only once that new placement is
+durable does the origin tell the now-unassigned holders to drop their shards
+(`LogFragmentDrop`) — so a window is never below its reconstruction threshold
+mid-migration (`migrate_windows` / `cut_over`; `logship_migration.rs`).
 
 ---
 

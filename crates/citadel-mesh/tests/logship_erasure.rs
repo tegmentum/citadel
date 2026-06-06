@@ -38,15 +38,15 @@ fn mesh_of(n: u8) -> (Mesh, Vec<NodeId>) {
 }
 
 /// Seal window 0 on `origin` (12 events over a window of 8) and let the mesh
-/// ship the shards. Returns the window's record id.
-fn seal_and_ship(mesh: &mut Mesh, origin: NodeId) -> [u8; 32] {
+/// ship the shards. Returns the window's self-describing placement handle.
+fn seal_and_ship(mesh: &mut Mesh, origin: NodeId) -> citadel_mesh::node::WindowPlacement {
     for i in 0..12u64 {
         mesh.node_mut(origin)
             .append_event(payload_hash(format!("event-{i}").as_bytes()));
     }
     mesh.run(10);
     mesh.node(origin)
-        .shipped_record_id(1, 0)
+        .window_placement(1, 0)
         .expect("window 0 should have been sealed and shipped")
 }
 
@@ -54,11 +54,12 @@ fn seal_and_ship(mesh: &mut Mesh, origin: NodeId) -> [u8; 32] {
 fn a_sealed_window_ships_to_bounded_holders_not_every_peer() {
     let (mut mesh, ids) = mesh_of(6);
     let origin = ids[0];
-    let record_id = seal_and_ship(&mut mesh, origin);
+    let placement = seal_and_ship(&mut mesh, origin);
+    let record_id = placement.record_id;
 
     // The window scattered to exactly `total` (= 5) distinct holders, chosen
     // by HRW — a bounded set, not all 6 peers.
-    let holders = mesh.node(origin).fragment_holders(record_id);
+    let holders = mesh.node(origin).fragment_holders(&placement);
     assert_eq!(holders.len(), 5, "5-shard scheme → 5 holders");
 
     // Every assigned holder stores a shard; the one non-holder stores none and
@@ -85,9 +86,10 @@ fn a_sealed_window_ships_to_bounded_holders_not_every_peer() {
 fn evidence_survives_losing_parity_holders_and_rebuilds_over_the_network() {
     let (mut mesh, ids) = mesh_of(6);
     let origin = ids[0];
-    let record_id = seal_and_ship(&mut mesh, origin);
+    let placement = seal_and_ship(&mut mesh, origin);
+    let record_id = placement.record_id;
 
-    let holders = mesh.node(origin).fragment_holders(record_id);
+    let holders = mesh.node(origin).fragment_holders(&placement);
     // A recoverer that is a holder (so it has one shard already), and two
     // *other* holders to destroy — losing `parity` = 2 of the 5 shards.
     let recoverer = holders[0];
@@ -98,7 +100,7 @@ fn evidence_survives_losing_parity_holders_and_rebuilds_over_the_network() {
     }
 
     // The recoverer rebuilds the window from the 3 surviving shards.
-    mesh.node_mut(recoverer).request_reconstruction(record_id);
+    mesh.node_mut(recoverer).request_reconstruction(&placement);
     mesh.run(10);
     assert!(
         mesh.node(recoverer).has_recovered(record_id),
@@ -126,9 +128,10 @@ fn evidence_survives_losing_parity_holders_and_rebuilds_over_the_network() {
 fn losing_more_than_parity_holders_makes_a_window_unrecoverable() {
     let (mut mesh, ids) = mesh_of(6);
     let origin = ids[0];
-    let record_id = seal_and_ship(&mut mesh, origin);
+    let placement = seal_and_ship(&mut mesh, origin);
+    let record_id = placement.record_id;
 
-    let holders = mesh.node(origin).fragment_holders(record_id);
+    let holders = mesh.node(origin).fragment_holders(&placement);
     // The non-holder is a clean recoverer (holds no shard of its own).
     let recoverer = *ids.iter().find(|id| !holders.contains(id)).expect("one non-holder");
     // Destroy 3 of 5 holders — only 2 shards remain, below the threshold of 3.
@@ -136,7 +139,7 @@ fn losing_more_than_parity_holders_makes_a_window_unrecoverable() {
         mesh.kill(dead);
     }
 
-    mesh.node_mut(recoverer).request_reconstruction(record_id);
+    mesh.node_mut(recoverer).request_reconstruction(&placement);
     mesh.run(10);
     assert!(
         !mesh.node(recoverer).has_recovered(record_id),
@@ -150,7 +153,8 @@ fn the_record_id_commits_to_the_sealed_window_contents() {
     // of the encoded window — so a holder/recoverer can verify what it stores.
     let (mut mesh, ids) = mesh_of(6);
     let origin = ids[0];
-    let record_id = seal_and_ship(&mut mesh, origin);
+    let placement = seal_and_ship(&mut mesh, origin);
+    let record_id = placement.record_id;
 
     let mut log = citadel_mesh::logship::EventLog::new(8);
     for i in 0..8u64 {

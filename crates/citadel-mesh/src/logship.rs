@@ -137,17 +137,35 @@ impl EventLog {
     }
 }
 
+/// Which roster a window's fragment **holders** were chosen from — recorded
+/// on the window so the placement is *self-describing*: a recoverer (or
+/// auditor) replays the exact rule the origin used, instead of guessing from
+/// its own current config. This is what makes flipping the placement policy
+/// safe on a live mesh — old windows keep finding their holders.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum PlacementPolicy {
+    /// Holders chosen from the whole roster — the subject may hold a shard of
+    /// its own evidence.
+    FullRoster,
+    /// The subject is excluded from its own holder set — no node is ever a
+    /// custodian of evidence about itself (separation of custody).
+    OffBox,
+}
+
 /// One erasure-coded shard of a *sealed* log window, in flight to (or stored
-/// by) a holder. It carries the window's identity alongside the shard so a
-/// holder can place it and a reconstructor can route the rebuilt records back
-/// to the right replica — the unit of the bounded-fan-out durable evidence
-/// vault (design §12.4). The shard's `record_id` is `BLAKE3` of the window's
-/// [`encode_records`] payload, so it is also the reconstruction key.
+/// by) a holder. It carries the window's identity and placement policy
+/// alongside the shard so a holder can place it and a reconstructor can route
+/// the rebuilt records back to the right replica — the unit of the
+/// bounded-fan-out durable evidence vault (design §12.4). The shard's
+/// `record_id` is `BLAKE3` of the window's [`encode_records`] payload (so it
+/// is also the reconstruction key) and is independent of placement.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogFragment {
     pub node_id: NodeId,
     pub boot_id: u64,
     pub window_id: u64,
+    pub policy: PlacementPolicy,
     pub fragment: EvidenceFragment,
 }
 

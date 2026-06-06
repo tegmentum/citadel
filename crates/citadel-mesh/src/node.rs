@@ -25,7 +25,10 @@ use crate::enrollment::{
 use crate::erasure::{self, ErasureScheme, EvidenceFragment};
 use crate::evidence::{self, assign_holders, EvidenceReceipt};
 use crate::id::{Epoch, MeshId, NodeId};
-use crate::logship::{decode_records, encode_records, DigestAdvertisement, EventLog, EventRecord, LogFragment};
+use crate::logship::{
+    decode_records, encode_records, DigestAdvertisement, EventLog, EventRecord, LogFragment,
+    PlacementPolicy,
+};
 use crate::membership::Membership;
 use crate::quarantine::{Ballot, QuarantineProposal, QuarantineScope, QuarantineVote};
 use crate::state::{LivenessState, TrustState};
@@ -80,6 +83,16 @@ pub struct NodeConfig {
     /// Reed–Solomon parity shards: holder losses tolerated before a window
     /// becomes unreconstructable.
     pub evidence_parity_shards: usize,
+    /// Target placement policy for *newly* sealed windows: when `true`, the
+    /// subject is excluded from its own holder set (separation of custody).
+    /// Already-shipped windows keep their recorded policy until migration moves
+    /// them (see [`evidence_migration_rate`](Self::evidence_migration_rate)).
+    pub evidence_offbox: bool,
+    /// How many windows may be migrating to the target policy at once (`0`
+    /// disables migration). A small value bleeds old-policy windows over to the
+    /// new policy slowly, never dropping a window below its reconstruction
+    /// threshold (re-ship to the new holders, then drop the old ones).
+    pub evidence_migration_rate: usize,
 }
 
 impl Default for NodeConfig {
@@ -102,6 +115,8 @@ impl Default for NodeConfig {
             evidence_replication: false,
             evidence_data_shards: 3,
             evidence_parity_shards: 2,
+            evidence_offbox: false,
+            evidence_migration_rate: 0,
         }
     }
 }
@@ -214,8 +229,36 @@ pub struct Node {
 struct ShippedWindow {
     record_id: [u8; 32],
     scheme: ErasureScheme,
-    /// Fragment indices a holder has acknowledged storing.
+    /// The committed placement policy this window's holders were chosen under.
+    policy: PlacementPolicy,
+    /// The committed holders (shard `i` lives on `holders[i % holders.len()]`).
+    holders: Vec<NodeId>,
+    /// Fragment indices a committed holder has acknowledged storing.
     acked: HashSet<usize>,
+    /// An in-flight migration to a new placement policy, if any.
+    migrating: Option<Migration>,
+}
+
+/// An in-flight re-placement of a window onto a new holder set under a new
+/// policy. The window stays reconstructable from its *committed* holders until
+/// the new placement is durable, at which point we cut over and drop the old.
+struct Migration {
+    to: PlacementPolicy,
+    holders: Vec<NodeId>,
+    acked: HashSet<usize>,
+}
+
+/// A self-describing handle to a sealed window's durable placement — the
+/// record id, its subject, and the policy its holders were chosen under.
+/// Carrying the policy is what lets a recoverer replay the exact holder set
+/// even after the mesh's *current* policy has changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowPlacement {
+    pub record_id: [u8; 32],
+    pub subject: NodeId,
+    pub boot_id: u64,
+    pub window_id: u64,
+    pub policy: PlacementPolicy,
 }
 
 /// Sub-range width at which network reconciliation stops bisecting and pulls
@@ -451,11 +494,26 @@ impl Node {
         ErasureScheme::new(self.config.evidence_data_shards, self.config.evidence_parity_shards).ok()
     }
 
-    /// The fragment **holders** for `record_id`: a bounded set chosen by
+    /// The placement policy applied to *newly* sealed windows (from config).
+    fn target_policy(&self) -> PlacementPolicy {
+        if self.config.evidence_offbox {
+            PlacementPolicy::OffBox
+        } else {
+            PlacementPolicy::FullRoster
+        }
+    }
+
+    /// The fragment **holders** for a window: a bounded set chosen by
     /// rendezvous hashing over the current roster, *excluding* any node
-    /// quarantined at/above `RestrictEvidenceHolding`. Deterministic, so every
-    /// node (origin or recoverer) computes the same set.
-    fn eligible_holders(&self, record_id: [u8; 32]) -> Vec<NodeId> {
+    /// quarantined at/above `RestrictEvidenceHolding`, and — under
+    /// [`PlacementPolicy::OffBox`] — the `subject` itself. Deterministic given
+    /// the same roster and policy, so origin and recoverer agree.
+    fn eligible_holders(
+        &self,
+        record_id: [u8; 32],
+        subject: NodeId,
+        policy: PlacementPolicy,
+    ) -> Vec<NodeId> {
         let Some(scheme) = self.evidence_scheme() else {
             return Vec::new();
         };
@@ -469,8 +527,58 @@ impl Node {
                     .get(n)
                     .is_some_and(|s| s.restricts_evidence_holding())
             })
+            .filter(|n| policy == PlacementPolicy::FullRoster || *n != subject)
             .collect();
         assign_holders(record_id, &roster, scheme.total())
+    }
+
+    /// Scatter one window's shards across `holders` under `policy`, storing
+    /// locally (and counting an ack) when this node is itself a holder. Returns
+    /// the set of indices self-acked this way.
+    fn scatter(
+        &mut self,
+        record_id: [u8; 32],
+        boot: u64,
+        window_id: u64,
+        policy: PlacementPolicy,
+        holders: &[NodeId],
+        fragments: Vec<EvidenceFragment>,
+    ) -> HashSet<usize> {
+        let mut self_acked = HashSet::new();
+        for fragment in fragments {
+            let holder = holders[fragment.index % holders.len()];
+            let lf = LogFragment {
+                node_id: self.id,
+                boot_id: boot,
+                window_id,
+                policy,
+                fragment,
+            };
+            if holder == self.id {
+                let index = lf.fragment.index;
+                self.held_fragments.entry(record_id).or_default().insert(index, lf);
+                self_acked.insert(index);
+            } else {
+                self.emit(holder, GossipMessage::LogFragmentStore(Box::new(lf)));
+            }
+        }
+        self_acked
+    }
+
+    /// Erasure-code the records of one (sealed) own-log window into shards.
+    fn encode_window(&self, window_id: u64) -> Option<([u8; 32], Vec<EvidenceFragment>)> {
+        let scheme = self.evidence_scheme()?;
+        let size = self.config.log_window_size;
+        let lo = window_id.saturating_mul(size);
+        let hi = lo.saturating_add(size);
+        let records = self.own_log.records_in(lo, hi);
+        if records.is_empty() {
+            return None;
+        }
+        let payload = encode_records(&records);
+        let record_id = evidence::payload_hash(&payload);
+        let fragments = scheme.encode(record_id, &payload).ok()?;
+        Some((record_id, fragments))
     }
 
     /// On each tick (when `evidence_replication` is on), erasure-code any newly
@@ -485,27 +593,21 @@ impl Node {
         };
         let size = self.config.log_window_size;
         let boot = self.config.boot_id;
+        let policy = self.target_policy();
         let max_seq = self.own_log.max_sequence();
         for window_id in self.own_log.windows() {
             let key = (boot, window_id);
             if self.shipped_windows.contains_key(&key) {
                 continue; // already shipped — sealed windows are immutable
             }
-            let lo = window_id.saturating_mul(size);
-            let hi = lo.saturating_add(size);
+            let hi = window_id.saturating_mul(size).saturating_add(size);
             if max_seq + 1 < hi {
                 continue; // window not yet sealed
             }
-            let records = self.own_log.records_in(lo, hi);
-            if records.is_empty() {
-                continue;
-            }
-            let payload = encode_records(&records);
-            let record_id = evidence::payload_hash(&payload);
-            let Ok(fragments) = scheme.encode(record_id, &payload) else {
+            let Some((record_id, fragments)) = self.encode_window(window_id) else {
                 continue;
             };
-            let holders = self.eligible_holders(record_id);
+            let holders = self.eligible_holders(record_id, self.id, policy);
             if holders.is_empty() {
                 continue;
             }
@@ -514,29 +616,111 @@ impl Node {
                 ShippedWindow {
                     record_id,
                     scheme,
+                    policy,
+                    holders: holders.clone(),
                     acked: HashSet::new(),
+                    migrating: None,
                 },
             );
             // One shard per holder, round-robin if there are fewer holders
             // than shards (a small mesh); distinct holders in a large one.
-            for fragment in fragments {
-                let holder = holders[fragment.index % holders.len()];
-                let lf = LogFragment {
-                    node_id: self.id,
-                    boot_id: boot,
-                    window_id,
-                    fragment,
-                };
-                if holder == self.id {
-                    // We're an assigned holder: store locally and self-ack.
-                    let index = lf.fragment.index;
-                    self.held_fragments.entry(record_id).or_default().insert(index, lf);
-                    if let Some(sw) = self.shipped_windows.get_mut(&key) {
-                        sw.acked.insert(index);
-                    }
-                } else {
-                    self.emit(holder, GossipMessage::LogFragmentStore(Box::new(lf)));
-                }
+            let self_acked = self.scatter(record_id, boot, window_id, policy, &holders, fragments);
+            if let Some(sw) = self.shipped_windows.get_mut(&key) {
+                sw.acked.extend(self_acked);
+            }
+        }
+    }
+
+    /// Bleed already-shipped windows from their committed policy over to the
+    /// current target policy, a few at a time. A window is **re-shipped** to
+    /// its new holder set first; only once that new placement is durable do we
+    /// cut over and tell the old-only holders to drop their shards — so a
+    /// window is never below its reconstruction threshold mid-migration.
+    fn migrate_windows(&mut self, _now: u64) {
+        if !self.config.evidence_replication || self.config.evidence_migration_rate == 0 {
+            return;
+        }
+        let target = self.target_policy();
+        let boot = self.config.boot_id;
+
+        // 1) Cut over any in-flight migration whose new placement is durable.
+        let ready: Vec<(u64, u64)> = self
+            .shipped_windows
+            .iter()
+            .filter(|(_, w)| {
+                w.migrating
+                    .as_ref()
+                    .is_some_and(|m| m.acked.len() >= w.scheme.data)
+            })
+            .map(|(k, _)| *k)
+            .collect();
+        for key in ready {
+            self.cut_over(key);
+        }
+
+        // 2) Start new migrations, bounded so at most `rate` run concurrently.
+        let in_flight = self
+            .shipped_windows
+            .values()
+            .filter(|w| w.migrating.is_some())
+            .count();
+        let budget = self.config.evidence_migration_rate.saturating_sub(in_flight);
+        if budget == 0 {
+            return;
+        }
+        let to_start: Vec<(u64, u64, [u8; 32])> = self
+            .shipped_windows
+            .iter()
+            .filter(|(_, w)| w.migrating.is_none() && w.policy != target)
+            .map(|(k, w)| (k.0, k.1, w.record_id))
+            .take(budget)
+            .collect();
+        for (boot_id, window_id, record_id) in to_start {
+            let new_holders = self.eligible_holders(record_id, self.id, target);
+            let Some((rid, fragments)) = self.encode_window(window_id) else {
+                continue;
+            };
+            debug_assert_eq!(rid, record_id, "window content is immutable once sealed");
+            if new_holders.is_empty() {
+                continue;
+            }
+            // Re-ship to the new holders (does not touch the committed copy).
+            let self_acked =
+                self.scatter(record_id, boot_id, window_id, target, &new_holders, fragments);
+            if let Some(sw) = self.shipped_windows.get_mut(&(boot, window_id)) {
+                sw.migrating = Some(Migration {
+                    to: target,
+                    holders: new_holders,
+                    acked: self_acked,
+                });
+            }
+        }
+    }
+
+    /// Commit a window's in-flight migration: adopt the new holders/policy and
+    /// tell holders that are no longer assigned to drop their (now stale) shard.
+    fn cut_over(&mut self, key: (u64, u64)) {
+        let Some(sw) = self.shipped_windows.get_mut(&key) else {
+            return;
+        };
+        let Some(migration) = sw.migrating.take() else {
+            return;
+        };
+        let record_id = sw.record_id;
+        let old_holders = std::mem::take(&mut sw.holders);
+        sw.policy = migration.to;
+        sw.holders = migration.holders;
+        sw.acked = migration.acked;
+        let new_set: HashSet<NodeId> = sw.holders.iter().copied().collect();
+        let drop_targets: Vec<NodeId> = old_holders
+            .into_iter()
+            .filter(|h| !new_set.contains(h))
+            .collect();
+        for target in drop_targets {
+            if target == self.id {
+                self.held_fragments.remove(&record_id);
+            } else {
+                self.emit(target, GossipMessage::LogFragmentDrop { record_id });
             }
         }
     }
@@ -553,8 +737,14 @@ impl Node {
         self.emit(sender, GossipMessage::LogFragmentAck(Box::new(receipt)));
     }
 
-    /// As an origin: record a holder's acknowledgement, advancing the
-    /// window's tracked durability.
+    /// As a holder: drop shards for a record whose placement was superseded by
+    /// a completed migration.
+    fn on_fragment_drop(&mut self, record_id: [u8; 32]) {
+        self.held_fragments.remove(&record_id);
+    }
+
+    /// As an origin: record a holder's acknowledgement, advancing the tracked
+    /// durability of the committed placement and/or an in-flight migration.
     fn on_fragment_ack(&mut self, sender: NodeId, receipt: EvidenceReceipt) {
         let Some(member) = self.membership.get(&sender) else {
             return;
@@ -564,7 +754,14 @@ impl Node {
         }
         for sw in self.shipped_windows.values_mut() {
             if sw.record_id == receipt.record_id {
-                sw.acked.insert(receipt.fragment_index);
+                if sw.holders.contains(&sender) {
+                    sw.acked.insert(receipt.fragment_index);
+                }
+                if let Some(m) = &mut sw.migrating {
+                    if m.holders.contains(&sender) {
+                        m.acked.insert(receipt.fragment_index);
+                    }
+                }
                 break;
             }
         }
@@ -624,22 +821,42 @@ impl Node {
         self.gathering.remove(&record_id);
     }
 
-    /// Begin reconstructing a window's records from its holders: ask each
-    /// assigned holder for its shard (seeded with any shard we hold). The
+    /// Begin reconstructing a window's records from its holders, using the
+    /// window's *self-describing* [`WindowPlacement`] to find them — so a
+    /// recoverer replays the exact holder set the origin used, regardless of
+    /// the mesh's current policy. Seeded with any shard we already hold; the
     /// rebuilt records land in our replica once a threshold of shards returns.
-    pub fn request_reconstruction(&mut self, record_id: [u8; 32]) {
-        let holders = self.eligible_holders(record_id);
+    pub fn request_reconstruction(&mut self, placement: &WindowPlacement) {
+        let holders =
+            self.eligible_holders(placement.record_id, placement.subject, placement.policy);
         let mine: Vec<LogFragment> = self
             .held_fragments
-            .get(&record_id)
+            .get(&placement.record_id)
             .map(|m| m.values().cloned().collect())
             .unwrap_or_default();
         for lf in mine {
             self.on_fragment_reply(self.id, lf);
         }
         for holder in holders {
-            self.emit(holder, GossipMessage::LogFragmentRequest { record_id });
+            self.emit(
+                holder,
+                GossipMessage::LogFragmentRequest {
+                    record_id: placement.record_id,
+                },
+            );
         }
+    }
+
+    /// The self-describing placement of a sealed window this node shipped, if
+    /// any — the handle a recoverer/auditor needs to find its holders.
+    pub fn window_placement(&self, boot_id: u64, window_id: u64) -> Option<WindowPlacement> {
+        self.shipped_windows.get(&(boot_id, window_id)).map(|w| WindowPlacement {
+            record_id: w.record_id,
+            subject: self.id,
+            boot_id,
+            window_id,
+            policy: w.policy,
+        })
     }
 
     /// The record id of a sealed window this node erasure-shipped, if any.
@@ -656,6 +873,13 @@ impl Node {
             .map(|w| erasure::durability(w.acked.len(), w.scheme.data))
     }
 
+    /// Whether a shipped window is currently migrating to a new placement.
+    pub fn is_migrating(&self, boot_id: u64, window_id: u64) -> bool {
+        self.shipped_windows
+            .get(&(boot_id, window_id))
+            .is_some_and(|w| w.migrating.is_some())
+    }
+
     /// Number of distinct shards this node stores for `record_id` (as a holder).
     pub fn held_fragment_count(&self, record_id: [u8; 32]) -> usize {
         self.held_fragments.get(&record_id).map(|m| m.len()).unwrap_or(0)
@@ -666,9 +890,19 @@ impl Node {
         self.recovered.contains(&record_id)
     }
 
-    /// The assigned fragment holders for `record_id` (deterministic; ops/tests).
-    pub fn fragment_holders(&self, record_id: [u8; 32]) -> Vec<NodeId> {
-        self.eligible_holders(record_id)
+    /// The assigned fragment holders for a window placement (deterministic;
+    /// ops/tests).
+    pub fn fragment_holders(&self, placement: &WindowPlacement) -> Vec<NodeId> {
+        self.eligible_holders(placement.record_id, placement.subject, placement.policy)
+    }
+
+    /// Retarget durable-evidence placement at runtime: set the policy applied
+    /// to new windows and how many already-shipped windows may migrate at once.
+    /// This is the safe "flip the flag" entry point — old windows keep their
+    /// recorded policy and are reconstructable throughout the migration.
+    pub fn set_evidence_placement(&mut self, offbox: bool, migration_rate: usize) {
+        self.config.evidence_offbox = offbox;
+        self.config.evidence_migration_rate = migration_rate;
     }
 
     pub fn current_tick(&self) -> u64 {
@@ -693,6 +927,7 @@ impl Node {
         self.run_witness_duties(now);
         self.advertise_logs(now);
         self.ship_sealed_windows(now);
+        self.migrate_windows(now);
 
         // Start a new direct probe on the interval if idle.
         if self.pending.is_none() && now.is_multiple_of(self.config.probe_interval) {
@@ -894,6 +1129,7 @@ impl Node {
                 self.on_fragment_request(env.sender, record_id)
             }
             GossipMessage::LogFragmentReply(lf) => self.on_fragment_reply(env.sender, *lf),
+            GossipMessage::LogFragmentDrop { record_id } => self.on_fragment_drop(record_id),
         }
     }
 
