@@ -88,11 +88,24 @@ unendorsed node is `AK_UNTRUSTED`/suspicious cluster-wide; an unendorsed
 candidate is refused; untrusted-endorser and wrong-AK endorsements are
 rejected.
 
-Remaining (the hardware half): produce the endorsement from real hardware —
-map `tpm_core::vtpm_credential` (a hw-TPM signing a vTPM identity) so it
-covers the *per-quote AK* (credential activation / AK-in-statement), and
-validate a manufacturer **EK certificate** chain as the anchor. This is the
-deferred Step (b); the enforcement seam above is ready for it.
+Step (b) progress (the hardware half):
+- **EK certificate chain validation** — `EndorserCert` (an issuer certifies an
+  endorser key) + `Endorsement.chain`; `Attestor::verify` now accepts an
+  endorser that is anchored directly *or* whose chain links up to an anchored
+  **root**, so a deployment anchors a manufacturer/CA root instead of every
+  endorser key. Tested: a root-anchored EK→root chain is accepted; a chain to
+  an un-anchored root is rejected.
+- **Covering the per-quote AK** — `tpm_core::vtpm_credential::VtpmIdentity`
+  gained an optional `ak_public` (`with_ak`) so a hardware credential's signed
+  statement binds the AK that signs quotes; absent it is byte-identical to v1
+  (existing credentials/signatures unaffected). Tested: binding changes the
+  signed bytes and round-trips.
+
+Still remaining: the live hardware path — have the hw-TPM actually sign the
+AK-bound statement during `vtpm provision` (needs `tpm-hw`), and verify a
+real TPM/ECDSA endorser signature (and a manufacturer EK X.509 cert) inside
+the mesh verifier. The data model, chain validation, and AK binding are now
+in place for that wiring.
 
 **Goal.** Close the `AK_UNTRUSTED` gap: a verifier accepts a quote only if the
 attestation key chains to an **endorsed** key rooted in real hardware, so a

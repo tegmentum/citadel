@@ -123,12 +123,21 @@ pub struct AttestationEvidence {
 /// For the vTPM this maps onto `tpm_core::vtpm_credential` (a hardware TPM
 /// signing a vTPM identity statement); binding the *per-quote AK* into that
 /// hardware-signed statement is the remaining hardware step.
+///
+/// The optional `chain` lets the endorser itself be certified by a higher
+/// authority (an EK certified by a manufacturer/CA root): a verifier can then
+/// anchor the **root** instead of every individual endorser (design §3 EK
+/// chain). With no chain, the endorser must be anchored directly.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Endorsement {
     pub subject: NodeId,
     pub ak_public: Vec<u8>,
     pub endorser: MeshPublicKey,
     pub signature: Signature,
+    /// Certificates from the endorser upward toward a trust root (the EK
+    /// certificate chain). Empty when the endorser is anchored directly.
+    #[serde(default)]
+    pub chain: Vec<EndorserCert>,
 }
 
 impl Endorsement {
@@ -139,6 +148,17 @@ impl Endorsement {
 
     /// As an endorser, sign an endorsement of `subject`'s `ak_public`.
     pub fn issue(endorser_kp: &MeshKeypair, subject: NodeId, ak_public: Vec<u8>) -> Self {
+        Self::issue_chained(endorser_kp, subject, ak_public, Vec::new())
+    }
+
+    /// Issue an endorsement that carries the endorser's certificate `chain`
+    /// up toward a trust root.
+    pub fn issue_chained(
+        endorser_kp: &MeshKeypair,
+        subject: NodeId,
+        ak_public: Vec<u8>,
+        chain: Vec<EndorserCert>,
+    ) -> Self {
         let endorser = endorser_kp.public();
         let signature = endorser_kp.sign(&Self::signing_bytes(&subject, &ak_public, &endorser));
         Endorsement {
@@ -146,6 +166,7 @@ impl Endorsement {
             ak_public,
             endorser,
             signature,
+            chain,
         }
     }
 
@@ -160,6 +181,60 @@ impl Endorsement {
     /// Whether this endorsement is for exactly `subject` and `ak_public`.
     pub fn binds(&self, subject: NodeId, ak_public: &[u8]) -> bool {
         self.subject == subject && self.ak_public == ak_public
+    }
+
+    /// Whether the endorser is trusted under `is_anchored`: either anchored
+    /// directly, or its [`chain`](Self::chain) links (each cert valid and
+    /// connecting) up to an anchored issuer (an EK→…→root chain).
+    pub fn endorser_chains_to_anchor(&self, is_anchored: impl Fn(&MeshPublicKey) -> bool) -> bool {
+        if is_anchored(&self.endorser) {
+            return true;
+        }
+        let mut current = self.endorser;
+        for cert in &self.chain {
+            if cert.endorser != current || !cert.verify() {
+                return false;
+            }
+            if is_anchored(&cert.issuer) {
+                return true;
+            }
+            current = cert.issuer;
+        }
+        false
+    }
+}
+
+/// A certificate binding an endorser's public key to an issuing authority —
+/// one link of an EK certificate chain. The `issuer` signs the `endorser`
+/// key; a verifier follows such links from a leaf endorser up to a root it
+/// anchors.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EndorserCert {
+    pub endorser: MeshPublicKey,
+    pub issuer: MeshPublicKey,
+    pub signature: Signature,
+}
+
+impl EndorserCert {
+    fn signing_bytes(endorser: &MeshPublicKey, issuer: &MeshPublicKey) -> Vec<u8> {
+        serde_json::to_vec(&("endorser-cert", endorser, issuer)).expect("serializable")
+    }
+
+    /// As `issuer`, certify `endorser`'s key.
+    pub fn issue(issuer_kp: &MeshKeypair, endorser: MeshPublicKey) -> Self {
+        let issuer = issuer_kp.public();
+        let signature = issuer_kp.sign(&Self::signing_bytes(&endorser, &issuer));
+        EndorserCert {
+            endorser,
+            issuer,
+            signature,
+        }
+    }
+
+    /// Whether the issuer's signature over the endorser key is valid.
+    pub fn verify(&self) -> bool {
+        self.issuer
+            .verify(&Self::signing_bytes(&self.endorser, &self.issuer), &self.signature)
     }
 }
 

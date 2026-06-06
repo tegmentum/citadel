@@ -87,11 +87,11 @@ pub fn provision(
 
     let backend = open_hw_backend(hw_backend_name)?;
 
-    let identity = VtpmIdentity {
-        instance_id: Uuid::new_v4().to_string(),
-        created_at: Utc::now().to_rfc3339(),
-        vtpm_label: label.unwrap_or("vtpm-wasm").to_string(),
-    };
+    let identity = VtpmIdentity::new(
+        Uuid::new_v4().to_string(),
+        Utc::now().to_rfc3339(),
+        label.unwrap_or("vtpm-wasm").to_string(),
+    );
     let signed_data = identity.to_signed_bytes()?;
 
     let ak_handle = backend.create_ak(Algorithm::EccP256)?;

@@ -9,6 +9,7 @@ use citadel_mesh::enrollment::AdmissionReason;
 use citadel_mesh::harness::Mesh;
 use citadel_mesh::node::NodeConfig;
 use citadel_mesh::state::TrustState;
+use citadel_mesh::types::{EndorserCert, Endorsement};
 use citadel_mesh::NodeId;
 
 fn endorser() -> MeshKeypair {
@@ -100,4 +101,71 @@ fn enrollment_refuses_an_unendorsed_candidate() {
         outcome.reject_reasons
     );
     assert_eq!(mesh.trust_of(ids[0], candidate), None);
+}
+
+#[test]
+fn endorser_certified_by_a_trusted_root_is_accepted() {
+    // The verifier anchors a manufacturer/CA ROOT, not each per-node
+    // endorser. An EK (endorser) is certified by that root, and each node's
+    // endorsement carries the EK→root certificate chain.
+    let root = MeshKeypair::from_seed([250u8; 32]);
+    let ek = MeshKeypair::from_seed([200u8; 32]);
+    let ek_cert = EndorserCert::issue(&root, ek.public());
+    assert!(ek_cert.verify());
+
+    let mut mesh = Mesh::new("prod-east-1");
+    let ids: Vec<NodeId> = (1..=6).map(|s| mesh.add_node(s, "worker", cfg())).collect();
+    mesh.wire_full_membership();
+    mesh.set_anchors_all(TrustAnchors::with(root.public()));
+
+    for &id in &ids {
+        let ak = mesh.node(id).ak_public();
+        let endorsement = Endorsement::issue_chained(&ek, id, ak, vec![ek_cert.clone()]);
+        mesh.node_mut(id).set_endorsement(endorsement);
+    }
+    mesh.run(12);
+
+    for &o in &ids {
+        for &s in &ids {
+            if o != s {
+                assert_eq!(
+                    mesh.trust_of(o, s),
+                    Some(TrustState::Trusted),
+                    "{o} should trust {s} via the EK→root chain"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn endorser_chained_to_an_untrusted_root_is_rejected() {
+    // EK is certified by a root the verifier does NOT anchor.
+    let real_root = MeshKeypair::from_seed([250u8; 32]);
+    let rogue_root = MeshKeypair::from_seed([249u8; 32]);
+    let ek = MeshKeypair::from_seed([200u8; 32]);
+    let bogus_cert = EndorserCert::issue(&rogue_root, ek.public());
+
+    let mut mesh = Mesh::new("prod-east-1");
+    let ids: Vec<NodeId> = (1..=6).map(|s| mesh.add_node(s, "worker", cfg())).collect();
+    mesh.wire_full_membership();
+    // Anchor only the real root.
+    mesh.set_anchors_all(TrustAnchors::with(real_root.public()));
+
+    let victim = ids[3];
+    // Every node's EK chains only to the rogue (un-anchored) root, so no AK
+    // is trusted — verify the victim is distrusted (the EK→root link doesn't
+    // reach an anchored root).
+    for &id in &ids {
+        let ak = mesh.node(id).ak_public();
+        let endorsement = Endorsement::issue_chained(&ek, id, ak, vec![bogus_cert.clone()]);
+        mesh.node_mut(id).set_endorsement(endorsement);
+    }
+    mesh.run(15);
+
+    assert_eq!(
+        mesh.trust_of(ids[0], victim),
+        Some(TrustState::Suspicious),
+        "an endorser chained to an untrusted root must not be accepted"
+    );
 }

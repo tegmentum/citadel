@@ -183,7 +183,9 @@ impl Attestor {
                 Some(e) => {
                     e.verify_signature()
                         && e.binds(challenge.subject, &evidence.quote.ak_public)
-                        && anchors.trusts(&e.endorser)
+                        // The endorser must be anchored directly, or its EK
+                        // certificate chain must reach an anchored root.
+                        && e.endorser_chains_to_anchor(|k| anchors.trusts(k))
                 }
                 None => false,
             };
