@@ -295,6 +295,12 @@ pub enum Verdict {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ReasonCode {
     PcrMismatch,
+    /// Quoted state matches no accepted reference source — likely tamper or an
+    /// unauthorized state (design `measured-state-transitions.md`).
+    ReferenceUnknown,
+    /// Quoted state matches only a *retired* reference source — a node on a
+    /// previously-good but withdrawn (unpatched) state.
+    ReferenceRetired,
     QuoteSignatureInvalid,
     NonceMismatch,
     AkUntrusted,

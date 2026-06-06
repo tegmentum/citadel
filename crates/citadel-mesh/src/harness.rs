@@ -27,6 +27,7 @@ use crate::id::{Epoch, MeshId, NodeId};
 use crate::membership::Membership;
 use crate::node::{Node, NodeConfig, WitnessSummary};
 use crate::quarantine::{self, QuarantineDecision, QuarantineScope};
+use crate::reference::Validity;
 use crate::state::{LivenessState, TrustState};
 use crate::witness;
 
@@ -334,6 +335,42 @@ impl Mesh {
             }
         }
         decision
+    }
+
+    // -- measured-state transitions (design `measured-state-transitions.md`) --
+
+    /// Simulate a measured-state change on a node — a kernel/firmware upgrade
+    /// reboots into a new measured state by extending a PCR. Whether this is
+    /// later treated as an authorized upgrade or as tamper depends only on
+    /// whether the new digest is authorized via [`Self::authorize_reference_all`].
+    pub fn measured_state_change(&self, node: NodeId, bank: &str, index: u32, data: &[u8]) {
+        self.node(node)
+            .attestor()
+            .backend()
+            .pcr_extend(bank, index, data)
+            .expect("pcr extend");
+    }
+
+    /// A node's current digest for a PCR index — what an RVP would measure from
+    /// the approved build in order to authorize it.
+    pub fn pcr_digest(&self, node: NodeId, bank: &str, index: u32) -> Vec<u8> {
+        self.node(node)
+            .attestor()
+            .backend()
+            .pcr_read(bank, &[index])
+            .expect("pcr read")
+            .into_iter()
+            .next()
+            .expect("one value")
+            .digest
+    }
+
+    /// Authorize a new accepted measured state across every verifier (a signed
+    /// reference update in production; applied directly here for Phase 1).
+    pub fn authorize_reference_all(&mut self, index: u32, digest: Vec<u8>, validity: Validity) {
+        for n in &mut self.nodes {
+            n.accept_reference(index, digest.clone(), validity.clone());
+        }
     }
 
     /// Simulate remediation (a clean reimage): replace `subject`'s backend so

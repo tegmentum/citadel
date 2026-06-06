@@ -15,9 +15,10 @@
 //! keeps the node pure and synchronous so the in-process [`crate::harness`]
 //! can run a whole mesh deterministically.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::attest::{Attestor, ReferenceMeasurements, TrustAnchors};
+use crate::reference::{AcceptedReferences, ReferenceMatchPolicy, RetiredAction, Validity};
 use crate::crypto::MeshKeypair;
 use crate::enrollment::{
     self, AdmissionReason, AdmissionVerdict, EnrollmentChallenge, EnrollmentClaim, EnrollmentVote,
@@ -93,6 +94,13 @@ pub struct NodeConfig {
     /// new policy slowly, never dropping a window below its reconstruction
     /// threshold (re-ship to the new holders, then drop the old ones).
     pub evidence_migration_rate: usize,
+    /// How a verifier matches quoted PCRs against accepted reference sources:
+    /// `Flexible` (standalone per-index + coupled profiles) or `CoupledOnly`
+    /// (`measured-state-transitions.md`).
+    pub reference_match: ReferenceMatchPolicy,
+    /// How a verifier treats a quote that matches only a *retired* reference
+    /// (an unpatched node): `Fail`, `Warn`, or `GraceThenFail`.
+    pub retired_action: RetiredAction,
 }
 
 impl Default for NodeConfig {
@@ -117,6 +125,8 @@ impl Default for NodeConfig {
             evidence_parity_shards: 2,
             evidence_offbox: false,
             evidence_migration_rate: 0,
+            reference_match: ReferenceMatchPolicy::Flexible,
+            retired_action: RetiredAction::Fail,
         }
     }
 }
@@ -178,10 +188,12 @@ pub struct Node {
     pending: Option<PendingProbe>,
     owed: Vec<OwedIndirect>,
     issued_challenges: Vec<AttestationChallenge>,
-    /// The golden measured state this node expects of peers it verifies
-    /// (the Reference Value Provider's output; design §8.1, §14.2). Empty
-    /// until installed from policy — verification is then Inconclusive.
-    peer_reference: ReferenceMeasurements,
+    /// The accepted measured states this node expects of peers it verifies
+    /// (the Reference Value Provider's output; design §8.1, §14.2, and
+    /// `measured-state-transitions.md`). Multi-valued with validity windows,
+    /// so authorized upgrades roll without false distrust. Empty until
+    /// installed from policy — verification is then Inconclusive.
+    peer_reference: AcceptedReferences,
     /// Endorsers this node trusts to vouch for peers' AKs (design §8.1). Empty
     /// = endorsement not required (the early-phase self-certifying AK).
     anchors: TrustAnchors,
@@ -297,7 +309,7 @@ impl Node {
             pending: None,
             owed: Vec::new(),
             issued_challenges: Vec::new(),
-            peer_reference: ReferenceMeasurements::default(),
+            peer_reference: AcceptedReferences::default(),
             anchors: TrustAnchors::default(),
             endorsement: None,
             witness_reports: HashMap::new(),
@@ -332,9 +344,23 @@ impl Node {
     }
 
     /// Install the golden reference this node uses to judge peers' quotes
-    /// (from signed policy / a known-good node).
+    /// (from signed policy / a known-good node). Seeds a single-valued accepted
+    /// set; further states are added by [`Self::accept_reference`] /
+    /// [`Self::accept_reference_profile`] (later, a signed reference update).
     pub fn set_peer_reference(&mut self, reference: ReferenceMeasurements) {
-        self.peer_reference = reference;
+        self.peer_reference = AcceptedReferences::from_reference(reference);
+    }
+
+    /// Add a standalone accepted measured state for one PCR index (e.g. the
+    /// new kernel digest during an authorized transition).
+    pub fn accept_reference(&mut self, index: u32, digest: Vec<u8>, validity: Validity) {
+        self.peer_reference.accept_entry(index, digest, validity);
+    }
+
+    /// Add a coupled accepted profile (a set of `(index, digest)` accepted only
+    /// together).
+    pub fn accept_reference_profile(&mut self, pcrs: BTreeMap<u32, Vec<u8>>, validity: Validity) {
+        self.peer_reference.accept_profile(pcrs, validity);
     }
 
     /// Install the endorsers this node trusts to vouch for peers' AKs. With a
@@ -1250,7 +1276,16 @@ impl Node {
         let ch = self.issued_challenges.remove(pos);
         let result = self
             .attestor
-            .verify(&ch, &ev, &self.peer_reference, &self.anchors, self.id, now);
+            .verify(
+                &ch,
+                &ev,
+                &self.peer_reference,
+                &self.anchors,
+                self.id,
+                now,
+                self.config.reference_match,
+                self.config.retired_action,
+            );
         let verdict = result.result;
         // Our own direct observation — provisional until (and unless) the
         // assigned-witness quorum decides otherwise in `aggregate_trust`.
@@ -1501,7 +1536,16 @@ impl Node {
         };
         let result = self
             .attestor
-            .verify(&ach, &claim.evidence, &self.peer_reference, &self.anchors, self.id, tick);
+            .verify(
+                &ach,
+                &claim.evidence,
+                &self.peer_reference,
+                &self.anchors,
+                self.id,
+                tick,
+                self.config.reference_match,
+                self.config.retired_action,
+            );
         if result.reason_codes.contains(&ReasonCode::AkUntrusted) {
             return AdmissionReason::AkUntrusted;
         }
@@ -1605,7 +1649,16 @@ impl Node {
             expires_at_tick: tick + 5,
         };
         self.attestor
-            .verify(&ach, &claim.evidence, &self.peer_reference, &self.anchors, self.id, tick)
+            .verify(
+                &ach,
+                &claim.evidence,
+                &self.peer_reference,
+                &self.anchors,
+                self.id,
+                tick,
+                self.config.reference_match,
+                self.config.retired_action,
+            )
             .result
             == Verdict::Pass
     }
