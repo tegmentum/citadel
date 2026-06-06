@@ -136,6 +136,17 @@ impl EventLog {
     }
 }
 
+/// Canonical bytes of a set of records — used to preserve a window as a
+/// durable, erasure-coded evidence payload (the Phase-4 store).
+pub fn encode_records(records: &[EventRecord]) -> Vec<u8> {
+    serde_json::to_vec(records).expect("records are serializable")
+}
+
+/// Decode records preserved with [`encode_records`].
+pub fn decode_records(bytes: &[u8]) -> anyhow::Result<Vec<EventRecord>> {
+    Ok(serde_json::from_slice(bytes)?)
+}
+
 /// A gossiped per-window digest (design §11). A peer compares it to its own
 /// window root; a mismatch triggers reconciliation of that window.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -160,8 +160,12 @@ node forking a sealed window is detected and set `Suspicious`
 stay in sync; an equivocator is distrusted). **Also validated over the live
 HTTP transport** (`citadel-agent/tests/logship_http.rs`: events appended to
 one agent replicate to its peers over real sockets — the agent actor gained
-`append_event` / `log_state`). Remaining: erasure-code the transferred
-records into the Phase-4 store and sub-window binary-search pulls.
+`append_event` / `log_state`). **And bridged to the Phase-4 durable store**
+(`tests/logship_evidence.rs`: a shipped window is hash-chained as a
+`LogFragment`, erasure-coded into N=20 fragments, and reconstructed from the
+surviving 7 after losing 13 holders — decoding back to the exact records and
+matching the chain's commitment). Remaining: sub-window binary-search pulls
+over the network (whole-window today).
 
 **Goal.** Implement `distributed-log-shipping-lthash.md`: nodes accumulate
 their measurement log into windowed LtHash roots, advertise them, and
