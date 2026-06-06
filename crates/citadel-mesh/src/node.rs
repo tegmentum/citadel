@@ -177,8 +177,15 @@ pub struct Node {
     sealed_roots: HashMap<(NodeId, u64, u64), Vec<u8>>,
     /// Last tick this node advertised its log digests.
     last_log_advert: u64,
+    /// Count of own-log records this node has served to replicas (the bytes
+    /// the binary search actually transferred) — for observability/tests.
+    log_records_served: usize,
     outbox: Vec<Addressed>,
 }
+
+/// Sub-range width at which network reconciliation stops bisecting and pulls
+/// the records (mirrors `logship::LEAF_WIDTH`).
+const LOG_LEAF_WIDTH: u64 = 4;
 
 impl Node {
     pub fn new(
@@ -217,6 +224,7 @@ impl Node {
             replicas: HashMap::new(),
             sealed_roots: HashMap::new(),
             last_log_advert: 0,
+            log_records_served: 0,
             outbox: Vec::new(),
         }
     }
@@ -358,7 +366,9 @@ impl Node {
             }
         }
 
-        // Reconcile our replica of the advertiser's log for this window.
+        // Reconcile our replica of the advertiser's log for this window: if
+        // the window root disagrees, start a binary search over the window
+        // rather than pulling the whole window.
         let replica = self
             .replicas
             .entry(ad.node_id)
@@ -366,15 +376,33 @@ impl Node {
         if replica.window_root(ad.window_id) != ad.root {
             let lo = ad.window_id * self.config.log_window_size;
             let hi = lo + self.config.log_window_size;
-            self.emit(
-                sender,
-                GossipMessage::LogPull {
-                    boot_id: ad.boot_id,
-                    lo,
-                    hi,
-                },
-            );
+            self.emit(sender, GossipMessage::LogRangeQuery { boot_id: ad.boot_id, lo, hi });
         }
+    }
+
+    /// Continue the binary search for `sender`'s log: compare the advertiser's
+    /// root over `[lo, hi)` to our replica's; descend only if they differ,
+    /// pulling records once the range is small (design log-shipping §12).
+    fn on_log_range_root(&mut self, sender: NodeId, boot_id: u64, lo: u64, hi: u64, remote_root: Vec<u8>) {
+        let replica = self
+            .replicas
+            .entry(sender)
+            .or_insert_with(|| EventLog::new(self.config.log_window_size));
+        if replica.range_root(lo, hi) == remote_root {
+            return; // this sub-range already agrees — prune
+        }
+        if hi - lo <= LOG_LEAF_WIDTH {
+            self.emit(sender, GossipMessage::LogPull { boot_id, lo, hi });
+        } else {
+            let mid = lo + (hi - lo) / 2;
+            self.emit(sender, GossipMessage::LogRangeQuery { boot_id, lo, hi: mid });
+            self.emit(sender, GossipMessage::LogRangeQuery { boot_id, lo: mid, hi });
+        }
+    }
+
+    /// Records this node has served to replicas (observability/tests).
+    pub fn log_records_served(&self) -> usize {
+        self.log_records_served
     }
 
     pub fn current_tick(&self) -> u64 {
@@ -565,11 +593,22 @@ impl Node {
                 self.aggregate_trust(res.subject);
             }
             GossipMessage::LogDigest(ad) => self.on_log_digest(env.sender, ad, now),
+            GossipMessage::LogRangeQuery { boot_id, lo, hi } => {
+                // Answer with our own log's root over the queried range.
+                if boot_id == self.config.boot_id {
+                    let root = self.own_log.range_root(lo, hi);
+                    self.emit(env.sender, GossipMessage::LogRangeRoot { boot_id, lo, hi, root });
+                }
+            }
+            GossipMessage::LogRangeRoot { boot_id, lo, hi, root } => {
+                self.on_log_range_root(env.sender, boot_id, lo, hi, root);
+            }
             GossipMessage::LogPull { boot_id, lo, hi } => {
-                // Serve our own log's records in the requested range.
+                // Serve our own log's records in the requested (leaf) range.
                 if boot_id == self.config.boot_id {
                     let records = self.own_log.records_in(lo, hi);
                     if !records.is_empty() {
+                        self.log_records_served += records.len();
                         self.emit(env.sender, GossipMessage::LogRecords(records));
                     }
                 }

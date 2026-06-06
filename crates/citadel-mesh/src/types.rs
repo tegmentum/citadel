@@ -84,7 +84,13 @@ pub enum GossipMessage {
     /// A node advertises one of its log windows' LtHash digests (design
     /// log-shipping §11), so replicas can detect divergence.
     LogDigest(crate::logship::DigestAdvertisement),
-    /// A replica requests the advertiser's own-log records in `[lo, hi)`.
+    /// A replica asks the advertiser for its LtHash root over `[lo, hi)`, to
+    /// binary-search the divergent sub-range.
+    LogRangeQuery { boot_id: u64, lo: u64, hi: u64 },
+    /// The advertiser's LtHash root over a queried sub-range.
+    LogRangeRoot { boot_id: u64, lo: u64, hi: u64, root: Vec<u8> },
+    /// A replica requests the advertiser's own-log records in `[lo, hi)` (a
+    /// leaf of the binary search).
     LogPull { boot_id: u64, lo: u64, hi: u64 },
     /// The advertiser returns its records to a replica.
     LogRecords(Vec<crate::logship::EventRecord>),

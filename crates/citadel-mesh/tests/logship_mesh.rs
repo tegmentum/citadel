@@ -71,6 +71,47 @@ fn incremental_events_keep_replicas_in_sync() {
 }
 
 #[test]
+fn incremental_divergence_transfers_only_the_diff_not_the_whole_window() {
+    // A large window so a few new records are a small fraction of it.
+    let mut mesh = Mesh::new("prod-east-1");
+    let cfg = NodeConfig {
+        witness_count: 0,
+        log_window_size: 64,
+        log_advertise_interval: 2,
+        ..NodeConfig::default()
+    };
+    let ids: Vec<NodeId> = (1..=3).map(|s| mesh.add_node(s, "worker", cfg.clone())).collect();
+    mesh.wire_full_membership();
+    let origin = ids[0];
+
+    // First sync: 40 events in window 0; replicas catch up.
+    for i in 0..40u64 {
+        mesh.node_mut(origin).append_event(payload_hash(format!("e-{i}").as_bytes()));
+    }
+    mesh.run(20);
+    let baseline_served = mesh.node(origin).log_records_served();
+
+    // Ten more events land in the *same* window.
+    for i in 40..50u64 {
+        mesh.node_mut(origin).append_event(payload_hash(format!("e-{i}").as_bytes()));
+    }
+    mesh.run(20);
+
+    // The replicas converge again...
+    let root = mesh.node(origin).own_log_root();
+    for &peer in &ids[1..] {
+        assert_eq!(mesh.node(peer).replica_root(origin), Some(root.clone()));
+    }
+    // ...having pulled only the divergent tail (≈10 records × 2 replicas),
+    // not the whole 50-record window (which would be ≈100).
+    let delta = mesh.node(origin).log_records_served() - baseline_served;
+    assert!(
+        delta < 40,
+        "binary search should transfer only the diff, served delta = {delta}"
+    );
+}
+
+#[test]
 fn a_node_forking_its_own_history_is_detected_and_distrusted() {
     let (mut mesh, ids) = mesh_of(4);
     let forker = ids[2];

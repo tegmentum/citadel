@@ -164,8 +164,14 @@ one agent replicate to its peers over real sockets — the agent actor gained
 (`tests/logship_evidence.rs`: a shipped window is hash-chained as a
 `LogFragment`, erasure-coded into N=20 fragments, and reconstructed from the
 surviving 7 after losing 13 holders — decoding back to the exact records and
-matching the chain's commitment). Remaining: sub-window binary-search pulls
-over the network (whole-window today).
+matching the chain's commitment). **Network reconciliation now binary-searches
+sub-ranges** (`LogRangeQuery`/`LogRangeRoot`): a replica exchanges sub-range
+LtHash roots with the advertiser, descends only the differing halves, and
+pulls records just at the leaves — so an incremental change transfers only
+the divergent tail, not the whole window
+(`tests/logship_mesh.rs::incremental_divergence_transfers_only_the_diff…`).
+Item 3 is fully realized end-to-end (library, in-mesh, over HTTP, into the
+evidence store, with sub-window pulls).
 
 **Goal.** Implement `distributed-log-shipping-lthash.md`: nodes accumulate
 their measurement log into windowed LtHash roots, advertise them, and
