@@ -537,6 +537,12 @@ impl AcceptedReferences {
         self.artifact_policy = policy;
     }
 
+    /// Whether this set's fleet policy permits `artifact` (used when voting on a
+    /// promotion: peers independently judge provenance).
+    pub fn permits_artifact(&self, artifact: &ArtifactIdentity) -> bool {
+        self.artifact_policy.permits(artifact)
+    }
+
     /// Add a coupled profile (accepted only when fully satisfied). Idempotent
     /// by profile id.
     pub fn accept_profile(&mut self, pcrs: BTreeMap<u32, Vec<u8>>, validity: Validity) {

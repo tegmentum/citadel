@@ -26,6 +26,7 @@ use crate::types::Endorsement;
 use crate::id::{Epoch, MeshId, NodeId};
 use crate::membership::Membership;
 use crate::node::{Node, NodeConfig, WitnessSummary};
+use crate::promotion::{self, PromotionOutcome};
 use crate::quarantine::{self, QuarantineDecision, QuarantineScope};
 use crate::reference::{BootProfile, FleetArtifactPolicy, PcrClass, ReferenceManifest, Validity};
 use crate::state::{LivenessState, TrustState};
@@ -414,6 +415,41 @@ impl Mesh {
         for n in &mut self.nodes {
             n.assign_profile(subject, profile);
         }
+    }
+
+    /// Run the quorum promotion of a new measured state (design §10.3):
+    /// `proposer` stages it, every eligible peer independently votes on its
+    /// provenance, and on quorum every node adopts it into the target profile.
+    /// Returns the tally.
+    pub fn promote_state(
+        &mut self,
+        proposer: NodeId,
+        profile: &str,
+        index: u32,
+        digest: Vec<u8>,
+        artifact: Option<crate::reference::ArtifactIdentity>,
+        validity: Validity,
+    ) -> PromotionOutcome {
+        let tick = self.tick;
+        let proposal =
+            self.node(proposer).propose_promotion(profile, index, digest, artifact, validity, tick);
+        let ids: Vec<NodeId> = self.nodes.iter().map(|n| n.id()).collect();
+        let mut votes = Vec::new();
+        let mut eligible = HashSet::new();
+        for v in &ids {
+            votes.push(self.node(*v).vote_on_promotion(&proposal, tick));
+            if self.is_eligible_voter(*v) {
+                eligible.insert(*v);
+            }
+        }
+        let threshold = eligible.len() / 2 + 1;
+        let outcome = promotion::decide_promotion(&proposal, &votes, &eligible, threshold);
+        if outcome.accepted {
+            for n in &mut self.nodes {
+                n.adopt_promoted_state(&proposal);
+            }
+        }
+        outcome
     }
 
     /// Simulate remediation (a clean reimage): replace `subject`'s backend so

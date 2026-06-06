@@ -25,6 +25,7 @@
 //! * [`evidence`] — hash-chained evidence records, receipts, reconstruction.
 //! * [`logship`] — LtHash windowed log digests + anti-entropy reconciliation.
 //! * [`reference`] — multi-value appraisal: authorized measured-state transitions.
+//! * [`promotion`] — fleet quorum promotion of new measured states.
 //! * [`enrollment`] — quorum admission, probation, duplicate-identity checks.
 //! * [`quarantine`] — quorum-driven, scope-graded, reversible isolation.
 //! * [`node`] — the agent: the SWIM tick + envelope handling.
@@ -40,6 +41,7 @@ pub mod logship;
 pub mod id;
 pub mod membership;
 pub mod node;
+pub mod promotion;
 pub mod quarantine;
 pub mod reference;
 pub mod state;

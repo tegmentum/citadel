@@ -18,9 +18,10 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::attest::{Attestor, ReferenceMeasurements, TrustAnchors};
+use crate::promotion::{PromotionProposal, PromotionVote};
 use crate::reference::{
-    AcceptedReferences, BootProfile, FleetArtifactPolicy, PcrClass, ReferenceManifest,
-    ReferenceMatchPolicy, RetiredAction, Validity,
+    AcceptedReferences, ArtifactIdentity, BootProfile, FleetArtifactPolicy, PcrClass,
+    ReferenceEntry, ReferenceManifest, ReferenceMatchPolicy, RetiredAction, Validity,
 };
 use crate::crypto::MeshKeypair;
 use crate::enrollment::{
@@ -427,6 +428,65 @@ impl Node {
     /// default.
     pub fn assign_profile(&mut self, subject: NodeId, profile: impl Into<String>) {
         self.profile_assignments.insert(subject, profile.into());
+    }
+
+    /// The accepted set used for a profile name (the named profile's, or the
+    /// default `peer_reference`).
+    fn accepted_for_profile(&self, profile: &str) -> &AcceptedReferences {
+        if !profile.is_empty() {
+            if let Some(p) = self.profiles.get(profile) {
+                return &p.accepted;
+            }
+        }
+        &self.peer_reference
+    }
+
+    // -- fleet quorum promotion (design §10.3) --------------------------
+
+    /// As a proposer: stage a new measured state for quorum promotion.
+    pub fn propose_promotion(
+        &self,
+        profile: &str,
+        index: u32,
+        digest: Vec<u8>,
+        artifact: Option<ArtifactIdentity>,
+        validity: Validity,
+        tick: u64,
+    ) -> PromotionProposal {
+        PromotionProposal::create(&self.keypair, self.id, profile, index, digest, artifact, validity, tick)
+    }
+
+    /// As an eligible peer: vote on a promotion. Approve only if it carries
+    /// provenance that this node's policy for the target profile permits — peers
+    /// judge the artifact independently, no central "known good".
+    pub fn vote_on_promotion(&self, proposal: &PromotionProposal, tick: u64) -> PromotionVote {
+        let approve = match &proposal.artifact {
+            Some(a) => self.accepted_for_profile(&proposal.profile).permits_artifact(a),
+            None => false, // cannot vouch for an unattributed state
+        };
+        PromotionVote::sign(&self.keypair, self.id, proposal.id, approve, tick)
+    }
+
+    /// Adopt a quorum-promoted state into the target profile's accepted set and
+    /// record it in the audit chain.
+    pub fn adopt_promoted_state(&mut self, proposal: &PromotionProposal) {
+        let mut entry =
+            ReferenceEntry::new(proposal.index, proposal.digest.clone(), proposal.validity.clone());
+        if let Some(a) = &proposal.artifact {
+            entry = entry.with_artifact(a.clone());
+        }
+        if let Some(p) = self.profiles.get_mut(&proposal.profile) {
+            p.accepted.accept(entry);
+        } else {
+            self.peer_reference.accept(entry);
+        }
+        self.reference_audit.append(
+            self.id,
+            RecordType::ReferenceUpdate,
+            proposal.id,
+            self.tick,
+            self.config.policy_revision,
+        );
     }
 
     /// The appraisal inputs for `subject`: its assigned profile's policy, or the

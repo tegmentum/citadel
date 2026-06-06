@@ -367,6 +367,92 @@ fn an_assigned_boot_profile_appraises_a_subject_differently() {
 }
 
 #[test]
+fn quorum_promotes_a_new_state_and_restores_trust() {
+    // §10.3: a canary boots an unknown state (distrusted); the fleet promotes it
+    // by quorum — peers independently approving its provenance — and the canary
+    // is trusted again, with no central authority signing a manifest.
+    let (mut mesh, ids) = mesh_of(6);
+    mesh.run(12);
+    let canary = ids[4];
+
+    // Fleet policy: prod-channel kernels >= 6.8.0 are acceptable.
+    mesh.set_artifact_policy_all(
+        FleetArtifactPolicy::new().allow_channel("kernel", "prod").min_version("kernel", vec![6, 8, 0]),
+    );
+
+    // The canary moves to a new, unrecognised state → distrusted.
+    mesh.measured_state_change(canary, "sha256", 0, &[0x66; 32]);
+    mesh.run(12);
+    for &o in &ids {
+        if o != canary {
+            assert_eq!(mesh.trust_of(o, canary), Some(TrustState::Suspicious));
+        }
+    }
+
+    // Stage + quorum-promote the new state with valid provenance.
+    let new_pcr0 = mesh.pcr_digest(canary, "sha256", 0);
+    let artifact = ArtifactIdentity {
+        component: "kernel".into(),
+        publisher: "canonical".into(),
+        channel: "prod".into(),
+        version: vec![6, 8, 0],
+        build_id: None,
+    };
+    let outcome = mesh.promote_state(ids[0], "", 0, new_pcr0, Some(artifact), Validity::always());
+    assert!(outcome.accepted, "eligible peers should promote a valid state: {outcome:?}");
+
+    // Fleet-accepted → the canary is trusted again.
+    mesh.run(12);
+    for &o in &ids {
+        if o != canary {
+            assert_eq!(
+                mesh.trust_of(o, canary),
+                Some(TrustState::Trusted),
+                "{o} trusts the promoted {canary}"
+            );
+        }
+    }
+}
+
+#[test]
+fn quorum_rejects_promotion_of_a_disallowed_artifact() {
+    let (mut mesh, ids) = mesh_of(6);
+    mesh.run(12);
+    let canary = ids[4];
+
+    mesh.set_artifact_policy_all(
+        FleetArtifactPolicy::new().allow_channel("kernel", "prod").min_version("kernel", vec![6, 8, 0]),
+    );
+    mesh.measured_state_change(canary, "sha256", 0, &[0x77; 32]);
+    mesh.run(12);
+
+    // Propose the state with a below-baseline version → every eligible peer
+    // rejects it on its own policy.
+    let new_pcr0 = mesh.pcr_digest(canary, "sha256", 0);
+    let artifact = ArtifactIdentity {
+        component: "kernel".into(),
+        publisher: "canonical".into(),
+        channel: "prod".into(),
+        version: vec![6, 6, 0], // below the 6.8.0 baseline
+        build_id: None,
+    };
+    let outcome = mesh.promote_state(ids[0], "", 0, new_pcr0, Some(artifact), Validity::always());
+    assert!(!outcome.accepted, "a disallowed artifact must not be promoted");
+    assert_eq!(outcome.approvals, 0);
+
+    mesh.run(12);
+    for &o in &ids {
+        if o != canary {
+            assert_eq!(
+                mesh.trust_of(o, canary),
+                Some(TrustState::Suspicious),
+                "{o} keeps distrusting {canary} (promotion refused)"
+            );
+        }
+    }
+}
+
+#[test]
 fn old_and_new_both_pass_during_a_rolling_upgrade() {
     // The overlap window: some nodes upgraded, some not — all stay trusted
     // because both the old and the new measured state are authorized.
