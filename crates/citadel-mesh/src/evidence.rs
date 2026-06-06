@@ -32,6 +32,9 @@ pub enum RecordType {
     OperatorAction,
     LogFragment,
     ReconstructionProof,
+    /// A signed reference manifest this node adopted (measured-state-transitions
+    /// §10.2) — the audit trail of accepted-state changes.
+    ReferenceUpdate,
 }
 
 /// One link in a node's evidence chain. The record commits to a content

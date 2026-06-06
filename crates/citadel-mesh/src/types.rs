@@ -116,6 +116,11 @@ pub enum GossipMessage {
     /// trusts the issuer converges on the same accepted set. Boxed: it carries
     /// reference entries/profiles and a certificate chain.
     ReferenceManifest(Box<crate::reference::ReferenceManifest>),
+    /// Anti-entropy: the set of reference-manifest content ids a node holds, so
+    /// a peer that missed a gossiped manifest can detect the gap and pull it.
+    ReferenceDigest { ids: Vec<[u8; 32]> },
+    /// A peer requests a reference manifest it is missing, by content id.
+    ReferenceManifestRequest { id: [u8; 32] },
 }
 
 // -- Attestation records (design §8) --

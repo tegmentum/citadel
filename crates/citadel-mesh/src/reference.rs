@@ -1,5 +1,5 @@
-//! Authorized measured-state transitions — the multi-value appraisal engine
-//! (design `measured-state-transitions.md`, Phase 1).
+//! Authorized measured-state transitions — the appraisal engine and policy
+//! tier (design `measured-state-transitions.md`, Layers 1–3).
 //!
 //! A verifier no longer holds a single golden it exact-matches; it holds a set
 //! of **accepted reference sources** and asks whether a quote's PCRs are
@@ -317,6 +317,22 @@ impl ReferenceManifest {
         let signature =
             authority.sign(&Self::signing_bytes(&profile, &entries, &profiles, &issuer));
         ReferenceManifest { profile, entries, profiles, issuer, chain, signature }
+    }
+
+    /// Content id of the manifest — `BLAKE3` over its fields and signature.
+    /// Stable per signed manifest; used to dedupe adoption and as the
+    /// anti-entropy/audit key.
+    pub fn content_id(&self) -> [u8; 32] {
+        let bytes = serde_json::to_vec(&(
+            "reference-manifest-id",
+            &self.profile,
+            &self.entries,
+            &self.profiles,
+            &self.issuer,
+            &self.signature,
+        ))
+        .expect("serializable");
+        *blake3::hash(&bytes).as_bytes()
     }
 
     /// Whether the issuer's signature over the manifest is valid.

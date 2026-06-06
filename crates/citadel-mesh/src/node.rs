@@ -26,6 +26,7 @@ use crate::crypto::MeshKeypair;
 use crate::enrollment::{
     self, AdmissionReason, AdmissionVerdict, EnrollmentChallenge, EnrollmentClaim, EnrollmentVote,
 };
+use crate::evidence::{EvidenceChain, RecordType};
 use crate::erasure::{self, ErasureScheme, EvidenceFragment};
 use crate::evidence::{self, assign_holders, EvidenceReceipt};
 use crate::id::{Epoch, MeshId, NodeId};
@@ -104,6 +105,10 @@ pub struct NodeConfig {
     /// How a verifier treats a quote that matches only a *retired* reference
     /// (an unpatched node): `Fail`, `Warn`, or `GraceThenFail`.
     pub retired_action: RetiredAction,
+    /// Ticks between advertising this node's adopted reference-manifest set for
+    /// anti-entropy (`0` disables); lets a node that missed a gossiped manifest
+    /// catch up (design §10.2).
+    pub reference_advertise_interval: u64,
 }
 
 impl Default for NodeConfig {
@@ -130,6 +135,7 @@ impl Default for NodeConfig {
             evidence_migration_rate: 0,
             reference_match: ReferenceMatchPolicy::Flexible,
             retired_action: RetiredAction::Fail,
+            reference_advertise_interval: 0,
         }
     }
 }
@@ -204,6 +210,13 @@ pub struct Node {
     /// `None` = fall back to `anchors` (one authority for both surfaces);
     /// `Some` = a separate authority set (separation of duties).
     reference_authorities: Option<TrustAnchors>,
+    /// Reference manifests this node has adopted, by content id — kept so they
+    /// can be re-served for anti-entropy and de-duplicated on re-receipt.
+    adopted_manifests: std::collections::BTreeMap<[u8; 32], ReferenceManifest>,
+    /// Append-only audit chain of adopted reference manifests (design §10.2).
+    reference_audit: EvidenceChain,
+    /// Last tick this node advertised its adopted-manifest set.
+    last_reference_advert: u64,
     /// This node's own AK endorsement, attached to the evidence it produces.
     endorsement: Option<Endorsement>,
     /// Latest attestation verdict per `subject → verifier` heard on the mesh
@@ -300,6 +313,7 @@ impl Node {
         config: NodeConfig,
     ) -> Self {
         let config_window = config.log_window_size;
+        let reference_audit = EvidenceChain::new(id, mesh_id.clone());
         Node {
             mesh_id,
             id,
@@ -319,6 +333,9 @@ impl Node {
             peer_reference: AcceptedReferences::default(),
             anchors: TrustAnchors::default(),
             reference_authorities: None,
+            adopted_manifests: std::collections::BTreeMap::new(),
+            reference_audit,
+            last_reference_advert: 0,
             endorsement: None,
             witness_reports: HashMap::new(),
             last_challenge: HashMap::new(),
@@ -405,6 +422,10 @@ impl Node {
         if !manifest.verify_signature() {
             return false;
         }
+        let id = manifest.content_id();
+        if self.adopted_manifests.contains_key(&id) {
+            return true; // already adopted — idempotent, no re-audit/re-gossip
+        }
         let trusted = {
             let anchors = self.reference_anchors();
             manifest.issuer_chains_to_anchor(|k| anchors.trusts(k))
@@ -413,6 +434,15 @@ impl Node {
             return false; // unsigned-by-anyone-we-trust → ignored
         }
         self.peer_reference.adopt_manifest(manifest);
+        self.adopted_manifests.insert(id, manifest.clone());
+        // Audit: append a hash-chained record committing to the adopted manifest.
+        self.reference_audit.append(
+            self.id,
+            RecordType::ReferenceUpdate,
+            id,
+            self.tick,
+            self.config.policy_revision,
+        );
         true
     }
 
@@ -421,6 +451,51 @@ impl Node {
     pub fn broadcast_reference_manifest(&mut self, manifest: ReferenceManifest) {
         self.apply_reference_manifest(&manifest);
         self.broadcast(GossipMessage::ReferenceManifest(Box::new(manifest)));
+    }
+
+    /// Periodically advertise the set of manifest ids this node holds, so a peer
+    /// that missed a gossiped manifest can pull it (anti-entropy, §10.2).
+    fn advertise_references(&mut self, now: u64) {
+        if self.config.reference_advertise_interval == 0 || self.adopted_manifests.is_empty() {
+            return;
+        }
+        if now.saturating_sub(self.last_reference_advert) < self.config.reference_advertise_interval {
+            return;
+        }
+        self.last_reference_advert = now;
+        let ids: Vec<[u8; 32]> = self.adopted_manifests.keys().copied().collect();
+        self.broadcast(GossipMessage::ReferenceDigest { ids });
+    }
+
+    /// On a peer's manifest-id advertisement, request any we are missing.
+    fn on_reference_digest(&mut self, sender: NodeId, ids: Vec<[u8; 32]>) {
+        for id in ids {
+            if !self.adopted_manifests.contains_key(&id) {
+                self.emit(sender, GossipMessage::ReferenceManifestRequest { id });
+            }
+        }
+    }
+
+    /// Serve a requested manifest we hold to the requester.
+    fn on_reference_manifest_request(&mut self, sender: NodeId, id: [u8; 32]) {
+        if let Some(m) = self.adopted_manifests.get(&id).cloned() {
+            self.emit(sender, GossipMessage::ReferenceManifest(Box::new(m)));
+        }
+    }
+
+    /// Whether this node has adopted the manifest with content id `id`.
+    pub fn has_reference_manifest(&self, id: [u8; 32]) -> bool {
+        self.adopted_manifests.contains_key(&id)
+    }
+
+    /// Length of the reference-adoption audit chain (testing/ops).
+    pub fn reference_audit_len(&self) -> usize {
+        self.reference_audit.len()
+    }
+
+    /// Whether the reference-adoption audit chain verifies intact.
+    pub fn reference_audit_ok(&self) -> bool {
+        self.reference_audit.verify_integrity().is_ok()
     }
 
     /// Install the endorsers this node trusts to vouch for peers' AKs. With a
@@ -1046,6 +1121,7 @@ impl Node {
         self.advertise_logs(now);
         self.ship_sealed_windows(now);
         self.migrate_windows(now);
+        self.advertise_references(now);
 
         // Start a new direct probe on the interval if idle.
         if self.pending.is_none() && now.is_multiple_of(self.config.probe_interval) {
@@ -1250,6 +1326,10 @@ impl Node {
             GossipMessage::LogFragmentDrop { record_id } => self.on_fragment_drop(record_id),
             GossipMessage::ReferenceManifest(m) => {
                 self.apply_reference_manifest(&m);
+            }
+            GossipMessage::ReferenceDigest { ids } => self.on_reference_digest(env.sender, ids),
+            GossipMessage::ReferenceManifestRequest { id } => {
+                self.on_reference_manifest_request(env.sender, id)
             }
         }
     }

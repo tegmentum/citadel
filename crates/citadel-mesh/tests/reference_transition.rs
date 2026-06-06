@@ -18,6 +18,7 @@ fn mesh_of(n: u8) -> (Mesh, Vec<NodeId>) {
     let cfg = NodeConfig {
         witness_count: 3,
         attestation_interval: 3,
+        reference_advertise_interval: 2,
         ..NodeConfig::default()
     };
     let ids: Vec<NodeId> = (1..=n).map(|s| mesh.add_node(s, "worker", cfg.clone())).collect();
@@ -250,6 +251,72 @@ fn revoking_an_artifact_version_distrusts_running_nodes() {
             );
         }
     }
+}
+
+#[test]
+fn anti_entropy_propagates_a_missed_manifest() {
+    // §10.2 anti-entropy: a manifest reaches only one node; the digest
+    // advertisement lets the rest detect the gap and pull it, converging.
+    let (mut mesh, ids) = mesh_of(6);
+    mesh.run(6);
+
+    let authority = MeshKeypair::from_seed([200u8; 32]);
+    mesh.set_reference_authorities_all(TrustAnchors::with(authority.public()));
+
+    let manifest = ReferenceManifest::issue(
+        &authority,
+        "prod",
+        vec![ReferenceEntry::new(5, b"some-state".to_vec(), Validity::always())],
+        vec![],
+    );
+    let id = manifest.content_id();
+
+    // Deliver it to a single node only (no broadcast).
+    assert!(mesh.node_mut(ids[0]).apply_reference_manifest(&manifest));
+    assert!(mesh.node(ids[0]).has_reference_manifest(id));
+    assert!(!mesh.node(ids[3]).has_reference_manifest(id), "others start without it");
+
+    // Anti-entropy spreads it to the whole fleet.
+    mesh.run(10);
+    for &n in &ids {
+        assert!(
+            mesh.node(n).has_reference_manifest(id),
+            "{n} pulled the missed manifest via anti-entropy"
+        );
+    }
+}
+
+#[test]
+fn adopting_a_manifest_records_an_intact_audit_entry() {
+    let (mut mesh, ids) = mesh_of(3);
+    let authority = MeshKeypair::from_seed([200u8; 32]);
+    mesh.set_reference_authorities_all(TrustAnchors::with(authority.public()));
+    let node = ids[0];
+
+    let m1 = ReferenceManifest::issue(
+        &authority,
+        "prod",
+        vec![ReferenceEntry::new(5, b"a".to_vec(), Validity::always())],
+        vec![],
+    );
+    assert!(mesh.node_mut(node).apply_reference_manifest(&m1));
+    assert_eq!(mesh.node(node).reference_audit_len(), 1);
+    assert!(mesh.node(node).reference_audit_ok());
+
+    // Idempotent: re-applying the same manifest adds no audit entry.
+    mesh.node_mut(node).apply_reference_manifest(&m1);
+    assert_eq!(mesh.node(node).reference_audit_len(), 1);
+
+    // A distinct manifest extends the chain.
+    let m2 = ReferenceManifest::issue(
+        &authority,
+        "prod",
+        vec![ReferenceEntry::new(6, b"b".to_vec(), Validity::always())],
+        vec![],
+    );
+    assert!(mesh.node_mut(node).apply_reference_manifest(&m2));
+    assert_eq!(mesh.node(node).reference_audit_len(), 2);
+    assert!(mesh.node(node).reference_audit_ok());
 }
 
 #[test]

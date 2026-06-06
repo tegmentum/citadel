@@ -355,9 +355,10 @@ event log ──(replay == quote)──► events ─► Layer 3 manifest / arti
   `reference_authorities` anchors (decision 3), idempotent gossiped adoption;
   `ArtifactIdentity` + `FleetArtifactPolicy` (channel / version-baseline /
   denylist), re-checked each appraisal so revocation takes effect on running
-  nodes (`REFERENCE_DENIED`). Remaining within Layer 3: evidence-chain audit
-  record of adopted manifests, and anti-entropy re-advertisement for nodes that
-  missed a gossiped manifest.
+  nodes (`REFERENCE_DENIED`). Adopted manifests are recorded in a hash-chained
+  audit (`RecordType::ReferenceUpdate`) and re-advertised for anti-entropy
+  (`ReferenceDigest` → `ReferenceManifestRequest`) so a node that missed a
+  gossiped manifest pulls it and converges. **Complete.**
 * **Layer 4 — boot profiles, quorum promotion, event-log semantic validation
   (§§10.3–10.4).** `node_id → profile`; promotion lifecycle over mesh quorum;
   TCG event-log ingestion + replay + per-artifact policy. Unify with the MMA
