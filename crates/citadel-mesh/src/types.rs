@@ -81,6 +81,13 @@ pub enum GossipMessage {
     AttestEvidence(Box<AttestationEvidence>),
     /// A verifier's verdict over received evidence (gossiped).
     AttestResult(AttestationResult),
+    /// A node advertises one of its log windows' LtHash digests (design
+    /// log-shipping §11), so replicas can detect divergence.
+    LogDigest(crate::logship::DigestAdvertisement),
+    /// A replica requests the advertiser's own-log records in `[lo, hi)`.
+    LogPull { boot_id: u64, lo: u64, hi: u64 },
+    /// The advertiser returns its records to a replica.
+    LogRecords(Vec<crate::logship::EventRecord>),
 }
 
 // -- Attestation records (design §8) --

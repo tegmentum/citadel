@@ -23,6 +23,7 @@ use crate::enrollment::{
     self, AdmissionReason, AdmissionVerdict, EnrollmentChallenge, EnrollmentClaim, EnrollmentVote,
 };
 use crate::id::{Epoch, MeshId, NodeId};
+use crate::logship::{DigestAdvertisement, EventLog, EventRecord};
 use crate::membership::Membership;
 use crate::quarantine::{Ballot, QuarantineProposal, QuarantineScope, QuarantineVote};
 use crate::state::{LivenessState, TrustState};
@@ -59,6 +60,13 @@ pub struct NodeConfig {
     /// Ticks a newly-admitted node stays probationary (passing attestation)
     /// before it may be promoted to `Trusted` (design §7.5).
     pub probation_period: u64,
+    /// This node's boot epoch, stamped into its log events (log-shipping §6).
+    pub boot_id: u64,
+    /// LtHash log window size (events per window).
+    pub log_window_size: u64,
+    /// Ticks between advertising this node's log digests (`0` disables
+    /// log-shipping).
+    pub log_advertise_interval: u64,
 }
 
 impl Default for NodeConfig {
@@ -75,6 +83,9 @@ impl Default for NodeConfig {
             witness_count: 3,
             attestation_interval: 4,
             probation_period: 6,
+            boot_id: 1,
+            log_window_size: 16,
+            log_advertise_interval: 5,
         }
     }
 }
@@ -156,6 +167,16 @@ pub struct Node {
     /// Quarantine scope currently applied to each subject (design §13). While
     /// present, the subject's trust is frozen (sticky until a rejoin lifts it).
     quarantine: HashMap<NodeId, QuarantineScope>,
+    /// This node's own measurement log (LtHash log-shipping).
+    own_log: EventLog,
+    /// Replicated copies of peers' logs, kept in sync by reconciliation — the
+    /// distributed evidence vault.
+    replicas: HashMap<NodeId, EventLog>,
+    /// Roots observed for sealed `(node, boot, window)` log windows, used to
+    /// detect a node forking its own history (equivocation).
+    sealed_roots: HashMap<(NodeId, u64, u64), Vec<u8>>,
+    /// Last tick this node advertised its log digests.
+    last_log_advert: u64,
     outbox: Vec<Addressed>,
 }
 
@@ -168,6 +189,7 @@ impl Node {
         attestor: Attestor,
         config: NodeConfig,
     ) -> Self {
+        let config_window = config.log_window_size;
         Node {
             mesh_id,
             id,
@@ -191,6 +213,10 @@ impl Node {
             last_challenge: HashMap::new(),
             probation_start: HashMap::new(),
             quarantine: HashMap::new(),
+            own_log: EventLog::new(config_window),
+            replicas: HashMap::new(),
+            sealed_roots: HashMap::new(),
+            last_log_advert: 0,
             outbox: Vec::new(),
         }
     }
@@ -251,6 +277,101 @@ impl Node {
         self.membership.learn(id, key, role, tick);
     }
 
+    // -- log-shipping (LtHash) ------------------------------------------
+
+    /// Append a measurement event to this node's own log at the next sequence.
+    pub fn append_event(&mut self, payload_hash: [u8; 32]) {
+        let sequence = if self.own_log.is_empty() {
+            0
+        } else {
+            self.own_log.max_sequence() + 1
+        };
+        self.own_log.append(EventRecord {
+            node_id: self.id,
+            boot_id: self.config.boot_id,
+            sequence,
+            payload_hash,
+        });
+    }
+
+    /// The LtHash root of this node's own log.
+    pub fn own_log_root(&self) -> Vec<u8> {
+        self.own_log.root()
+    }
+
+    /// Overwrite an existing event's payload — models a node *forking its own
+    /// history* (the rewrite changes the sealed window's root, which peers
+    /// detect as equivocation). Not something an honest node does.
+    pub fn rewrite_event(&mut self, sequence: u64, payload_hash: [u8; 32]) {
+        if let Some(existing) = self.own_log.get(sequence).cloned() {
+            self.own_log.append(EventRecord {
+                payload_hash,
+                ..existing
+            });
+        }
+    }
+
+    /// The LtHash root of this node's replica of `peer`'s log, if any.
+    pub fn replica_root(&self, peer: NodeId) -> Option<Vec<u8>> {
+        self.replicas.get(&peer).map(|l| l.root())
+    }
+
+    /// Periodically advertise this node's per-window log digests to peers.
+    fn advertise_logs(&mut self, now: u64) {
+        if self.config.log_advertise_interval == 0 || self.own_log.is_empty() {
+            return;
+        }
+        if now.saturating_sub(self.last_log_advert) < self.config.log_advertise_interval {
+            return;
+        }
+        self.last_log_advert = now;
+        let ads = self.own_log.advertise(self.id, self.config.boot_id);
+        for ad in ads {
+            self.broadcast(GossipMessage::LogDigest(ad));
+        }
+    }
+
+    /// Handle a peer's log digest: detect equivocation, and reconcile our
+    /// replica of that peer's log toward the advertised root.
+    fn on_log_digest(&mut self, sender: NodeId, ad: DigestAdvertisement, _now: u64) {
+        // Equivocation: once a window is sealed (the advertiser has moved
+        // past it), its root is final. A different root for a sealed window
+        // means the node forked its own history.
+        let window_end = (ad.window_id + 1) * self.config.log_window_size;
+        let sealed = ad.max_sequence + 1 >= window_end;
+        if sealed {
+            let key = (ad.node_id, ad.boot_id, ad.window_id);
+            match self.sealed_roots.get(&key) {
+                Some(prev) if *prev != ad.root => {
+                    // CHECKPOINT_EQUIVOCATION — distrust the forking node.
+                    self.membership.set_trust(&ad.node_id, TrustState::Suspicious);
+                }
+                None => {
+                    self.sealed_roots.insert(key, ad.root.clone());
+                }
+                _ => {}
+            }
+        }
+
+        // Reconcile our replica of the advertiser's log for this window.
+        let replica = self
+            .replicas
+            .entry(ad.node_id)
+            .or_insert_with(|| EventLog::new(self.config.log_window_size));
+        if replica.window_root(ad.window_id) != ad.root {
+            let lo = ad.window_id * self.config.log_window_size;
+            let hi = lo + self.config.log_window_size;
+            self.emit(
+                sender,
+                GossipMessage::LogPull {
+                    boot_id: ad.boot_id,
+                    lo,
+                    hi,
+                },
+            );
+        }
+    }
+
     pub fn current_tick(&self) -> u64 {
         self.tick
     }
@@ -271,6 +392,7 @@ impl Node {
         self.advance_probe(now);
         self.drop_stale_owed(now);
         self.run_witness_duties(now);
+        self.advertise_logs(now);
 
         // Start a new direct probe on the interval if idle.
         if self.pending.is_none() && now.is_multiple_of(self.config.probe_interval) {
@@ -436,6 +558,24 @@ impl Node {
                 // subject's trust from its assigned witnesses.
                 self.record_report(res.subject, res.verifier, res.result);
                 self.aggregate_trust(res.subject);
+            }
+            GossipMessage::LogDigest(ad) => self.on_log_digest(env.sender, ad, now),
+            GossipMessage::LogPull { boot_id, lo, hi } => {
+                // Serve our own log's records in the requested range.
+                if boot_id == self.config.boot_id {
+                    let records = self.own_log.records_in(lo, hi);
+                    if !records.is_empty() {
+                        self.emit(env.sender, GossipMessage::LogRecords(records));
+                    }
+                }
+            }
+            GossipMessage::LogRecords(records) => {
+                for r in records {
+                    self.replicas
+                        .entry(r.node_id)
+                        .or_insert_with(|| EventLog::new(self.config.log_window_size))
+                        .append(r);
+                }
             }
         }
     }

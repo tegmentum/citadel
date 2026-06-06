@@ -1,12 +1,18 @@
 # Citadel: Distributed TPM Log Shipping and LtHash Reconciliation Architecture
 
 Document Version: 0.1
-Status: First cut implemented — `crates/citadel-mesh/src/logship.rs`
-(windowed LtHash accumulators over `lthash-rs`, digest advertisements,
-binary-search reconciliation, and equivocation detection; deterministic and
-unit-tested). Remaining: gossip the advertisements over the agent transport,
-erasure-code the transferred records into the Phase-4 evidence store, and
-feed equivocation into trust as `Suspicious`.
+Status: Implemented & wired into the mesh — `crates/citadel-mesh`
+(`logship.rs` + node/gossip integration). Windowed LtHash accumulators over
+`lthash-rs`; nodes gossip per-window `DigestAdvertisement`s, reconcile their
+**replicas of peers' logs** by pulling only the divergent windows, and flag a
+node that forks a sealed window (`CHECKPOINT_EQUIVOCATION`) by setting it
+`Suspicious`. Deterministically tested (unit + in-mesh integration: a log
+replicates to every peer, incremental events stay in sync, a forking node is
+detected and distrusted). Remaining: erasure-code the transferred records
+into the Phase-4 evidence store, sub-window (binary-search) pulls over the
+network instead of whole-window, and reconciliation over the live
+`citadel-agent` HTTP transport (the in-process harness exercises the same
+node logic today).
 Project: Citadel
 Audience: Architecture, Security, Platform, Runtime Engineers
 Related: `distributed-attestation-mesh.md`, `measured-merkle-anchoring.md`, `mma-upgrade.md`

@@ -153,9 +153,13 @@ fetching records just at the leaves (`O(log n)` root comparisons); and
 records reconciles by pulling exactly those 3 with far fewer than 100 root
 comparisons; a differing payload at the same sequence is found; a window
 advertisement localizes the divergence; a node forking its own log is
-flagged. Remaining: gossip advertisements over the agent transport, route
-transferred records into the Phase-4 erasure store, and map equivocation to
-`Suspicious`.
+flagged. **Now wired into the mesh**: nodes gossip per-window digests, keep
+**replicas of peers' logs** in sync by pulling only divergent windows, and a
+node forking a sealed window is detected and set `Suspicious`
+(`tests/logship_mesh.rs`: a log replicates to every peer; incremental events
+stay in sync; an equivocator is distrusted). Remaining: erasure-code the
+transferred records into the Phase-4 store, sub-window binary-search pulls,
+and running it over the live HTTP transport.
 
 **Goal.** Implement `distributed-log-shipping-lthash.md`: nodes accumulate
 their measurement log into windowed LtHash roots, advertise them, and
