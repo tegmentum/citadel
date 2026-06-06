@@ -20,7 +20,19 @@ sequencing.
 
 ---
 
-## Item 1 — Transport wiring over `tpmd` (HTTP/mTLS)
+## Item 1 — Transport wiring (HTTP) — FIRST CUT DONE
+
+Implemented in `crates/citadel-agent`: a `Transport` seam, an async actor
+that owns one `citadel_mesh` `Node` (command channel + interval ticks,
+outbox drained to the transport), a `ChannelSwitchboard` (in-process) and an
+`HttpTransport` (`POST /v1/gossip`), the `GET /v1/mesh/status` endpoint, and
+a `citadel-agent` bin (seed-based peer addressing via `CITADEL_PEERS`).
+Tests: real tokio agents form a mesh and drive a stopped node
+`Alive → Faulty` over the channel transport, and three agents converge over
+real localhost HTTP sockets. The protocol core in `citadel-mesh` is
+unchanged. Remaining on this item: mTLS peer auth (reuse the `tpmd`
+TPM-held-key TLS work), membership-propagated addresses (vs. the static seed
+map), and hosting the same router inside `tpmd`.
 
 **Goal.** Run each node as a process that gossips with peers over the
 network, reusing the `citadel_mesh::node::Node` tick/deliver core unchanged.

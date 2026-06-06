@@ -1,0 +1,29 @@
+[package]
+name = "citadel-agent"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+description = "Citadel mesh agent: runs a citadel-mesh node as a networked process, gossiping with peers over HTTP"
+
+[lib]
+name = "citadel_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "citadel-agent"
+path = "src/main.rs"
+
+[dependencies]
+citadel-mesh = { path = "../citadel-mesh" }
+tpm-core.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
