@@ -1,31 +1,15 @@
 # Citadel: Distributed TPM Log Shipping and LtHash Reconciliation Architecture
 
-Document Version: 0.1
-Status: Implemented & wired into the mesh — `crates/citadel-mesh`
-(`logship.rs` + node/gossip integration). Windowed LtHash accumulators over
-`lthash-rs`; nodes gossip per-window `DigestAdvertisement`s, reconcile their
-**replicas of peers' logs** by pulling only the divergent windows, and flag a
-node that forks a sealed window (`CHECKPOINT_EQUIVOCATION`) by setting it
-`Suspicious`. Deterministically tested (unit + in-mesh integration: a log
-replicates to every peer, incremental events stay in sync, a forking node is
-detected and distrusted). Sealed windows are additionally **erasure-coded and
-scattered to a bounded set of HRW-assigned holders** (Reed–Solomon, default
-3-of-5), tracked for durability via signed holder receipts, and reconstructed
-over the network from the survivors after holder loss — bounded fan-out
-durable evidence rather than a full replica on every peer
-(`evidence_replication` path; `logship_erasure.rs`). Holder selection honours
-the `RestrictEvidenceHolding` quarantine scope. Placement is **self-describing**
-(each window records the `FullRoster`/`OffBox` policy its holders were chosen
-under), so the policy can be flipped on a live mesh and old windows still find
-their holders; a rate-limited **migration** (re-ship then drop) bleeds existing
-windows to a new policy without dropping below the reconstruction threshold
-(`logship_migration.rs`). Live reconciliation already
-binary-searches sub-windows over the network (pulling only the divergent
-leaf ranges). Remaining: running it all over the live `citadel-agent` HTTP
-transport (the in-process harness exercises the same node logic today).
+Document Version: 0.2
+Status: Partially implemented — the LtHash anti-entropy engine, gossip,
+binary-search reconciliation, equivocation detection, and erasure-coded durable
+preservation are built and tested in `crates/citadel-mesh`; signed quote-bound
+checkpoints, real event-source ingestion, and on-disk persistence are not yet
+built. See the **Implementation Status** section below for the section-by-section
+map; each section carries its own **Status:** line.
 Project: Citadel
 Audience: Architecture, Security, Platform, Runtime Engineers
-Related: `distributed-attestation-mesh.md`, `measured-merkle-anchoring.md`, `mma-upgrade.md`
+Related: `distributed-attestation-mesh.md`, `measured-merkle-anchoring.md`, `mma-upgrade.md`, `measured-state-transitions.md`
 
 > Relationship to the other designs (citadel repo): this is the **evidence /
 > log-shipping layer** that sits beneath the [distributed attestation
@@ -47,6 +31,34 @@ Related: `distributed-attestation-mesh.md`, `measured-merkle-anchoring.md`, `mma
 > (`cli/target/lthash_cli.component.wasm`, `wasm32-wasip2`) — the same
 > sandboxed-component delivery model as `vtpm-wasm`. Citadel reuses it for
 > the accumulator rather than reimplementing LtHash; see §8.
+
+---
+
+## Implementation Status (v0.2)
+
+Section-by-section map of this design against `crates/citadel-mesh`. ✅ done,
+◑ partial, ✗ not yet built.
+
+| § | Topic | Status | Where |
+|---|---|---|---|
+| 8 | LtHash design (windowed, sequence-bound) | ✅ | `logship.rs` (`EventLog`, `window_root`/`range_root`, `EventRecord::element`) |
+| 11 | Gossip (`DigestAdvertisement`) | ✅ | `node.rs` `advertise_logs` / `GossipMessage::LogDigest` |
+| 12 | Reconciliation (binary-search subranges) | ✅ | `on_log_digest` / `on_log_range_root`, `LOG_LEAF_WIDTH` |
+| 13 | Equivocation (`CHECKPOINT_EQUIVOCATION`) | ✅ | `sealed_roots`, `detect_equivocation` → distrust |
+| 14 | Log preservation / replication | ✅ (evolved) | HRW erasure-coded holder placement; supersedes the flat `R=5` |
+| 15 | Erasure coding (Reed-Solomon) | ✅ | `erasure.rs`, wired in `node.rs` |
+| 6 | Canonical event format | ◑ | implemented `EventRecord` carries node/boot/seq/payload only |
+| 7 | Sequence numbers | ◑ | sequences yes; explicit gap/replay/reorder detection no |
+| 16 | Quarantine workflow | ◑ | scopes/votes/operator gate done; most scope→action enforcement still inert |
+| 18 | Scaling | ◑ | advertisements-only steady state holds; legacy full-replication path is N-1 |
+| 20 | Future (mesh / cluster identity / consensus) | ◑ | mesh + TPM-keyed identity + witness-quorum trust exist; no Cluster Trust Score / PCR-outlier correlation |
+| 9 | Signed checkpoints | ✗ | no standalone `Checkpoint`; advertisements ride signed envelopes but aren't quote-bound |
+| 10 | TPM quote ↔ checkpoint link | ✗ | log-shipping and attestation are separate subsystems |
+| 5 | Event sources (`binary_bios_measurements`, IMA) | ✗ | events fed abstractly via `append_event(payload_hash)` |
+| 17 | Storage layout (on-disk) | ✗ | in-memory only (in-process harness + HTTP transport) |
+
+The three structural gaps are **signed quote-bound checkpoints (§9–10)**,
+**real event-source ingestion (§5)**, and **persistence (§17)**.
 
 ---
 
@@ -183,6 +195,11 @@ security guarantees degrade.
 
 ## 5. Event Sources
 
+**Status: ✗ Not yet built.** No ingestion from `binary_bios_measurements`, the
+TCG event log, or IMA exists. Events are currently appended abstractly via
+`Node::append_event(payload_hash)`; wiring real sources is the boundary between
+"protocol works" and "runs on a real machine."
+
 Initially supported:
 
 **TPM Event Log**
@@ -203,6 +220,12 @@ provides runtime measurement data.
 ---
 
 ## 6. Canonical Event Format
+
+**Status: ◑ Simplified.** The implemented `EventRecord` (`logship.rs`) carries
+`node_id`, `boot_id`, `sequence`, and `payload_hash` only — enough for the
+LtHash element and reconciliation. The richer fields below (`source`,
+`timestamp`, `pcr`, `digest_algorithm`, `event_type`) are not yet present and
+land with real event-source ingestion (§5).
 
 All measurements normalized into:
 
@@ -225,6 +248,11 @@ struct EventRecord {
 
 ## 7. Sequence Numbers
 
+**Status: ◑ Partial.** Records carry monotonic sequences and the LtHash element
+binds the sequence (so the same payload at a different seq is a distinct
+element). Divergence is currently found by root comparison and sealed-window
+equivocation rather than explicit gap/replay/reorder scans.
+
 Every source maintains monotonic sequence numbers:
 
 ```text
@@ -244,6 +272,8 @@ No gaps allowed. This permits:
 ---
 
 ## 8. LtHash Design
+
+**Status: ✅ Implemented** (`logship.rs`, over `lthash-rs` `LtHash16<Shake256>`).
 
 ### Core Idea
 
@@ -322,6 +352,14 @@ used.
 
 ## 9. Signed Checkpoints
 
+**Status: ✗ Gap.** There is no standalone `Checkpoint` type. Per-window
+`DigestAdvertisement`s carry `node_id`/`boot_id`/`window_id`/`max_sequence`/`root`
+and travel inside a signed `GossipEnvelope`, so the payload is authenticated —
+but it is **not** an independently signed, quote-bound checkpoint. This is the
+highest-leverage gap: a `Checkpoint` binding `lthash_root` + `pcr_quote_hash`,
+signed by the node key, would tie the distributed log to TPM attestation (§10)
+and make equivocation (§13) provably attributable.
+
 Every interval (N events or T seconds) a node emits a checkpoint:
 
 ```rust
@@ -346,6 +384,10 @@ Sign(node_private_key, checkpoint)
 
 ## 10. TPM Quote Integration
 
+**Status: ✗ Gap.** Log-shipping (`logship.rs`) and attestation (`attest.rs`)
+are currently separate subsystems; nothing binds a window's `lthash_root` to a
+TPM quote. Closes together with §9.
+
 The checkpoint references a quote:
 
 ```text
@@ -364,16 +406,22 @@ This links the distributed log ↔ TPM attestation.
 
 ## 11. Gossip Protocol
 
+**Status: ✅ Implemented.** `node.rs` `advertise_logs` emits
+`GossipMessage::LogDigest` on `log_advertise_interval`; the implemented
+`DigestAdvertisement` additionally carries `boot_id` (and `root` is a
+variable-length `Vec<u8>` LtHash snapshot, not a fixed `[u8; 32]`).
+
 ### Periodic Exchange
 
 Every ~30 seconds, nodes gossip:
 
 ```rust
 struct DigestAdvertisement {
-    node_id: UUID,
+    node_id: NodeId,
+    boot_id: u64,       // implemented: present (the design omitted it)
     window_id: u64,
     max_sequence: u64,
-    lthash_root: [u8; 32],
+    root: Vec<u8>,      // LtHash snapshot
 }
 ```
 
@@ -388,6 +436,10 @@ A peer receives e.g. `window 55, root ABC` and compares against its local copy:
 
 ## 12. Reconciliation Protocol
 
+**Status: ✅ Implemented** (`on_log_digest` / `on_log_range_root`, `LOG_LEAF_WIDTH`):
+a window-root mismatch starts a recursive bisection that pulls records only at
+the divergent leaf ranges — proven to transfer only the diff, not the window.
+
 1. Compare the window root; if it mismatches, continue.
 2. Request subranges (`55.0`, `55.1`, `55.2`, `55.3`), each represented by a
    smaller LtHash.
@@ -400,6 +452,10 @@ the missing records.
 ---
 
 ## 13. Equivocation Detection
+
+**Status: ✅ Implemented** (`sealed_roots`, `detect_equivocation`): a conflicting
+root for an already-sealed `(node, boot, window)` sets the forking node
+`Suspicious` across the mesh.
 
 Suppose a node publishes:
 
@@ -498,6 +554,14 @@ record id before folding the records into its replica
 
 ## 16. Quarantine Workflow
 
+**Status: ◑ Partial** (`quarantine.rs`). The quorum machinery is built —
+graded `QuarantineScope`s, signed proposals/votes, eligible-witness tally, and
+an operator gate for the most severe scopes. But most scopes are *declared,
+not enforced*: only loss-of-vote (`restricts_voting`), trust-freeze/isolation
+(`isolates`), and exclusion from evidence-holding (`restricts_evidence_holding`)
+actually change runtime behaviour. Workload-scheduling and credential-revoke
+scopes are inert.
+
 When a node diverges:
 
 ```text
@@ -519,6 +583,12 @@ Possible actions:
 
 ## 17. Storage Layout
 
+**Status: ✗ Not yet built.** All state (logs, windows, replicas, fragments,
+shipped-window tracking) is in-memory in the in-process harness and over the
+HTTP transport; there is no on-disk store. The durable-evidence *logic*
+(erasure placement, reconstruction) is complete (§14–15) but a crash currently
+loses local state — persistence behind it is the remaining piece.
+
 ```text
 /node/{nodeid}/
     checkpoints/
@@ -532,6 +602,12 @@ Possible actions:
 ---
 
 ## 18. Scaling Characteristics
+
+**Status: ◑ Partial.** The advertisements-only steady state and on-divergence
+reconciliation hold as designed. Caveat: the *legacy* full-window replication
+path is N-1 (a replica on every peer); the erasure-coded holder placement
+(§14) is the bounded-fan-out path and is what scales — make it the default
+before claiming the 10,000-node profile.
 
 For 10,000 nodes, only advertisements are exchanged routinely. A typical
 message is < 256 bytes, so total gossip remains manageable. Reconciliation
@@ -551,15 +627,22 @@ occurs only on divergence.
 
 ## 20. Future Enhancements
 
-**Remote Attestation Mesh** — nodes verify peers continuously.
+**Remote Attestation Mesh** — nodes verify peers continuously. **✅ Built** as
+`crates/citadel-mesh` (`distributed-attestation-mesh.md`): SWIM membership,
+HRW witness sets, quorum trust.
 
-**TPM-backed Cluster Identity** — machine identity rooted in TPM keys.
+**TPM-backed Cluster Identity** — machine identity rooted in TPM keys. **✅
+Built**: `NodeId` derives from the mesh key + TPM AK, with endorsement-anchored
+AK trust.
 
-**Cross-Node PCR Correlation** — detect anomalous measurements. Example: 9999
-nodes report kernel hash A, 1 node reports kernel hash B → automatic alert.
+**Cross-Node PCR Correlation** — detect anomalous measurements (9999 nodes
+report kernel hash A, 1 reports B → alert). **◑ Adjacent**: the multi-value
+reference appraisal (`measured-state-transitions.md`) accepts/denies measured
+states per policy, but explicit fleet-wide outlier correlation is not a feature.
 
-**Attestation Consensus** — the cluster computes a Cluster Trust Score based on
-peer agreement.
+**Attestation Consensus** — a Cluster Trust Score from peer agreement. **◑
+Partial**: per-subject trust is decided by witness quorum and `FleetView`
+aggregates counts; there is no single cluster-wide trust score yet.
 
 ---
 
