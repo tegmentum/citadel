@@ -7,7 +7,9 @@
 use citadel_mesh::attest::TrustAnchors;
 use citadel_mesh::harness::Mesh;
 use citadel_mesh::node::NodeConfig;
-use citadel_mesh::reference::{PcrClass, ReferenceEntry, ReferenceManifest, Validity};
+use citadel_mesh::reference::{
+    ArtifactIdentity, FleetArtifactPolicy, PcrClass, ReferenceEntry, ReferenceManifest, Validity,
+};
 use citadel_mesh::state::TrustState;
 use citadel_mesh::{MeshKeypair, NodeId};
 
@@ -146,7 +148,7 @@ fn a_signed_manifest_authorizes_an_upgrade_fleet_wide() {
     let manifest = ReferenceManifest::issue(
         &authority,
         "prod",
-        vec![ReferenceEntry { index: 0, digest: new_digest, validity: Validity::always() }],
+        vec![ReferenceEntry::new(0, new_digest, Validity::always())],
         vec![],
     );
     mesh.broadcast_reference_manifest(ids[0], manifest);
@@ -179,7 +181,7 @@ fn a_manifest_from_an_untrusted_issuer_is_ignored() {
     let manifest = ReferenceManifest::issue(
         &rogue,
         "prod",
-        vec![ReferenceEntry { index: 0, digest: new_digest, validity: Validity::always() }],
+        vec![ReferenceEntry::new(0, new_digest, Validity::always())],
         vec![],
     );
     mesh.broadcast_reference_manifest(ids[0], manifest);
@@ -192,6 +194,59 @@ fn a_manifest_from_an_untrusted_issuer_is_ignored() {
                 mesh.trust_of(observer, node),
                 Some(TrustState::Suspicious),
                 "{observer} ignores the rogue manifest and distrusts {node}"
+            );
+        }
+    }
+}
+
+#[test]
+fn revoking_an_artifact_version_distrusts_running_nodes() {
+    // §10.2 revocation: a node runs an authorized kernel; that version is later
+    // denylisted (CVE) and the node — byte-for-byte unchanged — is distrusted.
+    let (mut mesh, ids) = mesh_of(6);
+    mesh.run(12);
+    let node = ids[4];
+
+    let authority = MeshKeypair::from_seed([200u8; 32]);
+    mesh.set_reference_authorities_all(TrustAnchors::with(authority.public()));
+    mesh.set_artifact_policy_all(
+        FleetArtifactPolicy::new().allow_channel("kernel", "prod").min_version("kernel", vec![6, 8, 0]),
+    );
+
+    // The node moves to kernel 6.8.0; the authority signs a manifest carrying
+    // that provenance, and it is accepted fleet-wide.
+    mesh.measured_state_change(node, "sha256", 0, &[0x33; 32]);
+    let digest = mesh.pcr_digest(node, "sha256", 0);
+    let entry = ReferenceEntry::new(0, digest, Validity::always()).with_artifact(ArtifactIdentity {
+        component: "kernel".into(),
+        publisher: "canonical".into(),
+        channel: "prod".into(),
+        version: vec![6, 8, 0],
+        build_id: None,
+    });
+    mesh.broadcast_reference_manifest(ids[0], ReferenceManifest::issue(&authority, "prod", vec![entry], vec![]));
+    mesh.run(12);
+    for &observer in &ids {
+        if observer != node {
+            assert_eq!(mesh.trust_of(observer, node), Some(TrustState::Trusted));
+        }
+    }
+
+    // A CVE lands: revoke 6.8.0 fleet-wide. The node is unchanged, but now
+    // matches a forbidden artifact → distrusted on the next challenges.
+    mesh.set_artifact_policy_all(
+        FleetArtifactPolicy::new()
+            .allow_channel("kernel", "prod")
+            .min_version("kernel", vec![6, 8, 0])
+            .deny_version("kernel", vec![6, 8, 0]),
+    );
+    mesh.run(12);
+    for &observer in &ids {
+        if observer != node {
+            assert_eq!(
+                mesh.trust_of(observer, node),
+                Some(TrustState::Suspicious),
+                "{observer} distrusts {node} running the revoked kernel"
             );
         }
     }

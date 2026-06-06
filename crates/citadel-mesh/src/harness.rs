@@ -27,7 +27,7 @@ use crate::id::{Epoch, MeshId, NodeId};
 use crate::membership::Membership;
 use crate::node::{Node, NodeConfig, WitnessSummary};
 use crate::quarantine::{self, QuarantineDecision, QuarantineScope};
-use crate::reference::{PcrClass, ReferenceManifest, Validity};
+use crate::reference::{FleetArtifactPolicy, PcrClass, ReferenceManifest, Validity};
 use crate::state::{LivenessState, TrustState};
 use crate::witness;
 
@@ -391,6 +391,14 @@ impl Mesh {
     /// gossip it to the fleet (each node adopts it only if it trusts the issuer).
     pub fn broadcast_reference_manifest(&mut self, from: NodeId, manifest: ReferenceManifest) {
         self.node_mut(from).broadcast_reference_manifest(manifest);
+    }
+
+    /// Install the fleet artifact policy across every node (§10.2). Re-applying
+    /// with a new denial revokes an already-accepted state fleet-wide.
+    pub fn set_artifact_policy_all(&mut self, policy: FleetArtifactPolicy) {
+        for n in &mut self.nodes {
+            n.set_artifact_policy(policy.clone());
+        }
     }
 
     /// Simulate remediation (a clean reimage): replace `subject`'s backend so

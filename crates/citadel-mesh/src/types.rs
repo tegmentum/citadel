@@ -306,6 +306,9 @@ pub enum ReasonCode {
     /// Quoted state matches only a *retired* reference source — a node on a
     /// previously-good but withdrawn (unpatched) state.
     ReferenceRetired,
+    /// Quoted state matches a known reference whose artifact fleet policy now
+    /// forbids — revoked / denylisted / below baseline / wrong channel.
+    ReferenceDenied,
     QuoteSignatureInvalid,
     NonceMismatch,
     AkUntrusted,

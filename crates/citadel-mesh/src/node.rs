@@ -19,7 +19,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::attest::{Attestor, ReferenceMeasurements, TrustAnchors};
 use crate::reference::{
-    AcceptedReferences, PcrClass, ReferenceManifest, ReferenceMatchPolicy, RetiredAction, Validity,
+    AcceptedReferences, FleetArtifactPolicy, PcrClass, ReferenceManifest, ReferenceMatchPolicy,
+    RetiredAction, Validity,
 };
 use crate::crypto::MeshKeypair;
 use crate::enrollment::{
@@ -381,6 +382,14 @@ impl Node {
     /// manifests are judged against those anchors instead.
     pub fn set_reference_authorities(&mut self, authorities: TrustAnchors) {
         self.reference_authorities = Some(authorities);
+    }
+
+    /// Install the fleet artifact policy gating artifact-bearing references —
+    /// approved channels, version baselines, and revocation denylists (§10.2).
+    /// Re-evaluated each appraisal, so adding a denial revokes an already-
+    /// accepted state on the next challenge.
+    pub fn set_artifact_policy(&mut self, policy: FleetArtifactPolicy) {
+        self.peer_reference.set_artifact_policy(policy);
     }
 
     /// The authority set used to judge reference manifests (separate set if

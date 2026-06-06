@@ -1,9 +1,10 @@
 # Citadel: Authorized Measured-State Transitions
 
 Document Version: 0.2
-Status: Layered design. Layer 1 (multi-value appraisal engine) **built**
-(`reference.rs`); Layer 2 (per-PCR policy class) in progress; Layers 3–4
-(signed manifests, boot profiles, event-log semantic validation) planned.
+Status: Layered design. Layers 1–3 **built** (`reference.rs`): multi-value
+appraisal, per-PCR policy class, and signed manifests with artifact-identity
+provenance + revocation. Layer 4 (boot profiles, quorum promotion, event-log
+semantic validation) planned.
 Project: Citadel
 Audience: Architecture, Security, Platform, Runtime Engineers
 Related: `distributed-attestation-mesh.md`, `distributed-log-shipping-lthash.md`,
@@ -247,7 +248,16 @@ states. **Honest caveat:** until Layer 4 lands, a `Semantic` index is
 engine exists means the kernel is not appraised, only its integrity proven by
 the quote. Use knowingly.
 
-### 10.2 Signed manifests + signed artifact identity (Layer 3)
+### 10.2 Signed manifests + signed artifact identity (Layer 3 — built)
+
+> **Status: built** (`reference.rs`: `ReferenceManifest`, `ArtifactIdentity`,
+> `FleetArtifactPolicy`; `node.rs`/`harness.rs` wiring; tests
+> `reference_transition.rs`). A signed manifest gossips fleet-wide and is
+> adopted only if its issuer chains to a trusted reference authority; entries
+> carry artifact provenance gated by per-component channel / version-baseline /
+> denylist policy, re-checked each appraisal so **revocation distrusts a
+> running node** (`REFERENCE_DENIED`). Richer predicates (publisher key id,
+> boot-param policy) layer on the same structure.
 
 Acceptance from provenance, not enumeration. When the update system rolls a
 kernel it emits a signed **manifest**:
@@ -340,11 +350,14 @@ event log ──(replay == quote)──► events ─► Layer 3 manifest / arti
 * **Layer 2 — per-PCR policy class (§10.1). ◑ In progress.** `PcrClass` on
   `AcceptedReferences`; `appraise` consults it; node/harness setters. No event
   log required.
-* **Layer 3 — signed manifests + artifact identity (§10.2).** Signed
-  `ReferenceUpdate`/manifest, `reference_authorities` anchors (decision 3),
-  merge, evidence-chain audit; then channel/version/denylist predicates. Folds
-  in the old "authorized updates" + "distribution" work (signed gossip +
-  anti-entropy + late-joiner convergence).
+* **Layer 3 — signed manifests + artifact identity (§10.2). ✅ Built.**
+  `ReferenceManifest` (issuer anchored directly or via publisher cert chain),
+  `reference_authorities` anchors (decision 3), idempotent gossiped adoption;
+  `ArtifactIdentity` + `FleetArtifactPolicy` (channel / version-baseline /
+  denylist), re-checked each appraisal so revocation takes effect on running
+  nodes (`REFERENCE_DENIED`). Remaining within Layer 3: evidence-chain audit
+  record of adopted manifests, and anti-entropy re-advertisement for nodes that
+  missed a gossiped manifest.
 * **Layer 4 — boot profiles, quorum promotion, event-log semantic validation
   (§§10.3–10.4).** `node_id → profile`; promotion lifecycle over mesh quorum;
   TCG event-log ingestion + replay + per-artifact policy. Unify with the MMA

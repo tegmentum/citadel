@@ -151,12 +151,113 @@ pub enum ReferenceMatchPolicy {
     CoupledOnly,
 }
 
-/// A standalone accepted digest for one PCR index.
+/// Provenance of the artifact that produced a measured digest (design §10.2).
+/// The hash is *evidence*; this identity is what fleet policy actually judges —
+/// "signed by an approved publisher, from an approved channel, recent enough,
+/// not revoked" — so a new build is accepted on provenance, not enumeration.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactIdentity {
+    /// What this is — `"kernel"`, `"firmware"`, `"linux-image-generic"`, …
+    pub component: String,
+    /// Who published it — `"canonical"`, a key id, etc.
+    pub publisher: String,
+    /// Release channel — `"prod-approved"`, `"edge"`, …
+    pub channel: String,
+    /// Dotted-numeric version for ordering, e.g. `6.8.0-45` → `[6, 8, 0, 45]`.
+    pub version: Vec<u64>,
+    /// Optional build identifier (for revoking a specific build).
+    pub build_id: Option<String>,
+}
+
+/// The verifier-side fleet policy that gates artifact-bearing references
+/// (design §10.2). Empty = no constraint (permits everything). Constraints are
+/// **per component** and re-checked at appraisal time, so adding a denial
+/// revokes an already-accepted state on the next challenge.
+#[derive(Clone, Debug, Default)]
+pub struct FleetArtifactPolicy {
+    approved_channels: BTreeMap<String, std::collections::BTreeSet<String>>,
+    min_version: BTreeMap<String, Vec<u64>>,
+    denied_versions: std::collections::BTreeSet<(String, Vec<u64>)>,
+    denied_builds: std::collections::BTreeSet<String>,
+}
+
+impl FleetArtifactPolicy {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Restrict `component` to an approved `channel` (repeatable to allow more).
+    pub fn allow_channel(mut self, component: impl Into<String>, channel: impl Into<String>) -> Self {
+        self.approved_channels.entry(component.into()).or_default().insert(channel.into());
+        self
+    }
+
+    /// Require `component` to be at least `version`.
+    pub fn min_version(mut self, component: impl Into<String>, version: Vec<u64>) -> Self {
+        self.min_version.insert(component.into(), version);
+        self
+    }
+
+    /// Revoke a specific `(component, version)`.
+    pub fn deny_version(mut self, component: impl Into<String>, version: Vec<u64>) -> Self {
+        self.denied_versions.insert((component.into(), version));
+        self
+    }
+
+    /// Revoke a specific build id.
+    pub fn deny_build(mut self, build_id: impl Into<String>) -> Self {
+        self.denied_builds.insert(build_id.into());
+        self
+    }
+
+    /// Does fleet policy permit this artifact? An unconstrained component is
+    /// permitted (policy is opt-in per component); a denylisted version/build,
+    /// an unapproved channel, or a below-baseline version is not.
+    pub fn permits(&self, a: &ArtifactIdentity) -> bool {
+        if let Some(channels) = self.approved_channels.get(&a.component) {
+            if !channels.contains(&a.channel) {
+                return false;
+            }
+        }
+        if let Some(min) = self.min_version.get(&a.component) {
+            if a.version < *min {
+                return false;
+            }
+        }
+        if self.denied_versions.contains(&(a.component.clone(), a.version.clone())) {
+            return false;
+        }
+        if let Some(build) = &a.build_id {
+            if self.denied_builds.contains(build) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// A standalone accepted digest for one PCR index, optionally carrying the
+/// provenance ([`ArtifactIdentity`]) that fleet policy judges.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReferenceEntry {
     pub index: u32,
     pub digest: Vec<u8>,
     pub validity: Validity,
+    #[serde(default)]
+    pub artifact: Option<ArtifactIdentity>,
+}
+
+impl ReferenceEntry {
+    /// A bare digest entry (no artifact provenance; Layer-1 behaviour).
+    pub fn new(index: u32, digest: Vec<u8>, validity: Validity) -> Self {
+        ReferenceEntry { index, digest, validity, artifact: None }
+    }
+
+    /// Attach artifact provenance (so fleet policy gates this entry).
+    pub fn with_artifact(mut self, artifact: ArtifactIdentity) -> Self {
+        self.artifact = Some(artifact);
+        self
+    }
 }
 
 /// A signed authorization to adopt new accepted states (design §10.2). The
@@ -291,6 +392,9 @@ pub enum ReferenceOutcome {
     /// At least one index matched only a *retired* source; `fail` per the
     /// configured [`RetiredAction`].
     Retired { fail: bool },
+    /// An index matched a known state whose artifact fleet policy forbids
+    /// (revoked / denylisted / below baseline / wrong channel) — a hard fail.
+    Denied,
     /// An index is covered by a known source but matches none → likely tamper.
     Unknown,
     /// An index has no (active/retired) source at all → can't assert good.
@@ -301,10 +405,12 @@ pub enum ReferenceOutcome {
 enum IndexClass {
     /// No active/retired source covers this index.
     Uncovered,
-    /// An active source matches the quoted digest.
+    /// An active, fleet-policy-permitted source matches the quoted digest.
     Active,
     /// Only a retired source matches; carries that source's window for grading.
     Retired(Validity),
+    /// An active source matches the digest but fleet policy forbids its artifact.
+    Denied,
     /// Covered by a source, but the quoted digest matches none.
     Mismatch,
 }
@@ -320,6 +426,8 @@ pub struct AcceptedReferences {
     /// Class for indices without an explicit entry (default `Strict`, which
     /// preserves exact-match behaviour for everything until reclassified).
     default_class: PcrClass,
+    /// Fleet policy gating artifact-bearing entries (channel / version / denylist).
+    artifact_policy: FleetArtifactPolicy,
 }
 
 impl AcceptedReferences {
@@ -330,6 +438,7 @@ impl AcceptedReferences {
             profiles: Vec::new(),
             pcr_classes: BTreeMap::new(),
             default_class: PcrClass::Strict,
+            artifact_policy: FleetArtifactPolicy::default(),
         }
     }
 
@@ -339,11 +448,7 @@ impl AcceptedReferences {
         let entries = reference
             .pcrs
             .iter()
-            .map(|(index, digest)| ReferenceEntry {
-                index: *index,
-                digest: digest.clone(),
-                validity: Validity::always(),
-            })
+            .map(|(index, digest)| ReferenceEntry::new(*index, digest.clone(), Validity::always()))
             .collect();
         AcceptedReferences {
             bank: reference.bank,
@@ -351,6 +456,7 @@ impl AcceptedReferences {
             profiles: Vec::new(),
             pcr_classes: BTreeMap::new(),
             default_class: PcrClass::Strict,
+            artifact_policy: FleetArtifactPolicy::default(),
         }
     }
 
@@ -362,10 +468,23 @@ impl AcceptedReferences {
     /// `(index, digest, validity)` entry is not duplicated (so re-applying a
     /// gossiped manifest is safe).
     pub fn accept_entry(&mut self, index: u32, digest: Vec<u8>, validity: Validity) {
-        let entry = ReferenceEntry { index, digest, validity };
+        let entry = ReferenceEntry::new(index, digest, validity);
         if !self.entries.contains(&entry) {
             self.entries.push(entry);
         }
+    }
+
+    /// Add a fully-specified entry (e.g. one carrying artifact provenance).
+    /// Idempotent.
+    pub fn accept(&mut self, entry: ReferenceEntry) {
+        if !self.entries.contains(&entry) {
+            self.entries.push(entry);
+        }
+    }
+
+    /// Set the fleet artifact policy (channel / version / denylist gating).
+    pub fn set_artifact_policy(&mut self, policy: FleetArtifactPolicy) {
+        self.artifact_policy = policy;
     }
 
     /// Add a coupled profile (accepted only when fully satisfied). Idempotent
@@ -377,10 +496,13 @@ impl AcceptedReferences {
         }
     }
 
-    /// Adopt the entries and profiles a (verified, authorized) manifest carries.
+    /// Adopt the entries and profiles a (verified, authorized) manifest carries,
+    /// preserving each entry's artifact provenance. Idempotent.
     pub fn adopt_manifest(&mut self, manifest: &ReferenceManifest) {
         for e in &manifest.entries {
-            self.accept_entry(e.index, e.digest.clone(), e.validity.clone());
+            if !self.entries.contains(e) {
+                self.entries.push(e.clone());
+            }
         }
         for p in &manifest.profiles {
             if !self.profiles.iter().any(|q| q.id == p.id) {
@@ -416,6 +538,7 @@ impl AcceptedReferences {
     ) -> IndexClass {
         let mut covered = false;
         let mut retired: Option<Validity> = None;
+        let mut denied = false;
 
         if policy == ReferenceMatchPolicy::Flexible {
             for e in self.entries.iter().filter(|e| e.index == index) {
@@ -423,7 +546,12 @@ impl AcceptedReferences {
                     ActiveState::Active => {
                         covered = true;
                         if e.digest == digest {
-                            return IndexClass::Active;
+                            // An active digest match counts only if its artifact
+                            // (if any) is permitted by current fleet policy.
+                            if e.artifact.as_ref().is_none_or(|a| self.artifact_policy.permits(a)) {
+                                return IndexClass::Active;
+                            }
+                            denied = true; // matched a now-forbidden artifact
                         }
                     }
                     ActiveState::Retired => {
@@ -453,10 +581,15 @@ impl AcceptedReferences {
             }
         }
 
-        match retired {
-            Some(v) => IndexClass::Retired(v),
-            None if covered => IndexClass::Mismatch,
-            None => IndexClass::Uncovered,
+        // A revoked artifact (denied) outranks a retired or absent match.
+        if denied {
+            IndexClass::Denied
+        } else if let Some(v) = retired {
+            IndexClass::Retired(v)
+        } else if covered {
+            IndexClass::Mismatch
+        } else {
+            IndexClass::Uncovered
         }
     }
 
@@ -474,6 +607,7 @@ impl AcceptedReferences {
         let q: BTreeMap<u32, &[u8]> = quoted.iter().map(|p| (p.index, p.digest.as_slice())).collect();
 
         let mut any_uncovered = false;
+        let mut any_denied = false;
         let mut retired_windows: Vec<Validity> = Vec::new();
         for pv in quoted {
             match self.class_of(pv.index) {
@@ -485,6 +619,7 @@ impl AcceptedReferences {
                 PcrClass::Strict => {
                     match self.classify(pv.index, &pv.digest, &q, now_tick, now_revision, policy) {
                         IndexClass::Mismatch => return ReferenceOutcome::Unknown,
+                        IndexClass::Denied => any_denied = true,
                         IndexClass::Uncovered => any_uncovered = true,
                         IndexClass::Retired(v) => retired_windows.push(v),
                         IndexClass::Active => {}
@@ -493,7 +628,11 @@ impl AcceptedReferences {
             }
         }
 
-        if any_uncovered {
+        // Precedence (Unknown already returned early): Denied > Incomplete >
+        // Retired > Accepted.
+        if any_denied {
+            ReferenceOutcome::Denied
+        } else if any_uncovered {
             ReferenceOutcome::Incomplete
         } else if !retired_windows.is_empty() {
             // The harshest retired component decides: fail if any is past grace.
@@ -740,7 +879,7 @@ mod tests {
     #[test]
     fn manifest_signs_verifies_and_detects_tamper() {
         let authority = MeshKeypair::from_seed([200u8; 32]);
-        let entries = vec![ReferenceEntry { index: 4, digest: b"k2".to_vec(), validity: Validity::always() }];
+        let entries = vec![ReferenceEntry::new(4, b"k2".to_vec(), Validity::always())];
         let m = ReferenceManifest::issue(&authority, "prod", entries, vec![]);
         assert!(m.verify_signature());
 
@@ -754,7 +893,7 @@ mod tests {
     fn manifest_issuer_anchored_directly_or_via_chain() {
         let root = MeshKeypair::from_seed([1u8; 32]);
         let publisher = MeshKeypair::from_seed([2u8; 32]);
-        let entries = vec![ReferenceEntry { index: 4, digest: b"k2".to_vec(), validity: Validity::always() }];
+        let entries = vec![ReferenceEntry::new(4, b"k2".to_vec(), Validity::always())];
 
         // Direct: issued by an anchored key.
         let direct = ReferenceManifest::issue(&root, "", entries.clone(), vec![]);
@@ -775,7 +914,7 @@ mod tests {
         let m = ReferenceManifest::issue(
             &authority,
             "",
-            vec![ReferenceEntry { index: 0, digest: b"fw2".to_vec(), validity: Validity::always() }],
+            vec![ReferenceEntry::new(0, b"fw2".to_vec(), Validity::always())],
             vec![],
         );
         let mut r = refs();
@@ -783,6 +922,89 @@ mod tests {
         r.adopt_manifest(&m); // idempotent
         assert_eq!(
             r.appraise(&[pcr(0, b"fw2")], 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            ReferenceOutcome::Accepted
+        );
+    }
+
+    fn kernel_artifact(version: Vec<u64>) -> ArtifactIdentity {
+        ArtifactIdentity {
+            component: "kernel".into(),
+            publisher: "canonical".into(),
+            channel: "prod".into(),
+            version,
+            build_id: None,
+        }
+    }
+
+    #[test]
+    fn artifact_policy_permits_and_rejects() {
+        let policy = FleetArtifactPolicy::new()
+            .allow_channel("kernel", "prod")
+            .min_version("kernel", vec![6, 8, 0])
+            .deny_version("kernel", vec![6, 7, 0]);
+
+        assert!(policy.permits(&kernel_artifact(vec![6, 8, 0])));
+        assert!(policy.permits(&kernel_artifact(vec![6, 9, 1]))); // newer ok
+        // wrong channel
+        let mut edge = kernel_artifact(vec![6, 8, 0]);
+        edge.channel = "edge".into();
+        assert!(!policy.permits(&edge));
+        // below baseline
+        assert!(!policy.permits(&kernel_artifact(vec![6, 7, 9])));
+        // explicitly denied version
+        assert!(!policy.permits(&kernel_artifact(vec![6, 7, 0])));
+        // an unconstrained component is permitted
+        let fw = ArtifactIdentity { component: "firmware".into(), ..kernel_artifact(vec![1]) };
+        assert!(policy.permits(&fw));
+    }
+
+    #[test]
+    fn revoking_a_version_flips_accepted_to_denied() {
+        // The revocation story: the same accepted entry goes from Accepted to
+        // Denied when fleet policy adds a denial — no change to the node.
+        let mut r = refs();
+        r.accept(
+            ReferenceEntry::new(4, b"k680".to_vec(), Validity::always())
+                .with_artifact(kernel_artifact(vec![6, 8, 0])),
+        );
+        let q = [pcr(4, b"k680")];
+
+        // No artifact policy → permitted → Accepted.
+        assert_eq!(
+            r.appraise(&q, 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            ReferenceOutcome::Accepted
+        );
+
+        // Revoke 6.8.0 → the running node is now Denied.
+        r.set_artifact_policy(FleetArtifactPolicy::new().deny_version("kernel", vec![6, 8, 0]));
+        assert_eq!(
+            r.appraise(&q, 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            ReferenceOutcome::Denied
+        );
+    }
+
+    #[test]
+    fn below_baseline_artifact_is_denied() {
+        let mut r = refs();
+        r.accept(
+            ReferenceEntry::new(4, b"old".to_vec(), Validity::always())
+                .with_artifact(kernel_artifact(vec![6, 7, 0])),
+        );
+        r.set_artifact_policy(FleetArtifactPolicy::new().min_version("kernel", vec![6, 8, 0]));
+        assert_eq!(
+            r.appraise(&[pcr(4, b"old")], 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            ReferenceOutcome::Denied
+        );
+    }
+
+    #[test]
+    fn bare_entries_are_unaffected_by_artifact_policy() {
+        // An entry with no artifact provenance is never gated by fleet policy.
+        let mut r = refs();
+        r.accept_entry(0, b"fw1".to_vec(), Validity::always());
+        r.set_artifact_policy(FleetArtifactPolicy::new().deny_version("kernel", vec![6, 8, 0]));
+        assert_eq!(
+            r.appraise(&[pcr(0, b"fw1")], 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
             ReferenceOutcome::Accepted
         );
     }

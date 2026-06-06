@@ -247,6 +247,10 @@ impl Attestor {
                 reasons.push(ReasonCode::ReferenceRetired);
                 state_hard_fail = fail;
             }
+            ReferenceOutcome::Denied => {
+                reasons.push(ReasonCode::ReferenceDenied);
+                state_hard_fail = true;
+            }
             ReferenceOutcome::Incomplete => reference_incomplete = true,
         }
 
