@@ -278,11 +278,12 @@ impl Mesh {
     }
 
     /// Retarget durable-evidence placement across every node: the policy for
-    /// new windows (`offbox`) plus the per-node migration concurrency. Models
-    /// an operator flipping the placement policy on a live mesh.
-    pub fn set_evidence_placement_all(&mut self, offbox: bool, migration_rate: usize) {
+    /// new windows (`offbox`), the erasure `parity` paired with it, and the
+    /// per-node migration concurrency. Models an operator flipping the
+    /// placement policy (and bumping redundancy) on a live mesh.
+    pub fn set_evidence_placement_all(&mut self, offbox: bool, parity: usize, migration_rate: usize) {
         for n in &mut self.nodes {
-            n.set_evidence_placement(offbox, migration_rate);
+            n.set_evidence_placement(offbox, parity, migration_rate);
         }
     }
 

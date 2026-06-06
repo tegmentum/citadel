@@ -244,14 +244,19 @@ struct ShippedWindow {
 /// the new placement is durable, at which point we cut over and drop the old.
 struct Migration {
     to: PlacementPolicy,
+    /// The erasure scheme of the new placement (lets a parity bump ride the
+    /// same migration as a policy change).
+    scheme: ErasureScheme,
     holders: Vec<NodeId>,
     acked: HashSet<usize>,
 }
 
 /// A self-describing handle to a sealed window's durable placement — the
-/// record id, its subject, and the policy its holders were chosen under.
-/// Carrying the policy is what lets a recoverer replay the exact holder set
-/// even after the mesh's *current* policy has changed.
+/// record id, its subject, the policy its holders were chosen under, and the
+/// holder count (= the erasure scheme's `total`) at placement time. Carrying
+/// both the policy *and* the count is what lets a recoverer replay the exact
+/// holder set even after the mesh's current policy *or* erasure scheme has
+/// changed (e.g. a parity bump paired with `OffBox`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WindowPlacement {
     pub record_id: [u8; 32],
@@ -259,6 +264,7 @@ pub struct WindowPlacement {
     pub boot_id: u64,
     pub window_id: u64,
     pub policy: PlacementPolicy,
+    pub holder_count: usize,
 }
 
 /// Sub-range width at which network reconciliation stops bisecting and pulls
@@ -503,20 +509,22 @@ impl Node {
         }
     }
 
-    /// The fragment **holders** for a window: a bounded set chosen by
+    /// The `count` fragment **holders** for a window: a bounded set chosen by
     /// rendezvous hashing over the current roster, *excluding* any node
     /// quarantined at/above `RestrictEvidenceHolding`, and — under
     /// [`PlacementPolicy::OffBox`] — the `subject` itself. Deterministic given
-    /// the same roster and policy, so origin and recoverer agree.
+    /// the same roster, policy, and count, so origin and recoverer agree even
+    /// across a policy or erasure-scheme change.
     fn eligible_holders(
         &self,
         record_id: [u8; 32],
         subject: NodeId,
         policy: PlacementPolicy,
+        count: usize,
     ) -> Vec<NodeId> {
-        let Some(scheme) = self.evidence_scheme() else {
+        if count == 0 {
             return Vec::new();
-        };
+        }
         let roster: Vec<NodeId> = self
             .membership
             .iter()
@@ -529,7 +537,7 @@ impl Node {
             })
             .filter(|n| policy == PlacementPolicy::FullRoster || *n != subject)
             .collect();
-        assign_holders(record_id, &roster, scheme.total())
+        assign_holders(record_id, &roster, count)
     }
 
     /// Scatter one window's shards across `holders` under `policy`, storing
@@ -607,7 +615,7 @@ impl Node {
             let Some((record_id, fragments)) = self.encode_window(window_id) else {
                 continue;
             };
-            let holders = self.eligible_holders(record_id, self.id, policy);
+            let holders = self.eligible_holders(record_id, self.id, policy, scheme.total());
             if holders.is_empty() {
                 continue;
             }
@@ -641,16 +649,19 @@ impl Node {
             return;
         }
         let target = self.target_policy();
-        let boot = self.config.boot_id;
+        let Some(scheme) = self.evidence_scheme() else {
+            return;
+        };
 
-        // 1) Cut over any in-flight migration whose new placement is durable.
+        // 1) Cut over any in-flight migration whose new placement is durable
+        //    (judged against the *new* scheme's reconstruction threshold).
         let ready: Vec<(u64, u64)> = self
             .shipped_windows
             .iter()
             .filter(|(_, w)| {
                 w.migrating
                     .as_ref()
-                    .is_some_and(|m| m.acked.len() >= w.scheme.data)
+                    .is_some_and(|m| m.acked.len() >= m.scheme.data)
             })
             .map(|(k, _)| *k)
             .collect();
@@ -659,6 +670,9 @@ impl Node {
         }
 
         // 2) Start new migrations, bounded so at most `rate` run concurrently.
+        //    A window needs migration if its committed policy *or* erasure
+        //    scheme differs from the current target (so a parity bump migrates
+        //    just like a policy flip).
         let in_flight = self
             .shipped_windows
             .values()
@@ -671,12 +685,14 @@ impl Node {
         let to_start: Vec<(u64, u64, [u8; 32])> = self
             .shipped_windows
             .iter()
-            .filter(|(_, w)| w.migrating.is_none() && w.policy != target)
+            .filter(|(_, w)| {
+                w.migrating.is_none() && (w.policy != target || w.scheme != scheme)
+            })
             .map(|(k, w)| (k.0, k.1, w.record_id))
             .take(budget)
             .collect();
         for (boot_id, window_id, record_id) in to_start {
-            let new_holders = self.eligible_holders(record_id, self.id, target);
+            let new_holders = self.eligible_holders(record_id, self.id, target, scheme.total());
             let Some((rid, fragments)) = self.encode_window(window_id) else {
                 continue;
             };
@@ -687,9 +703,10 @@ impl Node {
             // Re-ship to the new holders (does not touch the committed copy).
             let self_acked =
                 self.scatter(record_id, boot_id, window_id, target, &new_holders, fragments);
-            if let Some(sw) = self.shipped_windows.get_mut(&(boot, window_id)) {
+            if let Some(sw) = self.shipped_windows.get_mut(&(boot_id, window_id)) {
                 sw.migrating = Some(Migration {
                     to: target,
+                    scheme,
                     holders: new_holders,
                     acked: self_acked,
                 });
@@ -709,6 +726,7 @@ impl Node {
         let record_id = sw.record_id;
         let old_holders = std::mem::take(&mut sw.holders);
         sw.policy = migration.to;
+        sw.scheme = migration.scheme;
         sw.holders = migration.holders;
         sw.acked = migration.acked;
         let new_set: HashSet<NodeId> = sw.holders.iter().copied().collect();
@@ -827,8 +845,12 @@ impl Node {
     /// the mesh's current policy. Seeded with any shard we already hold; the
     /// rebuilt records land in our replica once a threshold of shards returns.
     pub fn request_reconstruction(&mut self, placement: &WindowPlacement) {
-        let holders =
-            self.eligible_holders(placement.record_id, placement.subject, placement.policy);
+        let holders = self.eligible_holders(
+            placement.record_id,
+            placement.subject,
+            placement.policy,
+            placement.holder_count,
+        );
         let mine: Vec<LogFragment> = self
             .held_fragments
             .get(&placement.record_id)
@@ -856,6 +878,7 @@ impl Node {
             boot_id,
             window_id,
             policy: w.policy,
+            holder_count: w.scheme.total(),
         })
     }
 
@@ -893,15 +916,24 @@ impl Node {
     /// The assigned fragment holders for a window placement (deterministic;
     /// ops/tests).
     pub fn fragment_holders(&self, placement: &WindowPlacement) -> Vec<NodeId> {
-        self.eligible_holders(placement.record_id, placement.subject, placement.policy)
+        self.eligible_holders(
+            placement.record_id,
+            placement.subject,
+            placement.policy,
+            placement.holder_count,
+        )
     }
 
-    /// Retarget durable-evidence placement at runtime: set the policy applied
-    /// to new windows and how many already-shipped windows may migrate at once.
-    /// This is the safe "flip the flag" entry point — old windows keep their
-    /// recorded policy and are reconstructable throughout the migration.
-    pub fn set_evidence_placement(&mut self, offbox: bool, migration_rate: usize) {
+    /// Retarget durable-evidence placement at runtime: the policy applied to
+    /// new windows (`offbox`), the erasure `parity` paired with it (bump this
+    /// alongside `OffBox` to offset the lost holder candidate in small meshes),
+    /// and how many already-shipped windows may migrate at once. This is the
+    /// safe "flip the flag" entry point — old windows keep their recorded
+    /// policy/scheme and stay reconstructable throughout the migration, which
+    /// re-ships them under the new policy *and* parity before dropping the old.
+    pub fn set_evidence_placement(&mut self, offbox: bool, parity: usize, migration_rate: usize) {
         self.config.evidence_offbox = offbox;
+        self.config.evidence_parity_shards = parity;
         self.config.evidence_migration_rate = migration_rate;
     }
 

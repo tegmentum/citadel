@@ -456,15 +456,26 @@ mesh whose roster is no larger than the shard count it can force shards to
 double up on holders (weaker fault tolerance); at scale the subject is rarely
 its own holder anyway, so the two policies converge. Set `evidence_offbox`.
 
+To offset that in small meshes, **pair `OffBox` with a parity bump**. The
+window records not just its policy but its holder count (the erasure scheme's
+`total`), so a *scheme* change is just as self-describing as a policy change —
+a recoverer still replays the exact holder set. `set_evidence_placement(offbox,
+parity, migration_rate)` flips the policy and raises parity together; the extra
+parity restores the holder losses the mesh can tolerate
+(`offbox_paired_with_a_parity_bump_raises_fault_tolerance`).
+
 ### Migration
 
-Flipping `evidence_offbox` only changes *new* windows; already-shipped windows
-migrate gradually under `evidence_migration_rate` (windows in flight at once;
-`0` disables). Each migration is **re-ship then drop**: the window is
-erasure-shipped to its new holder set first and only once that new placement is
-durable does the origin tell the now-unassigned holders to drop their shards
-(`LogFragmentDrop`) — so a window is never below its reconstruction threshold
-mid-migration (`migrate_windows` / `cut_over`; `logship_migration.rs`).
+Flipping `evidence_offbox` (or bumping parity) only changes *new* windows;
+already-shipped windows migrate gradually under `evidence_migration_rate`
+(windows in flight at once; `0` disables). A window is migrated when its
+committed policy *or* erasure scheme differs from the current target. Each
+migration is **re-ship then drop**: the window is erasure-shipped to its new
+holder set (under the new policy and scheme) first, and only once that new
+placement is durable does the origin tell the now-unassigned holders to drop
+their shards (`LogFragmentDrop`) — so a window is never below its
+reconstruction threshold mid-migration (`migrate_windows` / `cut_over`;
+`logship_migration.rs`).
 
 ---
 
