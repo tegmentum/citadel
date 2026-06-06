@@ -1,7 +1,12 @@
 # Citadel: Distributed TPM Log Shipping and LtHash Reconciliation Architecture
 
 Document Version: 0.1
-Status: Design Draft
+Status: First cut implemented — `crates/citadel-mesh/src/logship.rs`
+(windowed LtHash accumulators over `lthash-rs`, digest advertisements,
+binary-search reconciliation, and equivocation detection; deterministic and
+unit-tested). Remaining: gossip the advertisements over the agent transport,
+erasure-code the transferred records into the Phase-4 evidence store, and
+feed equivocation into trust as `Suspicious`.
 Project: Citadel
 Audience: Architecture, Security, Platform, Runtime Engineers
 Related: `distributed-attestation-mesh.md`, `measured-merkle-anchoring.md`, `mma-upgrade.md`

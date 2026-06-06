@@ -142,7 +142,20 @@ a node with a missing/forged credential is `AK_UNTRUSTED` and refused.
 
 ---
 
-## Item 3 — LtHash log-shipping & reconciliation
+## Item 3 — LtHash log-shipping & reconciliation — FIRST CUT DONE
+
+Done (`crates/citadel-mesh/src/logship.rs`, over `lthash-rs`): `EventRecord`
++ the element `BLAKE3(node ‖ boot ‖ seq ‖ payload)`; `EventLog` with windowed
+LtHash roots (`range_root`/`window_root`/`root`); `DigestAdvertisement`;
+`reconcile` — binary-searches only the sub-ranges whose roots differ,
+fetching records just at the leaves (`O(log n)` root comparisons); and
+`detect_equivocation`. Tested deterministically: a 100-event log missing 3
+records reconciles by pulling exactly those 3 with far fewer than 100 root
+comparisons; a differing payload at the same sequence is found; a window
+advertisement localizes the divergence; a node forking its own log is
+flagged. Remaining: gossip advertisements over the agent transport, route
+transferred records into the Phase-4 erasure store, and map equivocation to
+`Suspicious`.
 
 **Goal.** Implement `distributed-log-shipping-lthash.md`: nodes accumulate
 their measurement log into windowed LtHash roots, advertise them, and

@@ -15,5 +15,7 @@ chrono.workspace = true
 blake3 = "1"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 reed-solomon-erasure = "6"
+lthash-rs = "1.0.1"
+sha3 = { version = "0.10", default-features = false }
 
 [dev-dependencies]
