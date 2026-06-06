@@ -18,7 +18,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::attest::{Attestor, ReferenceMeasurements, TrustAnchors};
-use crate::reference::{AcceptedReferences, ReferenceMatchPolicy, RetiredAction, Validity};
+use crate::reference::{AcceptedReferences, PcrClass, ReferenceMatchPolicy, RetiredAction, Validity};
 use crate::crypto::MeshKeypair;
 use crate::enrollment::{
     self, AdmissionReason, AdmissionVerdict, EnrollmentChallenge, EnrollmentClaim, EnrollmentVote,
@@ -361,6 +361,12 @@ impl Node {
     /// together).
     pub fn accept_reference_profile(&mut self, pcrs: BTreeMap<u32, Vec<u8>>, validity: Validity) {
         self.peer_reference.accept_profile(pcrs, validity);
+    }
+
+    /// Set how a PCR index is appraised — strict (exact), semantic (deferred to
+    /// event-log policy), or volatile (ignored) (design §10.1).
+    pub fn set_pcr_class(&mut self, index: u32, class: PcrClass) {
+        self.peer_reference.set_pcr_class(index, class);
     }
 
     /// Install the endorsers this node trusts to vouch for peers' AKs. With a

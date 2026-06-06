@@ -6,7 +6,7 @@
 
 use citadel_mesh::harness::Mesh;
 use citadel_mesh::node::NodeConfig;
-use citadel_mesh::reference::Validity;
+use citadel_mesh::reference::{PcrClass, Validity};
 use citadel_mesh::state::TrustState;
 use citadel_mesh::NodeId;
 
@@ -38,6 +38,30 @@ fn an_unauthorized_measured_change_is_distrusted() {
                 mesh.trust_of(observer, node),
                 Some(TrustState::Suspicious),
                 "{observer} distrusts the unauthorized change on {node}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_change_on_a_volatile_pcr_does_not_distrust() {
+    // §10.1: reclassify a churny PCR as Volatile and a change to it no longer
+    // mints an "unknown" state — contrast `an_unauthorized_measured_change_is_
+    // distrusted`, which is identical but leaves PCR 0 strict.
+    let (mut mesh, ids) = mesh_of(6);
+    mesh.run(12);
+    let node = ids[4];
+
+    mesh.set_pcr_class_all(0, PcrClass::Volatile);
+    mesh.measured_state_change(node, "sha256", 0, &[0xAA; 32]);
+    mesh.run(12);
+
+    for &observer in &ids {
+        if observer != node {
+            assert_eq!(
+                mesh.trust_of(observer, node),
+                Some(TrustState::Trusted),
+                "{observer} ignores the volatile-PCR change on {node}"
             );
         }
     }

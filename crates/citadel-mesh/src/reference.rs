@@ -120,6 +120,24 @@ impl RetiredAction {
     }
 }
 
+/// How a PCR index is appraised, by its *meaning* (design §10.1). Lets a
+/// verifier stop exact-matching volatile/semantic indices that would otherwise
+/// mint spurious "unknown" states on every benign change.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PcrClass {
+    /// Exact value-tier match (Layer 1). Platform/security-policy identity:
+    /// firmware anchors, Secure Boot state, measured-boot-enabled, locality.
+    #[default]
+    Strict,
+    /// Deferred to event-log policy (Layer 4). Until that engine exists the
+    /// index is **value-unchecked** — its integrity is still proven by the
+    /// quote, but its contents are not appraised. Bootloader/kernel/initramfs/
+    /// cmdline.
+    Semantic,
+    /// Ignored entirely. Runtime config, device ordering, ephemeral boot vars.
+    Volatile,
+}
+
 /// Whether standalone entries count, or only fully-satisfied coupled profiles.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ReferenceMatchPolicy {
@@ -207,11 +225,22 @@ pub struct AcceptedReferences {
     pub bank: String,
     entries: Vec<ReferenceEntry>,
     profiles: Vec<ReferenceProfile>,
+    /// Per-index appraisal class; indices absent here use `default_class`.
+    pcr_classes: BTreeMap<u32, PcrClass>,
+    /// Class for indices without an explicit entry (default `Strict`, which
+    /// preserves exact-match behaviour for everything until reclassified).
+    default_class: PcrClass,
 }
 
 impl AcceptedReferences {
     pub fn new(bank: impl Into<String>) -> Self {
-        AcceptedReferences { bank: bank.into(), entries: Vec::new(), profiles: Vec::new() }
+        AcceptedReferences {
+            bank: bank.into(),
+            entries: Vec::new(),
+            profiles: Vec::new(),
+            pcr_classes: BTreeMap::new(),
+            default_class: PcrClass::Strict,
+        }
     }
 
     /// Seed from a single golden [`ReferenceMeasurements`] — one always-active
@@ -226,7 +255,13 @@ impl AcceptedReferences {
                 validity: Validity::always(),
             })
             .collect();
-        AcceptedReferences { bank: reference.bank, entries, profiles: Vec::new() }
+        AcceptedReferences {
+            bank: reference.bank,
+            entries,
+            profiles: Vec::new(),
+            pcr_classes: BTreeMap::new(),
+            default_class: PcrClass::Strict,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -241,6 +276,21 @@ impl AcceptedReferences {
     /// Add a coupled profile (accepted only when fully satisfied).
     pub fn accept_profile(&mut self, pcrs: BTreeMap<u32, Vec<u8>>, validity: Validity) {
         self.profiles.push(ReferenceProfile::new(pcrs, validity));
+    }
+
+    /// Set the appraisal class for a PCR index (design §10.1).
+    pub fn set_pcr_class(&mut self, index: u32, class: PcrClass) {
+        self.pcr_classes.insert(index, class);
+    }
+
+    /// Set the class applied to indices without an explicit entry.
+    pub fn set_default_class(&mut self, class: PcrClass) {
+        self.default_class = class;
+    }
+
+    /// The appraisal class of a PCR index.
+    pub fn class_of(&self, index: u32) -> PcrClass {
+        self.pcr_classes.get(&index).copied().unwrap_or(self.default_class)
     }
 
     /// Classify one quoted `(index, digest)` against the accepted sources.
@@ -315,11 +365,20 @@ impl AcceptedReferences {
         let mut any_uncovered = false;
         let mut retired_windows: Vec<Validity> = Vec::new();
         for pv in quoted {
-            match self.classify(pv.index, &pv.digest, &q, now_tick, now_revision, policy) {
-                IndexClass::Mismatch => return ReferenceOutcome::Unknown,
-                IndexClass::Uncovered => any_uncovered = true,
-                IndexClass::Retired(v) => retired_windows.push(v),
-                IndexClass::Active => {}
+            match self.class_of(pv.index) {
+                // Ignored entirely.
+                PcrClass::Volatile => continue,
+                // Reserved for event-log policy (Layer 4); value-unchecked here.
+                PcrClass::Semantic => continue,
+                // Exact value-tier appraisal.
+                PcrClass::Strict => {
+                    match self.classify(pv.index, &pv.digest, &q, now_tick, now_revision, policy) {
+                        IndexClass::Mismatch => return ReferenceOutcome::Unknown,
+                        IndexClass::Uncovered => any_uncovered = true,
+                        IndexClass::Retired(v) => retired_windows.push(v),
+                        IndexClass::Active => {}
+                    }
+                }
             }
         }
 
@@ -505,6 +564,65 @@ mod tests {
         assert_eq!(
             r.appraise(&q, 0, 0, ReferenceMatchPolicy::CoupledOnly, RetiredAction::Fail),
             ReferenceOutcome::Incomplete
+        );
+    }
+
+    #[test]
+    fn volatile_index_is_ignored_even_when_wrong() {
+        let mut r = refs();
+        r.accept_entry(0, b"fw1".to_vec(), Validity::always());
+        // PCR 0 has an accepted value but is reclassified volatile.
+        r.set_pcr_class(0, PcrClass::Volatile);
+        // A wrong value on a volatile index does not fail.
+        let q = [pcr(0, b"anything")];
+        assert_eq!(
+            r.appraise(&q, 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            ReferenceOutcome::Accepted
+        );
+    }
+
+    #[test]
+    fn semantic_index_is_value_unchecked_for_now() {
+        let mut r = refs();
+        // No accepted value for PCR 4, but it's semantic → not value-matched,
+        // so a churny kernel PCR does not mint an Unknown/Incomplete.
+        r.set_pcr_class(4, PcrClass::Semantic);
+        let q = [pcr(4, b"some-new-kernel")];
+        assert_eq!(
+            r.appraise(&q, 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            ReferenceOutcome::Accepted
+        );
+    }
+
+    #[test]
+    fn strict_index_alongside_a_volatile_one_still_governs() {
+        let mut r = refs();
+        r.accept_entry(0, b"fw1".to_vec(), Validity::always()); // strict by default
+        r.set_pcr_class(8, PcrClass::Volatile);
+        // Strict PCR 0 wrong → Unknown regardless of the volatile PCR 8.
+        let bad = [pcr(0, b"tampered"), pcr(8, b"whatever")];
+        assert_eq!(
+            r.appraise(&bad, 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            ReferenceOutcome::Unknown
+        );
+        // Strict PCR 0 right, volatile PCR 8 ignored → Accepted.
+        let good = [pcr(0, b"fw1"), pcr(8, b"whatever")];
+        assert_eq!(
+            r.appraise(&good, 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            ReferenceOutcome::Accepted
+        );
+    }
+
+    #[test]
+    fn default_class_strict_preserves_exact_match() {
+        // With no reclassification, behaviour is unchanged: covered-but-wrong
+        // is Unknown.
+        let mut r = refs();
+        r.accept_entry(0, b"fw1".to_vec(), Validity::always());
+        assert_eq!(r.class_of(0), PcrClass::Strict);
+        assert_eq!(
+            r.appraise(&[pcr(0, b"x")], 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            ReferenceOutcome::Unknown
         );
     }
 

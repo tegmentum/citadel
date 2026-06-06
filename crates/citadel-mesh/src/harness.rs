@@ -27,7 +27,7 @@ use crate::id::{Epoch, MeshId, NodeId};
 use crate::membership::Membership;
 use crate::node::{Node, NodeConfig, WitnessSummary};
 use crate::quarantine::{self, QuarantineDecision, QuarantineScope};
-use crate::reference::Validity;
+use crate::reference::{PcrClass, Validity};
 use crate::state::{LivenessState, TrustState};
 use crate::witness;
 
@@ -370,6 +370,13 @@ impl Mesh {
     pub fn authorize_reference_all(&mut self, index: u32, digest: Vec<u8>, validity: Validity) {
         for n in &mut self.nodes {
             n.accept_reference(index, digest.clone(), validity.clone());
+        }
+    }
+
+    /// Set the appraisal class for a PCR index across every verifier (§10.1).
+    pub fn set_pcr_class_all(&mut self, index: u32, class: PcrClass) {
+        for n in &mut self.nodes {
+            n.set_pcr_class(index, class);
         }
     }
 

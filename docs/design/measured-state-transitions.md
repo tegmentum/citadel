@@ -1,7 +1,9 @@
 # Citadel: Authorized Measured-State Transitions
 
-Document Version: 0.1
-Status: Planned — Phase 1 (multi-value appraisal engine) in progress
+Document Version: 0.2
+Status: Layered design. Layer 1 (multi-value appraisal engine) **built**
+(`reference.rs`); Layer 2 (per-PCR policy class) in progress; Layers 3–4
+(signed manifests, boot profiles, event-log semantic validation) planned.
 Project: Citadel
 Audience: Architecture, Security, Platform, Runtime Engineers
 Related: `distributed-attestation-mesh.md`, `distributed-log-shipping-lthash.md`,
@@ -13,6 +15,51 @@ Related: `distributed-attestation-mesh.md`, `distributed-log-shipping-lthash.md`
 > keys, bootloader, initrd, or Citadel's own agent hash — without a legitimate
 > upgrade being mistaken for tampering, and without a tampered node being able
 > to pass off its state as an upgrade.
+
+## 0. The right abstraction: measured boot as *evidence*, not equality
+
+The single most important shift this document makes: stop treating a TPM quote
+as "this machine must equal this exact PCR vector" and start treating it as
+"this machine followed an **accepted boot-state lineage**." An exact-hash
+allowlist is bad for operations — every kernel / initramfs / firmware change
+mints a new "unknown" state. A boot-state *policy* accepts a measured path if
+its ingredients are valid.
+
+Three roles, kept separate:
+
+```
+TPM quote   → proves the INTEGRITY of the measurement (it really is this PCR set)
+event log   → EXPLAINS the measurement (which artifacts produced those PCRs)
+policy      → DECIDES whether the explained measurement is acceptable
+```
+
+The target data model is therefore **not** `node_id → expected_pcrs`. It is:
+
+```
+node_id            → assigned_boot_profile
+boot_profile       → semantic acceptance policy
+observed quote     → reconstructed event chain      (replay(event_log) == quoted_PCRs)
+event_chain + quote + signed manifest → accept | retire | reject | quarantine
+```
+
+This is delivered in **layers**, cheap-and-immediate first:
+
+* **Layer 1 — value tier (built).** Multi-valued, validity-windowed accepted
+  references (§§2–9). Graceful rollouts; still hash-enumerated.
+* **Layer 2 — per-PCR policy class (§10.1).** Treat PCRs by *meaning* (strict /
+  semantic / volatile) so volatile/semantic indices stop causing spurious
+  failures. No event log required.
+* **Layer 3 — signed manifests + artifact identity (§10.2).** Acceptance from
+  *provenance* (signed by a trusted publisher, approved channel, version window,
+  not revoked) rather than enumeration. The manifest is the authorization.
+* **Layer 4 — boot profiles, quorum promotion, event-log semantic validation
+  (§§10.3–10.4).** Named profiles a node *instantiates*; new states promoted
+  through fleet quorum; full event-log replay + per-artifact policy.
+
+Layers 1–3 operate on the quote alone. Layer 4's semantic validation is gated
+on ingesting the **TCG event log** — Citadel does not carry it today (the §5/§6
+gap in `distributed-log-shipping-lthash.md`), so until then the *semantic* PCR
+class (§10.1) is value-unchecked, not magically validated.
 
 ## 1. Problem
 
@@ -48,7 +95,10 @@ What is **already handled** and out of scope here:
   by PolicyAuthorize and the upgrade ceremony (`mma-upgrade.md`, DONE). This doc
   is the **mesh appraisal** counterpart and is designed to share that ceremony.
 
-## 2. Model: accepted references, two shapes at once
+## 2. Layer 1 — value tier: accepted references, two shapes at once (built)
+
+> **Status: built** (`reference.rs`, wired through `attest.rs`/`node.rs`;
+> tests `reference_transition.rs`). §§2–9 describe this layer.
 
 A verifier no longer holds one golden; it holds a set of **accepted reference
 sources**, and a quote is accepted if every selected PCR index is *explained* by
@@ -171,27 +221,144 @@ A single operator "measured-state transition" should emit **both**:
 so a firmware/kernel/agent upgrade is one ceremony covering both the node's
 ability to *sign* and the mesh's willingness to *trust* the new state.
 
-## 10. Phased delivery
+## 10. Policy tier: from value allowlist to evidence-based acceptance
 
-* **Phase 1 — multi-value appraisal engine (local, no network).** `reference.rs`:
-  `ReferenceEntry`, `ReferenceProfile`, `AcceptedReferences`, `Validity`,
-  `ActiveState`, `RetiredAction`, `ReferenceMatchPolicy`, and `appraise(...)`.
-  Rewire `attest.rs` `verify` onto it with `REFERENCE_UNKNOWN`/`REFERENCE_RETIRED`.
-  Keep `ReferenceMeasurements` as the bootstrap seed. Config:
-  `reference_match`, `retired_action`. Unit + integration tests for overlap,
-  retire (each action), unknown, coupled-only rejection, independent components,
-  pending/staged, and both validity clocks.
-* **Phase 2 — authorized updates.** Signed `ReferenceUpdate`; `reference_authorities`
-  anchors; merge; evidence-chain audit record.
-* **Phase 3 — distribution.** `GossipMessage::ReferenceUpdate` + anti-entropy;
-  convergence tests incl. late/partitioned nodes.
-* **Phase 4 — lifecycle + ceremony.** Staged/rate-limited retirement; unify with
-  the MMA PolicyAuthorize ceremony; probation/quarantine integration tests.
+Layer 1 still answers "is this hash in the set?". The policy tier moves the
+decision onto *meaning and provenance*. The pieces, cheapest first.
 
-## 11. Open items
+### 10.1 Per-PCR policy class (Layer 2 — in progress)
+
+Not all PCRs deserve the same treatment. Each index carries a `PcrClass`:
+
+* **`Strict`** — exact value-tier match (Layer 1). For platform/security-policy
+  identity: firmware trust anchors, Secure Boot state, measured-boot-enabled,
+  TPM/startup locality.
+* **`Semantic`** — *not* value-matched; reserved for event-log policy (§10.4).
+  For the volatile-but-meaningful components: bootloader, kernel, initramfs,
+  kernel command line.
+* **`Volatile`** — ignored entirely. Runtime config, device ordering, ephemeral
+  boot variables.
+
+A verifier keeps a per-index class map with a default of `Strict` (preserving
+today's behaviour). The immediate operational win needs **no event log**:
+reclassify churny indices out of `Strict` and they stop minting "unknown"
+states. **Honest caveat:** until Layer 4 lands, a `Semantic` index is
+*value-unchecked* — moving the kernel PCR to `Semantic` before the event-log
+engine exists means the kernel is not appraised, only its integrity proven by
+the quote. Use knowingly.
+
+### 10.2 Signed manifests + signed artifact identity (Layer 3)
+
+Acceptance from provenance, not enumeration. When the update system rolls a
+kernel it emits a signed **manifest**:
+
+```yaml
+update:
+  profile: ubuntu-24.04-prod-generic
+  kernel_hash: ...        initramfs_hash: ...     grub_hash: ...
+  package_versions: ...   build_id: ...
+  valid_from: ...         valid_until: ...        signed_by: fleet-update-key
+```
+
+Citadel accepts a new measurement because it matches an approved, signed,
+in-window, non-revoked **transition manifest** — controlled looseness without
+blind trust. The policy for an artifact becomes, e.g. for the kernel:
+
+```
+accept kernel if: signature chains to a trusted publisher key
+                  AND package/version in an approved channel
+                  AND version >= security baseline AND not in denylist
+                  AND boot params satisfy fleet policy
+```
+
+This is the Layer-1 signed `ReferenceUpdate` (§5) **generalised**: the manifest
+*is* the authorization artifact, and the AK-endorsement chain-to-anchor
+machinery (`TrustAnchors`, `EndorserCert`) is reused for publisher/manifest
+signing. The hash is *evidence*, not the policy.
+
+### 10.3 Boot profiles + fleet quorum promotion (Layer 4)
+
+Named, versioned profiles a node **instantiates** rather than equals:
+
+```yaml
+profile: ubuntu-24.04-prod-generic
+allowed:
+  firmware: vendor-approved      secure_boot: enabled
+  shim: signed-by Microsoft/Canonical   grub: signed-by Canonical
+  kernel: { package: linux-image-generic, channel: prod-approved, min_version: 6.8.0-xx }
+  initramfs: { generated-by: approved-pipeline }
+  cmdline: { require: [lockdown=integrity], deny: [init=/bin/sh, selinux=0] }
+```
+
+Mapping: `node_id → assigned_boot_profile`. A new boot state is promoted through
+the mesh, not declared by a central verifier:
+
+```
+unknown → observed → staged → quorum-accepted → fleet-accepted
+```
+
+A canary boots the new state and submits quote + event log + manifest; peers
+**independently** validate signatures, provenance, and profile constraints; on
+quorum the state becomes accepted for that profile. This reuses the mesh's
+witness/enrollment quorum and the §3 `Pending→Active` staging.
+
+### 10.4 Event-log semantic validation (Layer 4, gated)
+
+The deep piece, and the dependency everything semantic rests on. Validate the
+**event log that produced the PCRs**, not just the PCR values:
+
+```
+1. ingest the TCG event log (§5/§6 of distributed-log-shipping-lthash.md)
+2. replay(event_log) == quoted_PCRs        ← integrity: the log explains the quote
+3. apply per-artifact policy to the events  ← decision: signed-by, channel, version, cmdline
+```
+
+The value tier doesn't vanish — it *moves*: "match the PCR vector" becomes "the
+log replays to the quoted vector," and policy shifts onto the individual events.
+This aligns with the IETF RATS appraisal-policy-for-evidence model. **Blocked
+on** event-log ingestion, which Citadel does not have today.
+
+### 10.5 Where the layers meet
+
+```
+quote ──(integrity)──► PCR vector
+                          │  Strict indices  ─► Layer 1 value match
+                          │  Semantic indices ─► Layer 4 event-log policy (else value-unchecked)
+                          │  Volatile indices ─► ignored
+event log ──(replay == quote)──► events ─► Layer 3 manifest / artifact policy
+                                              ▼
+                              assigned profile (Layer 4) ─► accept | retire | reject | quarantine
+```
+
+## 11. Phased delivery
+
+* **Layer 1 — multi-value appraisal engine. ✅ Built.** `reference.rs`
+  (`ReferenceEntry`/`ReferenceProfile`/`AcceptedReferences`/`Validity`/
+  `RetiredAction`/`ReferenceMatchPolicy`/`appraise`), wired through `attest.rs`
+  `verify` with `REFERENCE_UNKNOWN`/`REFERENCE_RETIRED`; config `reference_match`
+  / `retired_action`; tests `reference_transition.rs`.
+* **Layer 2 — per-PCR policy class (§10.1). ◑ In progress.** `PcrClass` on
+  `AcceptedReferences`; `appraise` consults it; node/harness setters. No event
+  log required.
+* **Layer 3 — signed manifests + artifact identity (§10.2).** Signed
+  `ReferenceUpdate`/manifest, `reference_authorities` anchors (decision 3),
+  merge, evidence-chain audit; then channel/version/denylist predicates. Folds
+  in the old "authorized updates" + "distribution" work (signed gossip +
+  anti-entropy + late-joiner convergence).
+* **Layer 4 — boot profiles, quorum promotion, event-log semantic validation
+  (§§10.3–10.4).** `node_id → profile`; promotion lifecycle over mesh quorum;
+  TCG event-log ingestion + replay + per-artifact policy. Unify with the MMA
+  PolicyAuthorize ceremony (§9). Largest; gated on event-log work.
+
+## 12. Open items
 
 * Coupled-profile identity: hash of its `(index, digest)` set as `profile_id`.
 * Whether `GraceThenFail` counts grace in ticks, revisions, or both (likely both,
   mirroring `Validity`).
 * Anti-entropy frequency and whether reference state piggybacks on existing
   gossip or rides its own interval.
+* `Semantic` class before Layer 4: value-unchecked (current plan) vs. an
+  interim `Warn` so the gap is visible — leaning value-unchecked to avoid
+  perpetual-warn noise, documented loudly.
+* Revocation source for artifact identity (denylist distribution) — likely a
+  signed list rides the same manifest channel.
