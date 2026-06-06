@@ -8,7 +8,8 @@ use citadel_mesh::attest::TrustAnchors;
 use citadel_mesh::harness::Mesh;
 use citadel_mesh::node::NodeConfig;
 use citadel_mesh::reference::{
-    ArtifactIdentity, FleetArtifactPolicy, PcrClass, ReferenceEntry, ReferenceManifest, Validity,
+    AcceptedReferences, ArtifactIdentity, BootProfile, FleetArtifactPolicy, PcrClass,
+    ReferenceEntry, ReferenceManifest, Validity,
 };
 use citadel_mesh::state::TrustState;
 use citadel_mesh::{MeshKeypair, NodeId};
@@ -317,6 +318,52 @@ fn adopting_a_manifest_records_an_intact_audit_entry() {
     assert!(mesh.node_mut(node).apply_reference_manifest(&m2));
     assert_eq!(mesh.node(node).reference_audit_len(), 2);
     assert!(mesh.node(node).reference_audit_ok());
+}
+
+#[test]
+fn an_assigned_boot_profile_appraises_a_subject_differently() {
+    // §10.3: a subject assigned a boot profile is appraised against that
+    // profile's accepted set, not the default golden — so a state acceptable to
+    // its profile is trusted, while an identical state on an unassigned node
+    // (default profile) is distrusted.
+    let (mut mesh, ids) = mesh_of(6);
+    mesh.run(12);
+    let edge_node = ids[2];
+    let plain_node = ids[4];
+
+    // Both nodes move to the same new measured state.
+    mesh.measured_state_change(edge_node, "sha256", 0, &[0x55; 32]);
+    mesh.measured_state_change(plain_node, "sha256", 0, &[0x55; 32]);
+    let new_pcr0 = mesh.pcr_digest(edge_node, "sha256", 0);
+    let pcr7 = mesh.pcr_digest(edge_node, "sha256", 7);
+
+    // An "edge" profile accepts the new state (PCR0) plus the unchanged PCR7.
+    let mut accepted = AcceptedReferences::new("sha256");
+    accepted.accept_entry(0, new_pcr0, Validity::always());
+    accepted.accept_entry(7, pcr7, Validity::always());
+    mesh.define_profile_all(BootProfile::new("edge", accepted));
+    mesh.assign_profile_all(edge_node, "edge");
+
+    mesh.run(12);
+
+    // The edge node is trusted under its profile; the unassigned node — same
+    // state, default golden — is distrusted.
+    for &observer in &ids {
+        if observer != edge_node {
+            assert_eq!(
+                mesh.trust_of(observer, edge_node),
+                Some(TrustState::Trusted),
+                "{observer} trusts {edge_node} under its edge profile"
+            );
+        }
+        if observer != plain_node {
+            assert_eq!(
+                mesh.trust_of(observer, plain_node),
+                Some(TrustState::Suspicious),
+                "{observer} distrusts the unassigned {plain_node} in the same state"
+            );
+        }
+    }
 }
 
 #[test]

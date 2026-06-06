@@ -19,8 +19,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::attest::{Attestor, ReferenceMeasurements, TrustAnchors};
 use crate::reference::{
-    AcceptedReferences, FleetArtifactPolicy, PcrClass, ReferenceManifest, ReferenceMatchPolicy,
-    RetiredAction, Validity,
+    AcceptedReferences, BootProfile, FleetArtifactPolicy, PcrClass, ReferenceManifest,
+    ReferenceMatchPolicy, RetiredAction, Validity,
 };
 use crate::crypto::MeshKeypair;
 use crate::enrollment::{
@@ -217,6 +217,11 @@ pub struct Node {
     reference_audit: EvidenceChain,
     /// Last tick this node advertised its adopted-manifest set.
     last_reference_advert: u64,
+    /// Named boot profiles this node can appraise subjects against (design §10.3).
+    profiles: std::collections::BTreeMap<String, BootProfile>,
+    /// Which profile each subject is assigned (`node_id → profile name`);
+    /// unassigned subjects use the default appraisal (`peer_reference`).
+    profile_assignments: std::collections::BTreeMap<NodeId, String>,
     /// This node's own AK endorsement, attached to the evidence it produces.
     endorsement: Option<Endorsement>,
     /// Latest attestation verdict per `subject → verifier` heard on the mesh
@@ -336,6 +341,8 @@ impl Node {
             adopted_manifests: std::collections::BTreeMap::new(),
             reference_audit,
             last_reference_advert: 0,
+            profiles: std::collections::BTreeMap::new(),
+            profile_assignments: std::collections::BTreeMap::new(),
             endorsement: None,
             witness_reports: HashMap::new(),
             last_challenge: HashMap::new(),
@@ -407,6 +414,37 @@ impl Node {
     /// accepted state on the next challenge.
     pub fn set_artifact_policy(&mut self, policy: FleetArtifactPolicy) {
         self.peer_reference.set_artifact_policy(policy);
+    }
+
+    /// Define (or replace) a named boot profile this node appraises against
+    /// (design §10.3).
+    pub fn define_profile(&mut self, profile: BootProfile) {
+        self.profiles.insert(profile.name.clone(), profile);
+    }
+
+    /// Assign `subject` to a boot profile by name. Appraisals of that subject
+    /// then use the profile's accepted set / classes / policy instead of the
+    /// default.
+    pub fn assign_profile(&mut self, subject: NodeId, profile: impl Into<String>) {
+        self.profile_assignments.insert(subject, profile.into());
+    }
+
+    /// The appraisal inputs for `subject`: its assigned profile's policy, or the
+    /// node default (`peer_reference` + config) when unassigned/unknown.
+    fn appraisal_for(
+        &self,
+        subject: NodeId,
+    ) -> (&AcceptedReferences, ReferenceMatchPolicy, RetiredAction) {
+        if let Some(name) = self.profile_assignments.get(&subject) {
+            if let Some(p) = self.profiles.get(name) {
+                return (&p.accepted, p.match_policy, p.retired_action);
+            }
+        }
+        (
+            &self.peer_reference,
+            self.config.reference_match,
+            self.config.retired_action,
+        )
     }
 
     /// The authority set used to judge reference manifests (separate set if
@@ -1417,18 +1455,17 @@ impl Node {
             return;
         };
         let ch = self.issued_challenges.remove(pos);
-        let result = self
-            .attestor
-            .verify(
-                &ch,
-                &ev,
-                &self.peer_reference,
-                &self.anchors,
-                self.id,
-                now,
-                self.config.reference_match,
-                self.config.retired_action,
-            );
+        let (accepted, match_policy, retired_action) = self.appraisal_for(ev.subject);
+        let result = self.attestor.verify(
+            &ch,
+            &ev,
+            accepted,
+            &self.anchors,
+            self.id,
+            now,
+            match_policy,
+            retired_action,
+        );
         let verdict = result.result;
         // Our own direct observation — provisional until (and unless) the
         // assigned-witness quorum decides otherwise in `aggregate_trust`.
@@ -1677,18 +1714,17 @@ impl Node {
             policy_revision: challenge.policy_revision,
             expires_at_tick: tick + 5,
         };
-        let result = self
-            .attestor
-            .verify(
-                &ach,
-                &claim.evidence,
-                &self.peer_reference,
-                &self.anchors,
-                self.id,
-                tick,
-                self.config.reference_match,
-                self.config.retired_action,
-            );
+        let (accepted, match_policy, retired_action) = self.appraisal_for(claim.candidate);
+        let result = self.attestor.verify(
+            &ach,
+            &claim.evidence,
+            accepted,
+            &self.anchors,
+            self.id,
+            tick,
+            match_policy,
+            retired_action,
+        );
         if result.reason_codes.contains(&ReasonCode::AkUntrusted) {
             return AdmissionReason::AkUntrusted;
         }
@@ -1791,16 +1827,17 @@ impl Node {
             policy_revision: challenge.policy_revision,
             expires_at_tick: tick + 5,
         };
+        let (accepted, match_policy, retired_action) = self.appraisal_for(claim.candidate);
         self.attestor
             .verify(
                 &ach,
                 &claim.evidence,
-                &self.peer_reference,
+                accepted,
                 &self.anchors,
                 self.id,
                 tick,
-                self.config.reference_match,
-                self.config.retired_action,
+                match_policy,
+                retired_action,
             )
             .result
             == Verdict::Pass

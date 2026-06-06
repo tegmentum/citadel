@@ -286,7 +286,14 @@ This is the Layer-1 signed `ReferenceUpdate` (§5) **generalised**: the manifest
 machinery (`TrustAnchors`, `EndorserCert`) is reused for publisher/manifest
 signing. The hash is *evidence*, not the policy.
 
-### 10.3 Boot profiles + fleet quorum promotion (Layer 4)
+### 10.3 Boot profiles + fleet quorum promotion (Layer 4 — partial)
+
+> **Status: profiles + assignment built** (`reference.rs` `BootProfile`;
+> `node.rs` `define_profile`/`assign_profile`/`appraisal_for`; tests
+> `reference_transition.rs`). A verifier holds named profiles and appraises each
+> subject against the one assigned to it (`node_id → profile`), so heterogeneous
+> node classes carry different accepted states/classes/policy. **Remaining:**
+> the quorum *promotion* lifecycle below.
 
 Named, versioned profiles a node **instantiates** rather than equals:
 
@@ -360,9 +367,13 @@ event log ──(replay == quote)──► events ─► Layer 3 manifest / arti
   (`ReferenceDigest` → `ReferenceManifestRequest`) so a node that missed a
   gossiped manifest pulls it and converges. **Complete.**
 * **Layer 4 — boot profiles, quorum promotion, event-log semantic validation
-  (§§10.3–10.4).** `node_id → profile`; promotion lifecycle over mesh quorum;
-  TCG event-log ingestion + replay + per-artifact policy. Unify with the MMA
-  PolicyAuthorize ceremony (§9). Largest; gated on event-log work.
+  (§§10.3–10.4). ◑ Started.** Boot profiles + `node_id → profile` assignment
+  with per-subject appraisal **built** (`BootProfile`, `appraisal_for`).
+  Remaining: the quorum *promotion* lifecycle (unknown→…→fleet-accepted over
+  mesh quorum), and TCG event-log ingestion + replay + per-artifact semantic
+  policy (the headline piece, **blocked** on event-log ingestion — the §5/§6
+  gap in `distributed-log-shipping-lthash.md`). Unify with the MMA
+  PolicyAuthorize ceremony (§9).
 
 ## 12. Open items
 

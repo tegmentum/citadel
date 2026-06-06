@@ -236,6 +236,40 @@ impl FleetArtifactPolicy {
     }
 }
 
+/// A named, assignable bundle of appraisal policy (design §10.3) — the unit a
+/// node *instantiates* rather than a single golden every node must equal. A
+/// verifier holds several profiles and appraises each subject against the one
+/// assigned to it, so heterogeneous node classes (generic / gpu / edge) carry
+/// different accepted states, classes, and artifact policy.
+#[derive(Clone, Debug)]
+pub struct BootProfile {
+    pub name: String,
+    pub accepted: AcceptedReferences,
+    pub match_policy: ReferenceMatchPolicy,
+    pub retired_action: RetiredAction,
+}
+
+impl BootProfile {
+    pub fn new(name: impl Into<String>, accepted: AcceptedReferences) -> Self {
+        BootProfile {
+            name: name.into(),
+            accepted,
+            match_policy: ReferenceMatchPolicy::Flexible,
+            retired_action: RetiredAction::Fail,
+        }
+    }
+
+    pub fn with_match_policy(mut self, policy: ReferenceMatchPolicy) -> Self {
+        self.match_policy = policy;
+        self
+    }
+
+    pub fn with_retired_action(mut self, action: RetiredAction) -> Self {
+        self.retired_action = action;
+        self
+    }
+}
+
 /// A standalone accepted digest for one PCR index, optionally carrying the
 /// provenance ([`ArtifactIdentity`]) that fleet policy judges.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

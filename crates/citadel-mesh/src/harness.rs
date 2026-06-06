@@ -27,7 +27,7 @@ use crate::id::{Epoch, MeshId, NodeId};
 use crate::membership::Membership;
 use crate::node::{Node, NodeConfig, WitnessSummary};
 use crate::quarantine::{self, QuarantineDecision, QuarantineScope};
-use crate::reference::{FleetArtifactPolicy, PcrClass, ReferenceManifest, Validity};
+use crate::reference::{BootProfile, FleetArtifactPolicy, PcrClass, ReferenceManifest, Validity};
 use crate::state::{LivenessState, TrustState};
 use crate::witness;
 
@@ -398,6 +398,21 @@ impl Mesh {
     pub fn set_artifact_policy_all(&mut self, policy: FleetArtifactPolicy) {
         for n in &mut self.nodes {
             n.set_artifact_policy(policy.clone());
+        }
+    }
+
+    /// Define a boot profile on every node (design §10.3).
+    pub fn define_profile_all(&mut self, profile: BootProfile) {
+        for n in &mut self.nodes {
+            n.define_profile(profile.clone());
+        }
+    }
+
+    /// Assign `subject` to a boot profile on every node, so all verifiers
+    /// appraise it against that profile.
+    pub fn assign_profile_all(&mut self, subject: NodeId, profile: &str) {
+        for n in &mut self.nodes {
+            n.assign_profile(subject, profile);
         }
     }
 
