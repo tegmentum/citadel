@@ -591,14 +591,17 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "axum-server",
  "citadel-mesh",
  "reqwest",
  "serde",
  "serde_json",
  "tokio",
  "tpm-core",
+ "tpm-tls",
  "tracing",
  "tracing-subscriber",
+ "vtpm-backend",
 ]
 
 [[package]]

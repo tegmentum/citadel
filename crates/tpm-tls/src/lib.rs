@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use rustls::pki_types::CertificateDer;
+pub use rustls::pki_types::CertificateDer;
 use rustls::sign::{CertifiedKey, Signer, SigningKey};
 use rustls::{SignatureAlgorithm, SignatureScheme};
 use tpm_core::backend::{KeyHandle, TpmBackend};
@@ -73,35 +73,36 @@ impl TpmTlsIdentity {
     }
 
     /// A **mutual-TLS server** config: presents this TPM identity and accepts a
-    /// client only if its certificate is one of `pinned_clients`.
+    /// client only if its certificate is one of `pinned_clients` (the mesh
+    /// roster). Owned so callers can wrap it in `Arc` for axum-server etc.
     pub fn server_config(
         &self,
         pinned_clients: &[CertificateDer<'static>],
-    ) -> anyhow::Result<Arc<rustls::ServerConfig>> {
+    ) -> anyhow::Result<rustls::ServerConfig> {
         install_provider();
         let verifier = Arc::new(PinnedClientAuth::new(pinned_clients.to_vec()));
         let resolver = Arc::new(verify::SingleCert { certified: self.certified_key() });
-        let config = rustls::ServerConfig::builder()
+        Ok(rustls::ServerConfig::builder()
             .with_client_cert_verifier(verifier)
-            .with_cert_resolver(resolver);
-        Ok(Arc::new(config))
+            .with_cert_resolver(resolver))
     }
 
     /// A **mutual-TLS client** config: presents this TPM identity and accepts a
-    /// server only if its certificate equals `pinned_server`.
+    /// server only if its certificate is one of `pinned_servers` (the mesh
+    /// roster — any known peer may be the server). Owned for `reqwest`'s
+    /// `use_preconfigured_tls`.
     pub fn client_config(
         &self,
-        pinned_server: CertificateDer<'static>,
-    ) -> anyhow::Result<Arc<rustls::ClientConfig>> {
+        pinned_servers: &[CertificateDer<'static>],
+    ) -> anyhow::Result<rustls::ClientConfig> {
         install_provider();
-        let verifier = Arc::new(PinnedServerAuth::new(vec![pinned_server]));
-        let config = rustls::ClientConfig::builder()
+        let verifier = Arc::new(PinnedServerAuth::new(pinned_servers.to_vec()));
+        Ok(rustls::ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(verifier)
             .with_client_cert_resolver(Arc::new(verify::SingleClientCert {
                 certified: self.certified_key(),
-            }));
-        Ok(Arc::new(config))
+            })))
     }
 }
 

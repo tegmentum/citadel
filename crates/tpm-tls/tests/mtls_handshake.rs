@@ -76,8 +76,8 @@ fn two_tpm_identities_complete_mutual_tls() {
     let bob = identity("bob", "bob.mesh").unwrap();
 
     // Each pins the other's certificate (the mesh identity exchange).
-    let server = bob.server_config(&[alice.certificate().clone()]).unwrap();
-    let client = alice.client_config(bob.certificate().clone()).unwrap();
+    let server = bob.server_config(&[alice.certificate().clone()]).map(Arc::new).unwrap();
+    let client = alice.client_config(&[bob.certificate().clone()]).map(Arc::new).unwrap();
 
     complete_handshake(client, server, "bob.mesh")
         .expect("mutual TLS between two TPM-held identities succeeds");
@@ -93,8 +93,8 @@ fn an_unpinned_client_is_rejected() {
     let mallory = identity("mallory", "mallory.mesh").unwrap();
 
     // Bob pins only Alice; Mallory (a valid TPM identity, but unpinned) connects.
-    let server = bob.server_config(&[alice.certificate().clone()]).unwrap();
-    let client = mallory.client_config(bob.certificate().clone()).unwrap();
+    let server = bob.server_config(&[alice.certificate().clone()]).map(Arc::new).unwrap();
+    let client = mallory.client_config(&[bob.certificate().clone()]).map(Arc::new).unwrap();
 
     let result = complete_handshake(client, server, "bob.mesh");
     assert!(result.is_err(), "an unpinned client must be rejected by mutual-TLS pinning");
@@ -111,8 +111,8 @@ fn an_impostor_server_cert_is_rejected() {
 
     // Alice expects Bob but Mallory answers presenting her own cert. Alice
     // pinned Bob's cert, so the server cert check fails.
-    let server = mallory.server_config(&[alice.certificate().clone()]).unwrap();
-    let client = alice.client_config(bob.certificate().clone()).unwrap();
+    let server = mallory.server_config(&[alice.certificate().clone()]).map(Arc::new).unwrap();
+    let client = alice.client_config(&[bob.certificate().clone()]).map(Arc::new).unwrap();
 
     let fake_bob: CertificateDer<'static> = mallory.certificate().clone();
     assert_ne!(fake_bob.as_ref(), bob.certificate().as_ref());

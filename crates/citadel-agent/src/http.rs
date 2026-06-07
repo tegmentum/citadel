@@ -27,6 +27,40 @@ impl HttpTransport {
             client: reqwest::Client::new(),
         }
     }
+
+    /// A transport whose reqwest client is already built — used to inject the
+    /// mutual-TLS client from [`mtls_client`] (peer URLs are then `https://…`).
+    pub fn with_client(peers: HashMap<NodeId, String>, client: reqwest::Client) -> Self {
+        HttpTransport { peers, client }
+    }
+}
+
+/// Build a reqwest client whose TLS identity is the TPM-held key (E2): it
+/// presents `identity`'s certificate and accepts a server only if its cert is
+/// one of `peer_certs` (the mesh roster) — mutual TLS with certificate pinning,
+/// no CA. The private key never leaves the TPM.
+pub fn mtls_client(
+    identity: &tpm_tls::TpmTlsIdentity,
+    peer_certs: Vec<tpm_tls::CertificateDer<'static>>,
+) -> anyhow::Result<reqwest::Client> {
+    let tls = identity.client_config(&peer_certs)?;
+    Ok(reqwest::Client::builder().use_preconfigured_tls(tls).build()?)
+}
+
+/// Serve `app` over mutual TLS (E2): present `identity`'s TPM-held cert and
+/// accept a client only if its cert is one of `peer_certs`.
+pub async fn serve_mtls(
+    app: Router,
+    addr: std::net::SocketAddr,
+    identity: &tpm_tls::TpmTlsIdentity,
+    peer_certs: Vec<tpm_tls::CertificateDer<'static>>,
+) -> anyhow::Result<()> {
+    let server_config = identity.server_config(&peer_certs)?;
+    let tls = axum_server::tls_rustls::RustlsConfig::from_config(std::sync::Arc::new(server_config));
+    axum_server::bind_rustls(addr, tls)
+        .serve(app.into_make_service())
+        .await?;
+    Ok(())
 }
 
 impl Transport for HttpTransport {

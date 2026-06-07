@@ -270,11 +270,20 @@ harness cannot provide.
     TPM-held identities complete mutual TLS; an unpinned client is rejected; an
     impostor server cert is rejected. (Needs a *persisted* vTPM — the ephemeral
     one returns a non-signature fallback.)
-* **Remaining:** wire `TpmTlsIdentity` into `citadel-agent`'s reqwest client +
-  axum server (the transport plumbing — mechanical now the crypto core exists);
-  distribute/pin peer certs through the enrolment layer; optionally refactor
-  `tpmd::tls` onto `tpm-tls` to dedupe the signing-key code.
-* **Seam:** `tpm-tls`; `citadel-agent::http`; mesh enrolment for cert exchange.
+* **Transport wired (`citadel-agent::http`):** `mtls_client` builds a reqwest
+  client with the TPM mTLS identity (pinning the peer roster); `serve_mtls`
+  serves the axum router over mutual TLS via `axum-server`;
+  `HttpTransport::with_client` injects the mTLS client. **Proven end-to-end on
+  the real vTPM** (`tests/mtls_transport.rs`, ~34 s): a pinned peer's gossip
+  POST flows over real TCP+mTLS and is accepted; an unpinned client is refused.
+* **Remaining:** the agent **binary** (`main.rs`) still serves plain HTTP — to
+  switch it on, the agent needs a TPM backend (today it uses seed-derived mesh
+  keys, no TPM) to mint its identity, and a **peer-cert roster distributed via
+  enrolment**. Both are their own increment (agent↔TPM integration + cert
+  exchange), not transport plumbing. Optionally refactor `tpmd::tls` onto
+  `tpm-tls` to dedupe the signing-key code.
+* **Seam:** `tpm-tls`; `citadel-agent::http` (done); mesh enrolment for cert
+  exchange + agent TPM-backend selection (remaining).
 
 ---
 
