@@ -1,7 +1,8 @@
 # Citadel: Event-Log Ingestion & Semantic Validation
 
-Document Version: 0.2
-Status: Phase A (replay / integrity) **built**; Phases B–D planned
+Document Version: 0.3
+Status: Phase A (replay / integrity) and Phase B (TCG binary parse +
+classification) **built**; Phases C–D planned
 Project: Citadel
 Audience: Architecture, Security, Platform, Runtime Engineers
 Related: `measured-state-transitions.md`, `distributed-log-shipping-lthash.md`,
@@ -216,9 +217,20 @@ cmdline event **only when** its digest matches the measured value.
   `citadel-mesh` as first sketched, so `MockBackend` can build the type without
   a dependency cycle.)* TCG **binary** parsing remains Phase B; Phase A uses the
   Citadel-internal `to_bytes` form.
-* **Phase B — event→artifact extraction.** Parsers for the boot-chain event
-  types; map events to `ArtifactIdentity`. Firmware-variant heavy; start with
-  one reference platform (OVMF/UEFI + shim + GRUB + Linux).
+* **Phase B — TCG binary parse + classification. ✅ Built.** `parse_tcg` reads
+  the crypto-agile `binary_bios_measurements` format (legacy Spec ID header →
+  per-bank `TCG_PCR_EVENT2` records) with a bounds-checked reader (errors, never
+  panics, on malformed input); `from_bytes` auto-detects JSON vs TCG. Events
+  carry their `EV_*` type (`tcg_type`), and helpers classify the boot chain
+  (`events_of_type`, `events_for_pcr`) and extract `EV_IPL` cmdline text
+  (`data_utf8`). `EventType` now distinguishes `Base` (set), `Extend`,
+  `NoAction` (informational, no PCR effect), and `Unknown(n)`. Remaining for the
+  full extraction story: mapping image/variable events to a structured
+  `ArtifactIdentity` (publisher/version) — done as part of Phase C, since that
+  mapping is only meaningful together with the signed-mapping / embedded-sig
+  policy. The raw classification + cmdline extraction needed by policy is in
+  place. Tested against a hand-built crypto-agile log; real-platform corpus
+  (OVMF/shim/GRUB/Linux) validation is follow-up.
 * **Phase C — semantic policy.** Wire extracted artifacts into
   `FleetArtifactPolicy` (signed-mapping path first, then embedded-sig); cmdline
   require/deny; promote `Semantic` indices from value-unchecked to validated.

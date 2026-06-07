@@ -305,7 +305,7 @@ impl TpmBackend for MockBackend {
         for index in 0u32..24 {
             events.push(MeasurementEvent {
                 pcr: index,
-                event_type: EventType::NoAction,
+                event_type: EventType::Base,
                 digests: vec![(bank.to_string(), Self::pcr_default(index))],
                 data: Vec::new(),
             });
