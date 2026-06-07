@@ -195,10 +195,21 @@ impl BootEventLog {
         });
 
         // --- crypto-agile records (TCG_PCR_EVENT2) ---
-        while !r.at_end() {
+        while r.remaining() >= 8 {
             let pcr = r.u32()?;
+            // Firmware often pads the allocated log region after the last real
+            // event; a `pcrIndex` of 0xFFFFFFFF (or an all-zero tail) is the
+            // conventional terminator — stop rather than mis-parse padding.
+            if pcr == 0xFFFF_FFFF {
+                break;
+            }
             let etype = r.u32()?;
             let count = r.u32()? as usize;
+            // A sane log has a small digest count; a huge value is padding/
+            // corruption, not a real record — stop cleanly.
+            if count > 16 {
+                break;
+            }
             let mut digests = Vec::with_capacity(count);
             for _ in 0..count {
                 let alg_id = r.u16()?;
@@ -311,6 +322,9 @@ impl<'a> Reader<'a> {
     }
     fn at_end(&self) -> bool {
         self.pos >= self.bytes.len()
+    }
+    fn remaining(&self) -> usize {
+        self.bytes.len().saturating_sub(self.pos)
     }
     fn take(&mut self, n: usize) -> anyhow::Result<&'a [u8]> {
         let end = self.pos.checked_add(n).ok_or_else(|| anyhow::anyhow!("length overflow"))?;
@@ -466,6 +480,73 @@ mod tests {
         let d = hash_for_bank("sha256", b"k").unwrap();
         let raw = tcg_bytes(&[(4, ev::IPL, d.try_into().unwrap(), b"")]);
         assert_eq!(BootEventLog::from_bytes(&raw).unwrap().events.len(), 2);
+    }
+
+    #[test]
+    fn multibank_record_replays_the_sha256_bank() {
+        // Real OVMF logs are crypto-agile: each EVENT2 carries both a sha1 and
+        // a sha256 digest. Replay over sha256 must use the sha256 digest.
+        let d256 = hash_for_bank("sha256", b"shim").unwrap();
+        let d1 = vec![0xAAu8; 20]; // arbitrary sha1 (different value)
+        let mut out = tcg_header_two_banks();
+        // EVENT2: pcr 4, EV_EFI_BOOT_SERVICES_APPLICATION, {sha1, sha256}, data
+        out.extend_from_slice(&4u32.to_le_bytes());
+        out.extend_from_slice(&ev::EFI_BOOT_SERVICES_APPLICATION.to_le_bytes());
+        out.extend_from_slice(&2u32.to_le_bytes()); // 2 digests
+        out.extend_from_slice(&0x0004u16.to_le_bytes()); // sha1
+        out.extend_from_slice(&d1);
+        out.extend_from_slice(&0x000Bu16.to_le_bytes()); // sha256
+        out.extend_from_slice(&d256);
+        out.extend_from_slice(&0u32.to_le_bytes()); // data_len
+
+        let log = BootEventLog::parse_tcg(&out).unwrap();
+        let r256 = log.replay("sha256").unwrap();
+        let expected = pcr_fold("sha256", &vec![0u8; 32], &d256).unwrap();
+        assert_eq!(r256.get(&4).unwrap(), &expected, "sha256 replay uses sha256 digest");
+        assert!(log.contains_measurement(4, &d256, "sha256"));
+    }
+
+    #[test]
+    fn trailing_padding_is_ignored() {
+        // A real allocated log region is padded after the last event; a
+        // 0xFFFFFFFF pcrIndex terminator (and zero padding) must not derail
+        // parsing or replay.
+        let d = hash_for_bank("sha256", b"k").unwrap();
+        let mut out = tcg_bytes(&[(4, ev::IPL, d.clone().try_into().unwrap(), b"")]);
+        // terminator + junk padding
+        out.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        out.extend_from_slice(&[0u8; 64]);
+        let log = BootEventLog::parse_tcg(&out).unwrap();
+        // header + the one real event; padding dropped.
+        assert_eq!(log.events.len(), 2);
+        assert_eq!(
+            log.replay("sha256").unwrap().get(&4).unwrap(),
+            &pcr_fold("sha256", &vec![0u8; 32], &d).unwrap()
+        );
+    }
+
+    /// A crypto-agile header declaring BOTH sha1 and sha256 (like real OVMF).
+    fn tcg_header_two_banks() -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&ev::NO_ACTION.to_le_bytes());
+        out.extend_from_slice(&[0u8; 20]);
+        let mut spec = Vec::new();
+        spec.extend_from_slice(b"Spec ID Event03\0");
+        spec.extend_from_slice(&0u32.to_le_bytes());
+        spec.push(0);
+        spec.push(2);
+        spec.push(0);
+        spec.push(2);
+        spec.extend_from_slice(&2u32.to_le_bytes()); // 2 algorithms
+        spec.extend_from_slice(&0x0004u16.to_le_bytes()); // sha1
+        spec.extend_from_slice(&20u16.to_le_bytes());
+        spec.extend_from_slice(&0x000Bu16.to_le_bytes()); // sha256
+        spec.extend_from_slice(&32u16.to_le_bytes());
+        spec.push(0);
+        out.extend_from_slice(&(spec.len() as u32).to_le_bytes());
+        out.extend_from_slice(&spec);
+        out
     }
 
     #[test]

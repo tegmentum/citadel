@@ -37,19 +37,23 @@ harness cannot provide.
 
 ## Track A — finish boot-appraisal (no new domain, mostly no hardware)
 
-### A1 — Real-platform event-log corpus validation
+### A1 — Real-platform event-log corpus validation — ◑ harness + hardening done; corpus capture pending
 * **Goal:** prove `parse_tcg` / `replay` against logs real firmware emits, not
   just hand-built ones. The robustness risk flagged in `event-log-attestation.md`.
-* **Scope:** collect `binary_bios_measurements` from OVMF/EDK2 + shim + GRUB +
-  Linux (via `swtpm`+QEMU, reproducible) and a couple of bare-metal samples;
-  add them as test fixtures; assert parse-without-error and that replay matches
-  the accompanying quoted PCRs. Harden the parser for the warts found (vendor
-  `EV_EVENT_TAG`s, padded data, multi-bank logs, SHA-1-only legacy logs we
-  reject by policy).
-* **Seam:** `tpm_core::eventlog::parse_tcg`; a `tests/fixtures/` corpus.
-* **Test:** golden parse+replay per fixture.
-* **Effort:** 2–3 d. **Gating:** needs sample logs (swtpm/QEMU is enough — no
-  physical TPM).
+* **Built (this turn):**
+  - A **fixture-driven corpus test** (`tpm-core/tests/eventlog_corpus.rs`): scans
+    `tests/fixtures/eventlog/<name>.bin` + `<name>.sha256`, asserts each parses
+    and its sha256 replay equals the expected quoted PCRs. No-op until populated.
+  - **Parser hardening** for real-log warts, with regression tests:
+    crypto-agile **multi-bank** records (sha1+sha256 — replay picks the right
+    bank), and trailing **padding / `0xFFFFFFFF` terminator** ignored.
+  - A reproducible **capture script** (`scripts/capture-eventlog.sh`):
+    QEMU + OVMF + swtpm boots a Linux guest and drops `.bin`/`.sha256` fixtures.
+* **Remaining (gated on the env):** actually capturing the corpus — needs
+  `swtpm` installed (absent here; `brew install swtpm`) and a UEFI Linux guest
+  image. QEMU + OVMF are present. Once fixtures land, the harness validates them
+  and A1 closes; that also unblocks **A3** and the **B1-firmware tail**.
+* **Seam:** `tpm_core::eventlog::parse_tcg`; `tests/fixtures/eventlog/`.
 
 ### A2 — X.509 / CA-chain authority validation — ✅ DONE
 * **Goal:** an authority that is a **CA** authorizes many leaf images without
