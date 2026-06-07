@@ -280,25 +280,32 @@ impl FleetArtifactPolicy {
     /// permitted (policy is opt-in per component); a denylisted version/build,
     /// an unapproved channel, or a below-baseline version is not.
     pub fn permits(&self, a: &ArtifactIdentity) -> bool {
+        !self.below_baseline(a) && !self.is_denied(a)
+    }
+
+    /// Whether the artifact is below its component's version baseline — a *soft*
+    /// signal (running but stale) the app path treats as "deprecated".
+    pub fn below_baseline(&self, a: &ArtifactIdentity) -> bool {
+        self.min_version.get(&a.component).is_some_and(|min| a.version < *min)
+    }
+
+    /// Whether the artifact is *denied* — an unapproved channel or a denylisted
+    /// version/build (the *hard* reasons, distinct from below-baseline).
+    pub fn is_denied(&self, a: &ArtifactIdentity) -> bool {
         if let Some(channels) = self.approved_channels.get(&a.component) {
             if !channels.contains(&a.channel) {
-                return false;
-            }
-        }
-        if let Some(min) = self.min_version.get(&a.component) {
-            if a.version < *min {
-                return false;
+                return true;
             }
         }
         if self.denied_versions.contains(&(a.component.clone(), a.version.clone())) {
-            return false;
+            return true;
         }
         if let Some(build) = &a.build_id {
             if self.denied_builds.contains(build) {
-                return false;
+                return true;
             }
         }
-        true
+        false
     }
 }
 

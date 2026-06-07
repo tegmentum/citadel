@@ -413,6 +413,23 @@ impl Mesh {
         }
     }
 
+    /// Install the application-appraisal policy on every node (§4).
+    pub fn set_app_policy_all(&mut self, policy: crate::application::AppPolicy) {
+        for n in &mut self.nodes {
+            n.set_app_policy(policy.clone());
+        }
+    }
+
+    /// A node reports an application measurement (appraise → record → gossip).
+    /// Returns the signed result the reporter produced.
+    pub fn report_app(
+        &mut self,
+        reporter: NodeId,
+        measurement: &crate::application::AppMeasurement,
+    ) -> crate::application::AppAttestationResult {
+        self.node_mut(reporter).report_app(measurement)
+    }
+
     /// Define a boot profile on every node (design §10.3).
     pub fn define_profile_all(&mut self, profile: BootProfile) {
         for n in &mut self.nodes {

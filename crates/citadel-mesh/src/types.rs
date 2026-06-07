@@ -125,6 +125,10 @@ pub enum GossipMessage {
     /// Boxed: it embeds a TPM quote. A conflicting checkpoint for the same
     /// `(node, boot, window)` is attributable proof of equivocation.
     LogCheckpoint(Box<crate::logship::Checkpoint>),
+    /// A signed appraisal of a registered application running on a node
+    /// (`application-appraisal.md` §5.1) — report-only: gossiped so a control
+    /// plane can remediate; does not affect node trust.
+    AppResult(Box<crate::application::AppAttestationResult>),
 }
 
 // -- Attestation records (design §8) --

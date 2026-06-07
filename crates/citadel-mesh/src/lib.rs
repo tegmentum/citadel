@@ -26,11 +26,13 @@
 //! * [`logship`] — LtHash windowed log digests + anti-entropy reconciliation.
 //! * [`reference`] — multi-value appraisal: authorized measured-state transitions.
 //! * [`promotion`] — fleet quorum promotion of new measured states.
+//! * [`application`] — app-level appraisal + signed results (report-only).
 //! * [`enrollment`] — quorum admission, probation, duplicate-identity checks.
 //! * [`quarantine`] — quorum-driven, scope-graded, reversible isolation.
 //! * [`node`] — the agent: the SWIM tick + envelope handling.
 //! * [`harness`] — an in-memory mesh of nodes for deterministic tests.
 
+pub mod application;
 pub mod attest;
 pub mod crypto;
 pub mod enrollment;

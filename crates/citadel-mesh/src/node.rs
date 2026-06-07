@@ -18,6 +18,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::attest::{Attestor, ReferenceMeasurements, TrustAnchors};
+use crate::application::{AppAttestationResult, AppMeasurement, AppPolicy};
 use crate::promotion::{PromotionProposal, PromotionVote};
 use crate::reference::{
     AcceptedReferences, ArtifactIdentity, BootProfile, FleetArtifactPolicy, PcrClass,
@@ -224,6 +225,13 @@ pub struct Node {
     reference_audit: EvidenceChain,
     /// Last tick this node advertised its adopted-manifest set.
     last_reference_advert: u64,
+    /// Policy for appraising registered applications (report-only; §5).
+    app_policy: AppPolicy,
+    /// Latest app appraisal heard per `(subject node, app name)` — the gossiped
+    /// reports a control plane consumes. Report-only: never affects node trust.
+    app_results: HashMap<(NodeId, String), AppAttestationResult>,
+    /// Hash-chained audit of app appraisals this node produced.
+    app_audit: EvidenceChain,
     /// Named boot profiles this node can appraise subjects against (design §10.3).
     profiles: std::collections::BTreeMap<String, BootProfile>,
     /// Which profile each subject is assigned (`node_id → profile name`);
@@ -335,6 +343,7 @@ impl Node {
     ) -> Self {
         let config_window = config.log_window_size;
         let reference_audit = EvidenceChain::new(id, mesh_id.clone());
+        let app_audit = EvidenceChain::new(id, mesh_id.clone());
         Node {
             mesh_id,
             id,
@@ -357,6 +366,9 @@ impl Node {
             adopted_manifests: std::collections::BTreeMap::new(),
             reference_audit,
             last_reference_advert: 0,
+            app_policy: AppPolicy::new(),
+            app_results: HashMap::new(),
+            app_audit,
             profiles: std::collections::BTreeMap::new(),
             profile_assignments: std::collections::BTreeMap::new(),
             endorsement: None,
@@ -446,6 +458,75 @@ impl Node {
     /// default.
     pub fn assign_profile(&mut self, subject: NodeId, profile: impl Into<String>) {
         self.profile_assignments.insert(subject, profile.into());
+    }
+
+    // -- application appraisal (report-only; design §4-6) ----------------
+
+    /// Install the policy this node uses to appraise registered applications.
+    pub fn set_app_policy(&mut self, policy: AppPolicy) {
+        self.app_policy = policy;
+    }
+
+    /// Appraise an application measurement (running on this node) and produce a
+    /// signed result — pure, no side effects.
+    pub fn appraise_app(&self, measurement: &AppMeasurement) -> AppAttestationResult {
+        AppAttestationResult::create(
+            &self.keypair,
+            self.id,
+            self.id,
+            measurement,
+            &self.app_policy,
+            self.tick,
+        )
+    }
+
+    /// Report an application measurement: appraise it, record the signed result
+    /// locally (audit + latest-per-app) and gossip it so a control plane can
+    /// remediate. **Report-only** — node trust is untouched (P1).
+    pub fn report_app(&mut self, measurement: &AppMeasurement) -> AppAttestationResult {
+        let result = self.appraise_app(measurement);
+        self.record_app_result(result.clone());
+        self.broadcast(GossipMessage::AppResult(Box::new(result.clone())));
+        result
+    }
+
+    /// Record a (verified) app result: append to the audit chain and keep the
+    /// latest per `(subject, app name)`.
+    fn record_app_result(&mut self, result: AppAttestationResult) {
+        self.app_audit.append(
+            result.subject,
+            RecordType::AppAttestationResult,
+            result.content_id(),
+            self.tick,
+            self.config.policy_revision,
+        );
+        self.app_results
+            .insert((result.subject, result.app.name.clone()), result);
+    }
+
+    /// Handle a gossiped app result: verify the verifier's signature, then
+    /// record it. Report-only — never changes node trust.
+    fn on_app_result(&mut self, sender: NodeId, result: AppAttestationResult) {
+        if result.verifier != sender {
+            return;
+        }
+        let Some(member) = self.membership.get(&sender) else {
+            return;
+        };
+        if !result.verify(&member.public_key) {
+            return;
+        }
+        self.record_app_result(result);
+    }
+
+    /// The latest app appraisal heard for `(subject, app_name)`, if any.
+    pub fn app_result_for(&self, subject: NodeId, app_name: &str) -> Option<&AppAttestationResult> {
+        self.app_results.get(&(subject, app_name.to_string()))
+    }
+
+    /// Length of this node's app-appraisal audit chain (testing/ops).
+    pub fn app_audit_len(&self) -> usize {
+        self.app_audit.len()
     }
 
     /// The accepted set used for a profile name (the named profile's, or the
@@ -1566,6 +1647,7 @@ impl Node {
                 self.on_reference_manifest_request(env.sender, id)
             }
             GossipMessage::LogCheckpoint(cp) => self.on_checkpoint(env.sender, *cp),
+            GossipMessage::AppResult(r) => self.on_app_result(env.sender, *r),
         }
     }
 

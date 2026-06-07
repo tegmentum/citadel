@@ -1,7 +1,7 @@
 # Citadel: Application-Level Appraisal & Graded Response
 
-Document Version: 0.1
-Status: Design Draft — not started
+Document Version: 0.2
+Status: Phase 1 (report-only) **built**; Phases 2–4 planned
 Project: Citadel
 Audience: Architecture, Security, Platform, Runtime Engineers
 Related: `distributed-attestation-mesh.md`, `measured-state-transitions.md`,
@@ -195,11 +195,19 @@ recorded as a `RecordType::OperatorAction`, closing the audit loop.)
 
 ## 9. Phasing
 
-* **P1 — report-only.** `AppId`/`AppMeasurement`/`AppAttestationResult`;
-  app-scoped appraisal reusing `FleetArtifactPolicy` + `ReferenceManifest`;
-  `RecordType::AppAttestationResult` + gossip. Node trust untouched. Realizes
-  `APP_VERSION_DEPRECATED` / `APP_ROLE_NOT_AUTHORIZED`. Deterministic, no
-  hardware. **This is the bulk of the value** (detection + durable report).
+* **P1 — report-only. ✅ Built.** `application.rs`: `AppId` / `AppMeasurement` /
+  `AppVerdict` / `AppReasonCode` / `AppPolicy::appraise` / signed
+  `AppAttestationResult`. `node.rs`: `set_app_policy` / `appraise_app` /
+  `report_app` (appraise → record in an `app_audit` chain + latest-per-app →
+  gossip) / `on_app_result` (verify sig → record); `GossipMessage::AppResult`;
+  `RecordType::AppAttestationResult`. Realizes `AppVersionDeprecated` /
+  `AppRoleNotAuthorized` / `AppMeasurementUnknown` / `AppMeasurementRevoked`,
+  and split `FleetArtifactPolicy` into `below_baseline` (deprecated, soft) vs
+  `is_denied` (revoked/channel, hard). **Node trust is untouched** — a failing
+  app is reported fleet-wide but does not quarantine the machine. Tests:
+  `application.rs` units + e2e (`tests/application.rs`): healthy report
+  propagates + audited; a *failing* app is reported but the node stays Trusted;
+  self-reported measurements are advisory.
 * **P2 — graded enforcement.** App-scoped quarantine proposals/votes; enforce
   `BlockWorkloadScheduling` / `CredentialRevoke` via new hooks
   (`block_workload_scheduling`/`revoke_credentials`). Wires the inert scopes.
