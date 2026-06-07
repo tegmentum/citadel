@@ -19,7 +19,7 @@ lthash-rs = "1.0.1"
 sha3 = { version = "0.10", default-features = false }
 # A2: X.509 CA-chain authority validation for Secure Boot db/dbx. Optional so
 # the core stays lean (no X.509 stack) unless a deployment needs CA anchors.
-x509-path = { git = "https://github.com/tegmentum/pkcs11-x509.git", rev = "987c9db83ce394f900b3764150fd4196a6eb9102", optional = true }
+x509-path = { git = "https://github.com/tegmentum/pkcs11-x509.git", branch = "main", optional = true }
 
 [features]
 # Validate EV_EFI_VARIABLE_AUTHORITY authorities that chain to a trusted db CA

@@ -5161,7 +5161,7 @@ dependencies = [
 [[package]]
 name = "x509-path"
 version = "0.1.0"
-source = "git+https://github.com/tegmentum/pkcs11-x509.git?rev=987c9db83ce394f900b3764150fd4196a6eb9102#987c9db83ce394f900b3764150fd4196a6eb9102"
+source = "git+https://github.com/tegmentum/pkcs11-x509.git?branch=main#987c9db83ce394f900b3764150fd4196a6eb9102"
 dependencies = [
  "const-oid",
  "der",
