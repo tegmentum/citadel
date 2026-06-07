@@ -30,7 +30,7 @@ harness cannot provide.
 | D1 | Signed quote-bound checkpoints (log-ship §9–10) | Durability | ✅ done | no |
 | D2 | On-disk persistence (log-ship §17) | Durability | 1–2 wk | no |
 | D3 | Erasure placement as the default replication | Durability | 3–5 d | no |
-| E1 | Reference/promotion flows over HTTP transport | Distribution | 1 wk | no |
+| E1 | Reference manifest flows over HTTP transport | Distribution | ✅ done | no |
 | E2 | mTLS between agents via the TPM-held key | Distribution | 3–5 d | hardware |
 
 ---

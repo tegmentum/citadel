@@ -20,11 +20,12 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::AbortHandle;
 
-use citadel_mesh::attest::Attestor;
+use citadel_mesh::attest::{Attestor, TrustAnchors};
 use citadel_mesh::crypto::MeshKeypair;
 use citadel_mesh::id::{Epoch, MeshId};
 use citadel_mesh::membership::Membership;
 use citadel_mesh::node::{Node, NodeConfig};
+use citadel_mesh::reference::ReferenceManifest;
 use citadel_mesh::types::GossipEnvelope;
 use citadel_mesh::NodeId;
 use tpm_core::backend::{MockBackend, TpmBackend};
@@ -44,6 +45,11 @@ enum Cmd {
     Status(oneshot::Sender<Vec<MemberRow>>),
     AppendEvent([u8; 32]),
     LogState(oneshot::Sender<LogState>),
+    SetReferenceAuthorities(Box<TrustAnchors>),
+    ApplyReferenceManifest(Box<ReferenceManifest>),
+    BroadcastReferenceManifest(Box<ReferenceManifest>),
+    HasReferenceManifest([u8; 32], oneshot::Sender<bool>),
+    TrustOf(NodeId, oneshot::Sender<Option<String>>),
 }
 
 /// This node's log-shipping view: the root of its own measurement log and of
@@ -117,6 +123,42 @@ impl AgentHandle {
         }
     }
 
+    /// Install the authorities this node trusts to sign reference manifests.
+    pub async fn set_reference_authorities(&self, authorities: TrustAnchors) {
+        let _ = self.cmd.send(Cmd::SetReferenceAuthorities(Box::new(authorities))).await;
+    }
+
+    /// Adopt a signed reference manifest locally (no gossip) — for seeding one
+    /// node so anti-entropy spreads it to the rest.
+    pub async fn apply_reference_manifest(&self, manifest: ReferenceManifest) {
+        let _ = self.cmd.send(Cmd::ApplyReferenceManifest(Box::new(manifest))).await;
+    }
+
+    /// Adopt a signed reference manifest and gossip it to peers.
+    pub async fn broadcast_reference_manifest(&self, manifest: ReferenceManifest) {
+        let _ = self.cmd.send(Cmd::BroadcastReferenceManifest(Box::new(manifest))).await;
+    }
+
+    /// Whether this node has adopted the manifest with content id `id`.
+    pub async fn has_reference_manifest(&self, id: [u8; 32]) -> bool {
+        let (tx, rx) = oneshot::channel();
+        if self.cmd.send(Cmd::HasReferenceManifest(id, tx)).await.is_ok() {
+            rx.await.unwrap_or(false)
+        } else {
+            false
+        }
+    }
+
+    /// This node's trust classification of `subject`, if known.
+    pub async fn trust_of(&self, subject: NodeId) -> Option<String> {
+        let (tx, rx) = oneshot::channel();
+        if self.cmd.send(Cmd::TrustOf(subject, tx)).await.is_ok() {
+            rx.await.unwrap_or(None)
+        } else {
+            None
+        }
+    }
+
     fn sender(&self) -> mpsc::Sender<Cmd> {
         self.cmd.clone()
     }
@@ -169,6 +211,26 @@ pub fn spawn_node(
                 }
                 Cmd::LogState(reply) => {
                     let _ = reply.send(log_state(&node));
+                }
+                Cmd::SetReferenceAuthorities(anchors) => {
+                    node.set_reference_authorities(*anchors);
+                }
+                Cmd::ApplyReferenceManifest(m) => {
+                    node.apply_reference_manifest(&m);
+                }
+                Cmd::BroadcastReferenceManifest(m) => {
+                    node.broadcast_reference_manifest(*m);
+                    drain_outbox(&mut node, &transport);
+                }
+                Cmd::HasReferenceManifest(id, reply) => {
+                    let _ = reply.send(node.has_reference_manifest(id));
+                }
+                Cmd::TrustOf(subject, reply) => {
+                    let trust = node
+                        .membership()
+                        .get(&subject)
+                        .map(|m| m.trust.as_str().to_string());
+                    let _ = reply.send(trust);
                 }
             }
         }
