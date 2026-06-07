@@ -204,6 +204,14 @@ pub trait TpmBackend: Send + Sync {
         ak_public: &[u8],
         nonce: &[u8],
     ) -> anyhow::Result<QuoteVerification>;
+
+    /// Read the platform's measured-boot event log, serialized as a
+    /// [`crate::eventlog::BootEventLog`] (`to_bytes`). `None` if this backend
+    /// has no event log. The default has none; backends that can produce one
+    /// override this (design `event-log-attestation.md`, Phase A).
+    fn read_event_log(&self) -> anyhow::Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

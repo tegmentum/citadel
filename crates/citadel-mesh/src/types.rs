@@ -152,6 +152,12 @@ pub struct AttestationEvidence {
     /// trust anchors then flags `AK_UNTRUSTED`.
     #[serde(default)]
     pub endorsement: Option<Endorsement>,
+    /// The measured-boot event log that produced the quoted PCRs, serialized as
+    /// a `tpm_core::eventlog::BootEventLog` (design `event-log-attestation.md`).
+    /// A verifier replays it against the quote for `Semantic`-class PCRs; `None`
+    /// when the backend has no log.
+    #[serde(default)]
+    pub event_log: Option<Vec<u8>>,
 }
 
 /// An endorsement binding a node's attestation key to a trust root: an

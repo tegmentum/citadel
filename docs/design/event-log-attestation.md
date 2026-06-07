@@ -1,7 +1,7 @@
 # Citadel: Event-Log Ingestion & Semantic Validation
 
-Document Version: 0.1
-Status: Design Draft — not started
+Document Version: 0.2
+Status: Phase A (replay / integrity) **built**; Phases B–D planned
 Project: Citadel
 Audience: Architecture, Security, Platform, Runtime Engineers
 Related: `measured-state-transitions.md`, `distributed-log-shipping-lthash.md`,
@@ -206,11 +206,16 @@ cmdline event **only when** its digest matches the measured value.
 
 ## 9. Phasing
 
-* **Phase A — replay (integrity).** `eventlog` module + parser + `replay`/
-  `explains`; `TpmBackend::read_event_log`; `event_log` on evidence;
-  `MockBackend` synthetic logs; `verify` enforces `replay==quote` for
-  `Semantic` indices. Fills `EVENT_LOG_MISSING`/`EVENT_LOG_INCONSISTENT`.
-  Deterministically testable; **no real hardware required**.
+* **Phase A — replay (integrity). ✅ Built.** `tpm_core::eventlog`
+  (`BootEventLog`/`MeasurementEvent`/`EventType`, `replay`/`explains`,
+  `to_bytes`/`from_bytes`); `TpmBackend::read_event_log` (default `None`);
+  `MockBackend` records extends and synthesizes a log that replays to its PCRs;
+  `AttestationEvidence.event_log`; `attest.rs::verify` enforces `replay==quote`
+  for `Semantic` indices, filling `EVENT_LOG_MISSING`/`EVENT_LOG_INCONSISTENT`.
+  Deterministically tested, no hardware. *(Module lives in `tpm-core`, not
+  `citadel-mesh` as first sketched, so `MockBackend` can build the type without
+  a dependency cycle.)* TCG **binary** parsing remains Phase B; Phase A uses the
+  Citadel-internal `to_bytes` form.
 * **Phase B — event→artifact extraction.** Parsers for the boot-chain event
   types; map events to `ArtifactIdentity`. Firmware-variant heavy; start with
   one reference platform (OVMF/UEFI + shim + GRUB + Linux).

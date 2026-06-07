@@ -1,5 +1,6 @@
 pub mod backend;
 pub mod diag;
+pub mod eventlog;
 pub mod model;
 pub mod output;
 pub mod policy;

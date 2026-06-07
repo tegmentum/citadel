@@ -28,7 +28,9 @@ use tpm_core::model::Algorithm;
 
 use crate::crypto::MeshPublicKey;
 use crate::id::NodeId;
-use crate::reference::{AcceptedReferences, ReferenceMatchPolicy, ReferenceOutcome, RetiredAction};
+use crate::reference::{
+    AcceptedReferences, PcrClass, ReferenceMatchPolicy, ReferenceOutcome, RetiredAction,
+};
 use crate::types::{
     AttestationChallenge, AttestationEvidence, AttestationResult, Endorsement, ReasonCode, Verdict,
 };
@@ -157,6 +159,9 @@ impl Attestor {
             loaded_policy_revision,
             timestamp_tick: tick,
             endorsement,
+            // Attach the measured-boot event log so a verifier can replay it
+            // against the quote (event-log-attestation.md).
+            event_log: self.backend.read_event_log().unwrap_or(None),
         })
     }
 
@@ -254,6 +259,27 @@ impl Attestor {
             ReferenceOutcome::Incomplete => reference_incomplete = true,
         }
 
+        // Event-log integrity: a Semantic-class PCR must be backed by an event
+        // log that replays to the quote (event-log-attestation.md, Phase A).
+        let needs_event_log = evidence
+            .quote
+            .pcr_values
+            .iter()
+            .any(|pv| accepted.class_of(pv.index) == PcrClass::Semantic);
+        if needs_event_log {
+            match &evidence.event_log {
+                None => reasons.push(ReasonCode::EventLogMissing),
+                Some(bytes) => {
+                    let explains = tpm_core::eventlog::BootEventLog::from_bytes(bytes)
+                        .map(|log| log.explains(&evidence.quote.pcr_values))
+                        .unwrap_or(false);
+                    if !explains {
+                        reasons.push(ReasonCode::EventLogInconsistent);
+                    }
+                }
+            }
+        }
+
         // A stale policy revision is a soft (Warn) signal, not a failure.
         if evidence.loaded_policy_revision < challenge.policy_revision {
             reasons.push(ReasonCode::PolicyRevisionStale);
@@ -267,6 +293,8 @@ impl Attestor {
                         | ReasonCode::NonceMismatch
                         | ReasonCode::AkUntrusted
                         | ReasonCode::EvidenceIncomplete
+                        | ReasonCode::EventLogMissing
+                        | ReasonCode::EventLogInconsistent
                 )
             });
 
@@ -451,6 +479,49 @@ mod tests {
         let res = verifier.verify(&ch, &ev, &reference, &anchors, nid(2), 2, ReferenceMatchPolicy::Flexible, RetiredAction::Fail);
         assert_eq!(res.result, Verdict::Fail);
         assert!(res.reason_codes.contains(&ReasonCode::AkUntrusted));
+    }
+
+    #[test]
+    fn semantic_index_requires_a_consistent_event_log() {
+        let attester = Attestor::new(Box::new(MockBackend::new())).unwrap();
+        let verifier = Attestor::new(Box::new(MockBackend::new())).unwrap();
+        let mut accepted = golden(&attester);
+        // PCR 0 is semantic → its quote must be backed by a replayable log.
+        accepted.set_pcr_class(0, PcrClass::Semantic);
+        let ch = challenge(nid(1), 5);
+
+        // The mock attaches a log that replays to its quote → integrity holds.
+        let ev = attester.produce(&ch, 5, None, None, 1).unwrap();
+        assert!(ev.event_log.is_some(), "mock backend supplies an event log");
+        let res = verifier.verify(&ch, &ev, &accepted, &TrustAnchors::new(), nid(2), 2, ReferenceMatchPolicy::Flexible, RetiredAction::Fail);
+        assert_eq!(res.result, Verdict::Pass, "reasons {:?}", res.reason_codes);
+
+        // No log when a semantic index is present → EVENT_LOG_MISSING / Fail.
+        let mut no_log = ev.clone();
+        no_log.event_log = None;
+        let res = verifier.verify(&ch, &no_log, &accepted, &TrustAnchors::new(), nid(2), 2, ReferenceMatchPolicy::Flexible, RetiredAction::Fail);
+        assert_eq!(res.result, Verdict::Fail);
+        assert!(res.reason_codes.contains(&ReasonCode::EventLogMissing));
+
+        // A log that does not replay to the quote → EVENT_LOG_INCONSISTENT / Fail.
+        let mut bad = ev.clone();
+        bad.event_log = Some(vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        let res = verifier.verify(&ch, &bad, &accepted, &TrustAnchors::new(), nid(2), 2, ReferenceMatchPolicy::Flexible, RetiredAction::Fail);
+        assert_eq!(res.result, Verdict::Fail);
+        assert!(res.reason_codes.contains(&ReasonCode::EventLogInconsistent));
+    }
+
+    #[test]
+    fn strict_only_quote_needs_no_event_log() {
+        // Default (all-Strict) appraisal does not require a log — unchanged.
+        let attester = Attestor::new(Box::new(MockBackend::new())).unwrap();
+        let verifier = Attestor::new(Box::new(MockBackend::new())).unwrap();
+        let accepted = golden(&attester);
+        let ch = challenge(nid(1), 5);
+        let mut ev = attester.produce(&ch, 5, None, None, 1).unwrap();
+        ev.event_log = None; // no log at all
+        let res = verifier.verify(&ch, &ev, &accepted, &TrustAnchors::new(), nid(2), 2, ReferenceMatchPolicy::Flexible, RetiredAction::Fail);
+        assert_eq!(res.result, Verdict::Pass, "reasons {:?}", res.reason_codes);
     }
 
     #[test]

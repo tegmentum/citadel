@@ -28,6 +28,9 @@ pub struct MockBackend {
     /// authPolicy a key was bound to (key id -> PolicyPCR digest), so
     /// `sign_with_policy` can enforce the measured-state gate in software.
     key_policies: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
+    /// Ordered record of `pcr_extend` digests, per `(bank, index)`, so a
+    /// replayable event log can be synthesized (`read_event_log`).
+    extends: Mutex<HashMap<(String, u32), Vec<Vec<u8>>>>,
 }
 
 struct MockKey {
@@ -49,6 +52,7 @@ impl MockBackend {
             pcrs: Mutex::new(HashMap::new()),
             counters: Mutex::new(HashMap::new()),
             key_policies: Mutex::new(HashMap::new()),
+            extends: Mutex::new(HashMap::new()),
         }
     }
 
@@ -276,8 +280,53 @@ impl TpmBackend for MockBackend {
             .cloned()
             .unwrap_or_else(|| Self::pcr_default(index));
         let folded = pcr_fold(bank, &current, digest)?;
-        pcrs.insert(key, folded);
+        pcrs.insert(key.clone(), folded);
+        // Record the digest so a replayable event log can be synthesized.
+        self.extends
+            .lock()
+            .unwrap()
+            .entry(key)
+            .or_default()
+            .push(digest.to_vec());
         Ok(())
+    }
+
+    /// Synthesize a measured-boot event log that replays to this backend's
+    /// current PCR state: a `NoAction` base event per standard PCR (its
+    /// pre-extend default), then an `Extend` event per recorded `pcr_extend`.
+    /// So `replay(log) == pcr_read(...)` for every PCR — making the event-log
+    /// path deterministically testable without real hardware.
+    fn read_event_log(&self) -> anyhow::Result<Option<Vec<u8>>> {
+        use crate::eventlog::{BootEventLog, EventType, MeasurementEvent};
+        let bank = "sha256";
+        let extends = self.extends.lock().unwrap();
+        let mut events = Vec::new();
+        // Base events: every standard PCR starts at its deterministic default.
+        for index in 0u32..24 {
+            events.push(MeasurementEvent {
+                pcr: index,
+                event_type: EventType::NoAction,
+                digests: vec![(bank.to_string(), Self::pcr_default(index))],
+                data: Vec::new(),
+            });
+        }
+        // Extend events, grouped by PCR, in recorded order.
+        let mut keys: Vec<&(String, u32)> = extends.keys().collect();
+        keys.sort();
+        for key in keys {
+            if key.0 != bank {
+                continue;
+            }
+            for digest in &extends[key] {
+                events.push(MeasurementEvent {
+                    pcr: key.1,
+                    event_type: EventType::Extend,
+                    digests: vec![(bank.to_string(), digest.clone())],
+                    data: Vec::new(),
+                });
+            }
+        }
+        Ok(Some(BootEventLog::new(events).to_bytes()))
     }
 
     fn nv_define(&self, index: u32, size: usize) -> anyhow::Result<()> {
