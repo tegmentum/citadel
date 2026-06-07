@@ -39,6 +39,8 @@ use crate::logship::{
 use crate::membership::Membership;
 use crate::quarantine::{Ballot, QuarantineProposal, QuarantineScope, QuarantineVote};
 use crate::state::{LivenessState, TrustState};
+use crate::store::Store;
+use serde::{Deserialize, Serialize};
 use crate::types::{
     AttestationChallenge, Endorsement, GossipEnvelope, GossipMessage, ReasonCode, Verdict,
 };
@@ -346,6 +348,30 @@ pub struct WindowPlacement {
     pub holder_count: usize,
 }
 
+/// A serializable snapshot of a node's **durable evidence** state (design
+/// `distributed-log-shipping-lthash.md` §17): own log, replicated peer logs,
+/// held fragments, adopted reference manifests, the reference/app audit chains,
+/// app appraisals, sealed-window roots, signed checkpoints, and app scopes.
+///
+/// Transient state — membership liveness/trust, in-flight probes, in-flight
+/// erasure migrations, the reconstruction-gathering buffer — is intentionally
+/// excluded: it re-converges via gossip and re-attestation, so trust is
+/// re-earned on restart rather than blindly restored.
+#[derive(Serialize, Deserialize)]
+pub struct NodeSnapshot {
+    own_log: EventLog,
+    replicas: Vec<(NodeId, EventLog)>,
+    held_fragments: Vec<LogFragment>,
+    adopted_manifests: Vec<ReferenceManifest>,
+    reference_audit: EvidenceChain,
+    app_audit: EvidenceChain,
+    app_results: Vec<AppAttestationResult>,
+    checkpoints: Vec<Checkpoint>,
+    sealed_roots: Vec<(NodeId, u64, u64, Vec<u8>)>,
+    app_scopes: Vec<(NodeId, String, QuarantineScope)>,
+    app_escalated: Vec<NodeId>,
+}
+
 /// Sub-range width at which network reconciliation stops bisecting and pulls
 /// the records (mirrors `logship::LEAF_WIDTH`).
 const LOG_LEAF_WIDTH: u64 = 4;
@@ -599,6 +625,99 @@ impl Node {
     /// Length of this node's app-appraisal audit chain (testing/ops).
     pub fn app_audit_len(&self) -> usize {
         self.app_audit.len()
+    }
+
+    // -- durable persistence (design §17; D2) ---------------------------
+
+    /// Capture a serializable snapshot of this node's durable evidence state.
+    pub fn snapshot(&self) -> NodeSnapshot {
+        NodeSnapshot {
+            own_log: self.own_log.clone(),
+            replicas: self.replicas.iter().map(|(k, v)| (*k, v.clone())).collect(),
+            held_fragments: self
+                .held_fragments
+                .values()
+                .flat_map(|m| m.values().cloned())
+                .collect(),
+            adopted_manifests: self.adopted_manifests.values().cloned().collect(),
+            reference_audit: self.reference_audit.clone(),
+            app_audit: self.app_audit.clone(),
+            app_results: self.app_results.values().cloned().collect(),
+            checkpoints: self.checkpoints.values().cloned().collect(),
+            sealed_roots: self
+                .sealed_roots
+                .iter()
+                .map(|((n, b, w), r)| (*n, *b, *w, r.clone()))
+                .collect(),
+            app_scopes: self
+                .app_scopes
+                .iter()
+                .map(|((n, a), s)| (*n, a.clone(), *s))
+                .collect(),
+            app_escalated: self.app_escalated.iter().copied().collect(),
+        }
+    }
+
+    /// Restore durable evidence state from a snapshot. Rebuilds the in-memory
+    /// indices and re-applies adopted manifests to the accepted-reference set
+    /// (so appraisal reflects them) without re-auditing — the audit chain is
+    /// restored verbatim. Does not touch membership/trust (re-earned via gossip).
+    pub fn restore(&mut self, snap: NodeSnapshot) {
+        self.own_log = snap.own_log;
+        self.replicas = snap.replicas.into_iter().collect();
+        self.held_fragments.clear();
+        for lf in snap.held_fragments {
+            self.held_fragments
+                .entry(lf.fragment.record_id)
+                .or_default()
+                .insert(lf.fragment.index, lf);
+        }
+        self.adopted_manifests =
+            snap.adopted_manifests.into_iter().map(|m| (m.content_id(), m)).collect();
+        // Re-apply manifests to the accepted set (no re-audit; chain restored below).
+        for m in self.adopted_manifests.values() {
+            self.peer_reference.adopt_manifest(m);
+        }
+        self.reference_audit = snap.reference_audit;
+        self.app_audit = snap.app_audit;
+        self.app_results = snap
+            .app_results
+            .into_iter()
+            .map(|r| ((r.subject, r.app.name.clone()), r))
+            .collect();
+        self.checkpoints = snap
+            .checkpoints
+            .into_iter()
+            .map(|c| ((c.node_id, c.boot_id, c.window_id), c))
+            .collect();
+        self.sealed_roots =
+            snap.sealed_roots.into_iter().map(|(n, b, w, r)| ((n, b, w), r)).collect();
+        self.app_scopes =
+            snap.app_scopes.into_iter().map(|(n, a, s)| ((n, a), s)).collect();
+        self.app_escalated = snap.app_escalated.into_iter().collect();
+    }
+
+    /// Storage key for this node's snapshot.
+    fn persist_key(&self) -> String {
+        format!("node-{}.json", self.id.to_hex())
+    }
+
+    /// Persist this node's durable evidence to `store`.
+    pub fn persist(&self, store: &dyn Store) -> anyhow::Result<()> {
+        let bytes = serde_json::to_vec(&self.snapshot())?;
+        store.save(&self.persist_key(), &bytes)
+    }
+
+    /// Hydrate this node's durable evidence from `store`. Returns whether a
+    /// snapshot was found and applied.
+    pub fn hydrate(&mut self, store: &dyn Store) -> anyhow::Result<bool> {
+        match store.load(&self.persist_key())? {
+            Some(bytes) => {
+                self.restore(serde_json::from_slice(&bytes)?);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
     }
 
     // -- graded app-scoped response (P2; design §5.2) -------------------

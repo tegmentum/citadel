@@ -28,7 +28,7 @@ harness cannot provide.
 | B2 | Signed reference values from a real RVP | Hardware bring-up | 1 wk | build pipeline |
 | C1 | IMA / runtime measurement (event-log Phase D) | Runtime | 2–3 wk | hardware (real) |
 | D1 | Signed quote-bound checkpoints (log-ship §9–10) | Durability | ✅ done | no |
-| D2 | On-disk persistence (log-ship §17) | Durability | 1–2 wk | no |
+| D2 | On-disk persistence (log-ship §17) | Durability | ✅ done | no |
 | D3 | Erasure placement as the default replication | Durability | ✅ done | no |
 | E1 | Reference manifest flows over HTTP transport | Distribution | ✅ done | no |
 | E2 | mTLS between agents via the TPM-held key | Distribution | 3–5 d | hardware |
@@ -159,16 +159,17 @@ harness cannot provide.
 * **Effort:** 1–1.5 wk. **Gating:** none. High conceptual value (it's the
   spine the original log-shipping design is built around).
 
-### D2 — On-disk persistence
+### D2 — On-disk persistence — ✅ DONE
 * **Goal:** survive restart — close §17. Today logs, replicas, fragments,
   shipped-window tracking, adopted manifests, and the reference audit are all
   in-memory.
-* **Scope:** a storage trait + a default embedded store; persist the event log,
-  LtHash windows, held fragments, adopted manifests, and audit chain; reload on
-  start. Keep the in-memory impl for tests.
-* **Seam:** new `store` abstraction behind `Node`'s maps.
-* **Test:** kill/reload preserves roots, fragments, manifests, audit integrity.
-* **Effort:** 1–2 wk. **Gating:** none.
+* **Delivered:** `store::{Store, MemStore, FileStore}` (atomic write, path-
+  traversal-safe) + `Node::snapshot`/`restore` and `persist`/`hydrate`; a
+  `NodeSnapshot` captures the durable evidence (own log, replicas, fragments,
+  manifests, both audit chains, app results/scopes, sealed roots, checkpoints).
+  Membership/trust deliberately excluded — re-earned via gossip. Tests:
+  `persistence.rs`.
+* **Gating:** none.
 
 ### D3 — Erasure placement as the default — ✅ DONE
 * **Goal:** make the bounded-fan-out erasure path (already built) the default

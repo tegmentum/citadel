@@ -1,12 +1,13 @@
 # Citadel: Distributed TPM Log Shipping and LtHash Reconciliation Architecture
 
 Document Version: 0.2
-Status: Partially implemented — the LtHash anti-entropy engine, gossip,
-binary-search reconciliation, equivocation detection, and erasure-coded durable
-preservation are built and tested in `crates/citadel-mesh`; signed quote-bound
-checkpoints, real event-source ingestion, and on-disk persistence are not yet
-built. See the **Implementation Status** section below for the section-by-section
-map; each section carries its own **Status:** line.
+Status: Substantially implemented — the LtHash anti-entropy engine, gossip,
+binary-search reconciliation, equivocation detection, erasure-coded durable
+preservation, signed quote-bound checkpoints, and on-disk persistence are built
+and tested in `crates/citadel-mesh`. The remaining structural gap is **real
+event-source ingestion (§5)** (events are still fed abstractly). See the
+**Implementation Status** section below for the section-by-section map; each
+section carries its own **Status:** line.
 Project: Citadel
 Audience: Architecture, Security, Platform, Runtime Engineers
 Related: `distributed-attestation-mesh.md`, `measured-merkle-anchoring.md`, `mma-upgrade.md`, `measured-state-transitions.md`
@@ -55,10 +56,10 @@ Section-by-section map of this design against `crates/citadel-mesh`. ✅ done,
 | 9 | Signed checkpoints | ✅ | `logship::Checkpoint`, `node::checkpoint_window`/`on_checkpoint` (gated by `checkpoint_enabled`) |
 | 10 | TPM quote ↔ checkpoint link | ✅ | checkpoint quote nonce = `checkpoint_nonce(boot,window,root)` |
 | 5 | Event sources (`binary_bios_measurements`, IMA) | ✗ | events fed abstractly via `append_event(payload_hash)` |
-| 17 | Storage layout (on-disk) | ✗ | in-memory only (in-process harness + HTTP transport) |
+| 17 | Storage layout (on-disk) | ✅ | `store::{Store,MemStore,FileStore}` + `Node::persist`/`hydrate` |
 
-Signed quote-bound checkpoints (§9–10) are now built; the remaining structural
-gaps are **real event-source ingestion (§5)** and **persistence (§17)**.
+Signed quote-bound checkpoints (§9–10) and on-disk persistence (§17) are now
+built; the remaining structural gap is **real event-source ingestion (§5)**.
 
 ---
 
@@ -589,11 +590,17 @@ Possible actions:
 
 ## 17. Storage Layout
 
-**Status: ✗ Not yet built.** All state (logs, windows, replicas, fragments,
-shipped-window tracking) is in-memory in the in-process harness and over the
-HTTP transport; there is no on-disk store. The durable-evidence *logic*
-(erasure placement, reconstruction) is complete (§14–15) but a crash currently
-loses local state — persistence behind it is the remaining piece.
+**Status: ✅ Built** (`store.rs` + `node.rs` snapshot/restore). A `Store`
+trait (`MemStore` for tests, atomic-write `FileStore` for deployment) persists a
+`NodeSnapshot` of the durable evidence — own log, replicated peer logs, held
+erasure fragments, adopted reference manifests, the reference/app audit chains,
+app appraisals, sealed-window roots, signed checkpoints, and app scopes — under
+a per-node key; `Node::persist` / `hydrate` save and reload it, so a restart
+recovers the evidence vault. **Transient** state (membership liveness/trust,
+in-flight probes/migrations) is intentionally *not* persisted: it re-converges
+via gossip and re-attestation, so trust is re-earned on restart rather than
+blindly restored. Tested in `persistence.rs` (own-log/manifest/appraisal and a
+replicated peer log survive a `FileStore` round-trip).
 
 ```text
 /node/{nodeid}/

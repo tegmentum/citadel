@@ -87,6 +87,7 @@ pub fn payload_hash(payload: &[u8]) -> [u8; 32] {
 }
 
 /// A node's append-only evidence chain.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct EvidenceChain {
     owner: NodeId,
     mesh_id: MeshId,

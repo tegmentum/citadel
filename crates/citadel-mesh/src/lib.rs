@@ -30,6 +30,7 @@
 //! * [`enrollment`] — quorum admission, probation, duplicate-identity checks.
 //! * [`quarantine`] — quorum-driven, scope-graded, reversible isolation.
 //! * [`node`] — the agent: the SWIM tick + envelope handling.
+//! * [`store`] — durable key→bytes storage; node evidence survives restart.
 //! * [`harness`] — an in-memory mesh of nodes for deterministic tests.
 
 pub mod application;
@@ -47,6 +48,7 @@ pub mod promotion;
 pub mod quarantine;
 pub mod reference;
 pub mod state;
+pub mod store;
 pub mod types;
 pub mod witness;
 

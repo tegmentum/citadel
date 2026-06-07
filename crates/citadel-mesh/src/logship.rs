@@ -57,7 +57,7 @@ impl EventRecord {
 }
 
 /// A node's append-only event log, accumulated into windowed LtHash roots.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct EventLog {
     records: BTreeMap<u64, EventRecord>,
     window_size: u64,

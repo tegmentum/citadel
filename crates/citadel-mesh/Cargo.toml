@@ -30,3 +30,4 @@ x509-authority = ["dep:x509-path"]
 
 [dev-dependencies]
 rcgen = "0.13"
+tempfile = "3"
