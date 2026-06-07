@@ -3879,6 +3879,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tpm-tls"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rcgen",
+ "rustls",
+ "tempfile",
+ "tpm-core",
+ "vtpm-backend",
+]
+
+[[package]]
 name = "tpm-tui"
 version = "0.1.0"
 dependencies = [

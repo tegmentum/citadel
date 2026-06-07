@@ -31,7 +31,7 @@ harness cannot provide.
 | D2 | On-disk persistence (log-ship §17) | Durability | ✅ done | no |
 | D3 | Erasure placement as the default replication | Durability | ✅ done | no |
 | E1 | Reference manifest flows over HTTP transport | Distribution | ✅ done | no |
-| E2 | mTLS between agents via the TPM-held key | Distribution | 3–5 d | hardware |
+| E2 | mTLS between agents via the TPM-held key | Distribution | ◑ crypto core done (vTPM) | transport wiring |
 
 ---
 
@@ -253,14 +253,28 @@ harness cannot provide.
 * **Test:** real tokio agents converge on a gossiped manifest / promote a state.
 * **Effort:** 1 wk. **Gating:** none. **Composes with** `mesh-integration-roadmap.md` item 1 (done).
 
-### E2 — mTLS between agents via the TPM-held key
-* **Goal:** authenticated agent-to-agent transport using the tpmd TPM-backed
-  TLS key (already built for `tpmd`); deferred hardware item.
-* **Scope:** wire `tpmd`'s `TpmSigningKey` into `citadel-agent`'s reqwest/axum
-  as the client+server identity; peer-cert pinning to mesh keys.
-* **Seam:** `tpmd::tls` + `citadel-agent::http`.
-* **Test:** mutual-auth handshake; rejected unknown peer.
-* **Effort:** 3–5 d. **Gating:** TPM-held key (hardware/vTPM).
+### E2 — mTLS between agents via the TPM-held key — ◑ crypto core done (verified on vTPM); transport wiring remains
+* **Goal:** authenticated agent-to-agent transport where each side's TLS key is
+  TPM-resident.
+* **Delivered — new reusable `tpm-tls` crate** (backend-agnostic over
+  `TpmBackend`; works with vTPM/swtpm/hardware):
+  - `TpmTlsIdentity::new` — the TPM **mints its own self-signed cert** via
+    `rcgen`'s remote-signing seam (the TPM signs the cert), including a
+    `TPM2B_PUBLIC` ECC-point parser for `rcgen`'s `public_key()`.
+  - the TPM **signs every handshake** (rustls `SigningKey`/`Signer` →
+    `TPMT_SIGNATURE` → DER ECDSA), private key never leaving the TPM.
+  - **mutual-TLS** `server_config` / `client_config` with **certificate
+    pinning** (mesh identity = the exact peer cert; no CA) — handshake signature
+    still verified so pinning proves key possession.
+  - **Verified on the real vTPM** (`tests/mtls_handshake.rs`, ~62 s): two
+    TPM-held identities complete mutual TLS; an unpinned client is rejected; an
+    impostor server cert is rejected. (Needs a *persisted* vTPM — the ephemeral
+    one returns a non-signature fallback.)
+* **Remaining:** wire `TpmTlsIdentity` into `citadel-agent`'s reqwest client +
+  axum server (the transport plumbing — mechanical now the crypto core exists);
+  distribute/pin peer certs through the enrolment layer; optionally refactor
+  `tpmd::tls` onto `tpm-tls` to dedupe the signing-key code.
+* **Seam:** `tpm-tls`; `citadel-agent::http`; mesh enrolment for cert exchange.
 
 ---
 

@@ -6,6 +6,7 @@ members = [
     "crates/tpm-tui",
     "crates/tpm-wasi",
     "crates/tpmd",
+    "crates/tpm-tls",
     "crates/citadel-mesh",
     "crates/citadel-agent",
     "crates/vtpm-backend",

@@ -1,0 +1,14 @@
+[package]
+name = "tpm-tls"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tpm-core = { path = "../tpm-core" }
+rustls = "0.23"
+rcgen = "0.13"
+anyhow = "1"
+
+[dev-dependencies]
+vtpm-backend = { path = "../vtpm-backend" }
+tempfile = "3"
