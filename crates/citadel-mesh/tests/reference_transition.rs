@@ -495,6 +495,65 @@ fn a_forbidden_kernel_cmdline_distrusts_a_node() {
 }
 
 #[test]
+fn secure_boot_authority_accepts_by_publisher_then_dbx_revokes() {
+    // §10.4 / event-log §7: PCR 4 is Semantic. A kernel whose digest the fleet
+    // never enumerated is trusted because a *trusted publisher* (db) authorized
+    // it; revoking that publisher (dbx) then distrusts the node — no node change.
+    let mut mesh = Mesh::new("prod-east-1");
+    let cfg = NodeConfig {
+        witness_count: 3,
+        attestation_interval: 3,
+        pcr_selection: vec![0, 7, 4],
+        ..NodeConfig::default()
+    };
+    let ids: Vec<NodeId> = (1..=6).map(|s| mesh.add_node(s, "worker", cfg.clone())).collect();
+    mesh.wire_full_membership();
+    mesh.set_pcr_class_all(4, PcrClass::Semantic);
+    mesh.set_artifact_policy_all(
+        FleetArtifactPolicy::new().require_authorized_boot().trust_authority(b"canonical".to_vec()),
+    );
+
+    let node = ids[4];
+    const EV_EFI_BSA: u32 = 0x8000_0003;
+    const EV_EFI_AUTHORITY: u32 = 0x8000_00E0;
+    // The node boots an un-enumerated kernel image, authorized by Canonical.
+    mesh.measure_event(node, "sha256", 4, EV_EFI_BSA, b"vmlinuz-6.8.0-never-seen");
+    mesh.measure_event(node, "sha256", 4, EV_EFI_AUTHORITY, b"canonical");
+    mesh.run(12);
+
+    // Trusted purely on publisher provenance — its digest was never listed.
+    for &o in &ids {
+        if o != node {
+            assert_eq!(
+                mesh.trust_of(o, node),
+                Some(TrustState::Trusted),
+                "{o} trusts {node} (image authorized by a db publisher)"
+            );
+        }
+    }
+
+    // Canonical's authority is compromised and moved to dbx fleet-wide.
+    mesh.set_artifact_policy_all(
+        FleetArtifactPolicy::new()
+            .require_authorized_boot()
+            .trust_authority(b"canonical".to_vec())
+            .revoke_authority(b"canonical".to_vec()),
+    );
+    mesh.run(12);
+
+    // The node is unchanged but now boots an image authorized by a revoked key.
+    for &o in &ids {
+        if o != node {
+            assert_eq!(
+                mesh.trust_of(o, node),
+                Some(TrustState::Suspicious),
+                "{o} distrusts {node} after its authorizing key is revoked (dbx)"
+            );
+        }
+    }
+}
+
+#[test]
 fn old_and_new_both_pass_during_a_rolling_upgrade() {
     // The overlap window: some nodes upgraded, some not — all stay trusted
     // because both the old and the new measured state are authorized.

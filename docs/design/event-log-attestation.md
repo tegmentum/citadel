@@ -243,11 +243,18 @@ cmdline event **only when** its digest matches the measured value.
   event-measured components. Violations → `REFERENCE_DENIED` hard fail. Tested
   in-process via `MockBackend::measure_event` (records a typed, data-carrying
   measurement) — units in `reference.rs`, e2e
-  `a_forbidden_kernel_cmdline_distrusts_a_node`. The signed-mapping path
-  (manifest digest→identity) is reused; **embedded Secure Boot signature
-  verification** (`EV_EFI_VARIABLE_AUTHORITY` cert → `db` anchor) is the
-  remaining provenance source, and structured `ArtifactIdentity` extraction
-  direct from image events is follow-up.
+  `a_forbidden_kernel_cmdline_distrusts_a_node`. Both §7 provenance sources are
+  now in place: the **signed-mapping** path (manifest digest→identity) and
+  **embedded Secure Boot authority** verification — a measured
+  `EV_EFI_VARIABLE_AUTHORITY` must name a trusted `db` authority and not a
+  revoked `dbx` one (`FleetArtifactPolicy::trust_authority`/`revoke_authority`/
+  `require_authorized_boot`/`authority_permits`), which **accepts an image by
+  its publisher without enumerating its digest** and lets `dbx` revocation
+  distrust a running node (e2e
+  `secure_boot_authority_accepts_by_publisher_then_dbx_revokes`). Modeled as
+  authority-blob (cert) membership — faithful to pinned-`db` entries; full
+  X.509 CA-chain validation is follow-up. Structured `ArtifactIdentity`
+  extraction direct from image events remains follow-up.
 * **Phase D — IMA / runtime.** Ingest the IMA log (PCR 10); ongoing runtime
   attestation beyond boot; ties into the log-shipping pipeline.
 

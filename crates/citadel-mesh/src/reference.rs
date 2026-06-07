@@ -183,6 +183,17 @@ pub struct FleetArtifactPolicy {
     cmdline_require: Vec<String>,
     /// Substrings the kernel command line must not contain (e.g. `init=/bin/sh`).
     cmdline_deny: Vec<String>,
+    /// Secure Boot authorities trusted to authorize loaded images — the `db`
+    /// equivalent (the `EV_EFI_VARIABLE_AUTHORITY` blob that authorized an
+    /// image). Membership lets a verifier accept an image *by its publisher*
+    /// without enumerating its digest.
+    trusted_authorities: std::collections::BTreeSet<Vec<u8>>,
+    /// Revoked Secure Boot authorities — the `dbx` equivalent; always blocks,
+    /// regardless of `require_authorized_boot`.
+    revoked_authorities: std::collections::BTreeSet<Vec<u8>>,
+    /// When set, every measured `EV_EFI_VARIABLE_AUTHORITY` must be a trusted
+    /// authority (enforces "only db-signed images boot").
+    require_authorized_boot: bool,
 }
 
 impl FleetArtifactPolicy {
@@ -231,6 +242,38 @@ impl FleetArtifactPolicy {
     pub fn cmdline_permits(&self, cmdline: &str) -> bool {
         self.cmdline_require.iter().all(|t| cmdline.contains(t.as_str()))
             && !self.cmdline_deny.iter().any(|t| cmdline.contains(t.as_str()))
+    }
+
+    /// Trust a Secure Boot authority (a `db` entry — the cert/blob that may
+    /// authorize loaded images).
+    pub fn trust_authority(mut self, authority: impl Into<Vec<u8>>) -> Self {
+        self.trusted_authorities.insert(authority.into());
+        self
+    }
+
+    /// Revoke a Secure Boot authority (move it to `dbx`).
+    pub fn revoke_authority(mut self, authority: impl Into<Vec<u8>>) -> Self {
+        self.revoked_authorities.insert(authority.into());
+        self
+    }
+
+    /// Require every authorized image to be authorized by a trusted authority.
+    pub fn require_authorized_boot(mut self) -> Self {
+        self.require_authorized_boot = true;
+        self
+    }
+
+    /// Is an image authorized by `authority` permitted? A revoked (`dbx`)
+    /// authority is always blocked; with `require_authorized_boot`, an authority
+    /// not in `db` is blocked; otherwise permitted.
+    pub fn authority_permits(&self, authority: &[u8]) -> bool {
+        if self.revoked_authorities.contains(authority) {
+            return false;
+        }
+        if self.require_authorized_boot && !self.trusted_authorities.contains(authority) {
+            return false;
+        }
+        true
     }
 
     /// Does fleet policy permit this artifact? An unconstrained component is
@@ -591,6 +634,14 @@ impl AcceptedReferences {
             // Cmdline policy on a measured (digest-bound) EV_IPL event.
             if event.tcg_type() == Some(ev::IPL) && event.data_is_measured(bank) {
                 if !self.artifact_policy.cmdline_permits(&event.data_utf8()) {
+                    return ReferenceOutcome::Denied;
+                }
+            }
+            // Secure Boot authority (db/dbx) on a measured authority event:
+            // the publisher that authorized a loaded image must be trusted and
+            // not revoked — accepting the image by provenance, not by digest.
+            if event.tcg_type() == Some(ev::EFI_VARIABLE_AUTHORITY) && event.data_is_measured(bank) {
+                if !self.artifact_policy.authority_permits(&event.data) {
                     return ReferenceOutcome::Denied;
                 }
             }
@@ -1184,6 +1235,92 @@ mod tests {
 
         // Revoke that version → the event-measured kernel is denied.
         r.set_artifact_policy(FleetArtifactPolicy::new().deny_version("kernel", vec![6, 8, 0]));
+        assert_eq!(r.appraise_eventlog(&log, "sha256", &semantic), ReferenceOutcome::Denied);
+    }
+
+    #[test]
+    fn authority_policy_db_and_dbx() {
+        let p = FleetArtifactPolicy::new()
+            .require_authorized_boot()
+            .trust_authority(b"canonical-uefi-ca".to_vec())
+            .revoke_authority(b"leaked-cert".to_vec());
+        assert!(p.authority_permits(b"canonical-uefi-ca")); // in db
+        assert!(!p.authority_permits(b"unknown-ca")); // not in db, require on
+        assert!(!p.authority_permits(b"leaked-cert")); // revoked (dbx)
+
+        // Without require_authorized_boot, only dbx blocks.
+        let lax = FleetArtifactPolicy::new().revoke_authority(b"leaked-cert".to_vec());
+        assert!(lax.authority_permits(b"anything"));
+        assert!(!lax.authority_permits(b"leaked-cert"));
+    }
+
+    fn authority_event(pcr: u32, cert: &[u8]) -> tpm_core::eventlog::MeasurementEvent {
+        use tpm_core::backend::hash_for_bank;
+        tpm_core::eventlog::MeasurementEvent {
+            pcr,
+            event_type: tpm_core::eventlog::EventType::Unknown(
+                tpm_core::eventlog::ev::EFI_VARIABLE_AUTHORITY,
+            ),
+            digests: vec![("sha256".into(), hash_for_bank("sha256", cert).unwrap())],
+            data: cert.to_vec(),
+        }
+    }
+
+    fn image_event(pcr: u32, raw: &[u8]) -> tpm_core::eventlog::MeasurementEvent {
+        use tpm_core::backend::hash_for_bank;
+        tpm_core::eventlog::MeasurementEvent {
+            pcr,
+            event_type: tpm_core::eventlog::EventType::Unknown(
+                tpm_core::eventlog::ev::EFI_BOOT_SERVICES_APPLICATION,
+            ),
+            digests: vec![("sha256".into(), hash_for_bank("sha256", raw).unwrap())],
+            data: raw.to_vec(),
+        }
+    }
+
+    #[test]
+    fn eventlog_accepts_image_by_trusted_authority_without_enumerating_its_digest() {
+        let mut r = refs();
+        r.set_pcr_class(4, PcrClass::Semantic);
+        r.set_artifact_policy(
+            FleetArtifactPolicy::new()
+                .require_authorized_boot()
+                .trust_authority(b"canonical".to_vec()),
+        );
+        let semantic: std::collections::BTreeSet<u32> = [4].into_iter().collect();
+
+        // An unrecognised kernel image authorized by a trusted publisher — note
+        // no accepted entry enumerates the image digest.
+        let log = tpm_core::eventlog::BootEventLog::new(vec![
+            image_event(4, b"some-never-seen-kernel"),
+            authority_event(4, b"canonical"),
+        ]);
+        assert_eq!(r.appraise_eventlog(&log, "sha256", &semantic), ReferenceOutcome::Accepted);
+
+        // Revoke that authority (dbx) → the very same image is now denied.
+        r.set_artifact_policy(
+            FleetArtifactPolicy::new()
+                .require_authorized_boot()
+                .trust_authority(b"canonical".to_vec())
+                .revoke_authority(b"canonical".to_vec()),
+        );
+        assert_eq!(r.appraise_eventlog(&log, "sha256", &semantic), ReferenceOutcome::Denied);
+    }
+
+    #[test]
+    fn eventlog_denies_image_authorized_by_untrusted_publisher() {
+        let mut r = refs();
+        r.set_pcr_class(4, PcrClass::Semantic);
+        r.set_artifact_policy(
+            FleetArtifactPolicy::new()
+                .require_authorized_boot()
+                .trust_authority(b"canonical".to_vec()),
+        );
+        let semantic: std::collections::BTreeSet<u32> = [4].into_iter().collect();
+        let log = tpm_core::eventlog::BootEventLog::new(vec![
+            image_event(4, b"rootkit"),
+            authority_event(4, b"attacker-ca"),
+        ]);
         assert_eq!(r.appraise_eventlog(&log, "sha256", &semantic), ReferenceOutcome::Denied);
     }
 
