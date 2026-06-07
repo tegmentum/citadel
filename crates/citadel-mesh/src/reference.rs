@@ -169,6 +169,77 @@ pub struct ArtifactIdentity {
     pub build_id: Option<String>,
 }
 
+/// Parse a kernel version out of a `vmlinuz-<ver>` token, e.g.
+/// `vmlinuz-6.8.0-117-generic` → `[6, 8, 0, 117]` (leading numeric groups,
+/// stopping at the first non-numeric like `generic`). For ordering against a
+/// `min_version` baseline.
+fn parse_kernel_version(text: &str) -> Option<Vec<u64>> {
+    let idx = text.find("vmlinuz-")? + "vmlinuz-".len();
+    let token: String = text[idx..].chars().take_while(|c| !c.is_whitespace()).collect();
+    let mut v = Vec::new();
+    for part in token.split(['.', '-']) {
+        match part.parse::<u64>() {
+            Ok(n) => v.push(n),
+            Err(_) => break,
+        }
+    }
+    (!v.is_empty()).then_some(v)
+}
+
+/// If `text` is the **booted** kernel command line, return it. This is the
+/// `/vmlinuz-… root=…` payload GRUB measures as `kernel_cmdline` (or the
+/// `linux /vmlinuz …` grub command), and the bare `root=…` form synthetic
+/// logs use. It deliberately rejects the full `menuentry`/`submenu` config
+/// blocks GRUB also measures — those enumerate *every* entry (incl. recovery
+/// `nomodeset`), which is not what actually booted.
+fn booted_cmdline(text: &str) -> Option<&str> {
+    let t = text.trim();
+    if t.starts_with("/vmlinuz") || t.starts_with("BOOT_IMAGE=") {
+        return Some(t);
+    }
+    if let Some(rest) = t.strip_prefix("linux ") {
+        let rest = rest.trim_start();
+        if rest.starts_with("/vmlinuz") {
+            return Some(rest);
+        }
+    }
+    if t.contains("root=") && !t.contains('\n') && !t.contains("menuentry") && !t.contains("grub_cmd") {
+        return Some(t);
+    }
+    None
+}
+
+/// A3: derive an [`ArtifactIdentity`] for the booted kernel **directly from the
+/// event log** — no signed manifest naming it. Scans digest-bound (`measured_
+/// text`) `EV_IPL` events for the booted `vmlinuz-<ver>` and parses the version,
+/// so fleet policy can judge an un-manifested kernel by version
+/// baseline/denylist. `channel`/`publisher` stay empty (not knowable from the
+/// log — those still require a manifest or an authority).
+pub fn extract_kernel_artifact(
+    log: &tpm_core::eventlog::BootEventLog,
+    bank: &str,
+) -> Option<ArtifactIdentity> {
+    let cmdline = extract_kernel_cmdline(log, bank)?;
+    let version = parse_kernel_version(&cmdline)?;
+    Some(ArtifactIdentity { component: "kernel".into(), version, ..Default::default() })
+}
+
+/// The booted kernel command line recovered from the (digest-bound) event log,
+/// or `None`. See [`booted_cmdline`].
+pub fn extract_kernel_cmdline(
+    log: &tpm_core::eventlog::BootEventLog,
+    bank: &str,
+) -> Option<String> {
+    use tpm_core::eventlog::ev;
+    log.events
+        .iter()
+        .filter(|e| e.tcg_type() == Some(ev::IPL))
+        .filter_map(|e| e.measured_text(bank))
+        // Prefer the cleanest form (the bare `/vmlinuz …`) over `linux /vmlinuz …`.
+        .filter_map(|t| booted_cmdline(&t).map(str::to_string))
+        .min_by_key(|c| c.len())
+}
+
 /// The verifier-side fleet policy that gates artifact-bearing references
 /// (design §10.2). Empty = no constraint (permits everything). Constraints are
 /// **per component** and re-checked at appraisal time, so adding a denial
@@ -347,6 +418,22 @@ impl FleetArtifactPolicy {
     /// signal (running but stale) the app path treats as "deprecated".
     pub fn below_baseline(&self, a: &ArtifactIdentity) -> bool {
         self.min_version.get(&a.component).is_some_and(|min| a.version < *min)
+    }
+
+    /// Whether the artifact is denied **by version or build alone** (denylisted
+    /// version, denylisted build) — channel-independent. Used for event-derived
+    /// identities (A3), whose channel/publisher aren't knowable from the log, so
+    /// channel gating must not apply.
+    pub fn version_denied(&self, a: &ArtifactIdentity) -> bool {
+        if self.denied_versions.contains(&(a.component.clone(), a.version.clone())) {
+            return true;
+        }
+        if let Some(build) = &a.build_id {
+            if self.denied_builds.contains(build) {
+                return true;
+            }
+        }
+        false
     }
 
     /// Whether the artifact is *denied* — an unapproved channel or a denylisted
@@ -698,10 +785,34 @@ impl AcceptedReferences {
             if !semantic.contains(&event.pcr) {
                 continue;
             }
-            // Cmdline policy on a measured (digest-bound) EV_IPL event.
-            if event.tcg_type() == Some(ev::IPL) && event.data_is_measured(bank) {
-                if !self.artifact_policy.cmdline_permits(&event.data_utf8()) {
-                    return ReferenceOutcome::Denied;
+            // EV_IPL: recover the digest-bound payload (real GRUB logs prefix a
+            // descriptive label and hash only the payload, so `data_is_measured`
+            // never holds — `measured_text` reconciles it). Apply policy only to
+            // the *booted* kernel command line, not the menuentry config blocks
+            // GRUB also measures (those enumerate every entry, incl. recovery).
+            if event.tcg_type() == Some(ev::IPL) {
+                if let Some(text) = event.measured_text(bank) {
+                    if let Some(cmdline) = booted_cmdline(&text) {
+                        if !self.artifact_policy.cmdline_permits(cmdline) {
+                            return ReferenceOutcome::Denied;
+                        }
+                        // A3: judge the event-derived kernel version with no
+                        // manifest naming it — below baseline or denylisted
+                        // version/build is a hard fail (channel isn't knowable
+                        // from the log, so it is not gated here).
+                        if let Some(version) = parse_kernel_version(cmdline) {
+                            let kernel = ArtifactIdentity {
+                                component: "kernel".into(),
+                                version,
+                                ..Default::default()
+                            };
+                            if self.artifact_policy.below_baseline(&kernel)
+                                || self.artifact_policy.version_denied(&kernel)
+                            {
+                                return ReferenceOutcome::Denied;
+                            }
+                        }
+                    }
                 }
             }
             // Secure Boot authority (db/dbx) on a measured authority event:
@@ -1251,11 +1362,14 @@ mod tests {
     // Build a minimal in-memory event log (Citadel-internal form) for §10.4.
     fn ipl_cmdline_event(pcr: u32, cmdline: &str) -> tpm_core::eventlog::MeasurementEvent {
         use tpm_core::backend::hash_for_bank;
+        // A realistic booted kernel command line (the form GRUB measures): a
+        // `/vmlinuz-<ver>` path followed by the args.
+        let line = format!("/vmlinuz-6.8.0-117-generic root=LABEL=rootfs {cmdline}");
         tpm_core::eventlog::MeasurementEvent {
             pcr,
             event_type: tpm_core::eventlog::EventType::Unknown(tpm_core::eventlog::ev::IPL),
-            digests: vec![("sha256".into(), hash_for_bank("sha256", cmdline.as_bytes()).unwrap())],
-            data: cmdline.as_bytes().to_vec(),
+            digests: vec![("sha256".into(), hash_for_bank("sha256", line.as_bytes()).unwrap())],
+            data: line.into_bytes(),
         }
     }
 

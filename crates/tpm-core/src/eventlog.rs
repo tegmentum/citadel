@@ -96,6 +96,48 @@ impl MeasurementEvent {
     pub fn data_utf8(&self) -> String {
         String::from_utf8_lossy(&self.data).trim_end_matches('\u{0}').to_string()
     }
+
+    /// Recover the **digest-bound** text payload of this event, or `None` if the
+    /// data can't be reconciled with the measured digest.
+    ///
+    /// `data_is_measured` requires `digest == H(data)` exactly, but real
+    /// firmware logs the *payload* differently from what it hashes. Observed on
+    /// GRUB measured boot (Ubuntu/OVMF corpus): the logged `data` is
+    /// `"<label>: <payload>"` (e.g. `"kernel_cmdline: /vmlinuz-… root=…"`,
+    /// `"grub_cmd: …"`) while the PCR digest is `H(<payload>)` — sometimes with
+    /// a trailing NUL. This tries those normalizations and returns the first
+    /// whose hash matches the digest, so a verifier can trust the recovered
+    /// string (cmdline, image path) as authentic. Returns the canonical payload
+    /// (label stripped, no trailing NUL).
+    pub fn measured_text(&self, bank: &str) -> Option<String> {
+        let digest = self.digest_for(bank)?;
+        let matches = |bytes: &[u8]| -> bool {
+            crate::backend::hash_for_bank(bank, bytes).map(|h| h.as_slice() == digest).unwrap_or(false)
+        };
+        // Candidate payloads, in order of specificity. For each we test both the
+        // bytes as-is and with a single trailing NUL appended (GRUB hashes the
+        // C string including its terminator on some paths).
+        let full = self.data.as_slice();
+        let no_nul = full.strip_suffix(b"\0").unwrap_or(full);
+        // GRUB descriptive label: everything after the first ": ".
+        let after_label: &[u8] = full
+            .windows(2)
+            .position(|w| w == b": ")
+            .map(|i| &full[i + 2..])
+            .unwrap_or(full);
+        let after_label = after_label.strip_suffix(b"\0").unwrap_or(after_label);
+        for cand in [no_nul, after_label] {
+            if matches(cand) {
+                return Some(String::from_utf8_lossy(cand).trim_end_matches('\u{0}').to_string());
+            }
+            let mut with_nul = cand.to_vec();
+            with_nul.push(0);
+            if matches(&with_nul) {
+                return Some(String::from_utf8_lossy(cand).trim_end_matches('\u{0}').to_string());
+            }
+        }
+        None
+    }
 }
 
 /// A parsed measured-boot log. (Named to avoid clashing with the LtHash
@@ -320,9 +362,6 @@ impl<'a> Reader<'a> {
     fn new(bytes: &'a [u8]) -> Self {
         Reader { bytes, pos: 0 }
     }
-    fn at_end(&self) -> bool {
-        self.pos >= self.bytes.len()
-    }
     fn remaining(&self) -> usize {
         self.bytes.len().saturating_sub(self.pos)
     }
@@ -480,6 +519,47 @@ mod tests {
         let d = hash_for_bank("sha256", b"k").unwrap();
         let raw = tcg_bytes(&[(4, ev::IPL, d.try_into().unwrap(), b"")]);
         assert_eq!(BootEventLog::from_bytes(&raw).unwrap().events.len(), 2);
+    }
+
+    #[test]
+    fn measured_text_recovers_grub_label_prefixed_payload() {
+        // GRUB logs "<label>: <payload>" but measures only <payload> (observed
+        // on the real OVMF corpus). measured_text must recover <payload>.
+        let payload = b"/vmlinuz-6.8.0-117-generic root=LABEL=cloudimg-rootfs ro";
+        let digest = hash_for_bank("sha256", payload).unwrap();
+        let mut data = b"kernel_cmdline: ".to_vec();
+        data.extend_from_slice(payload);
+        let ev = MeasurementEvent {
+            pcr: 8,
+            event_type: EventType::Unknown(ev::IPL),
+            digests: vec![("sha256".into(), digest)],
+            data,
+        };
+        // data_is_measured (exact bytes) does NOT hold — the label isn't hashed.
+        assert!(!ev.data_is_measured("sha256"));
+        // measured_text reconciles it to the digest-bound payload.
+        assert_eq!(ev.measured_text("sha256").as_deref(), Some(payload).map(|p| std::str::from_utf8(p).unwrap()));
+
+        // And the trailing-NUL convention: digest = H(payload || 0).
+        let mut with_nul = payload.to_vec();
+        with_nul.push(0);
+        let nul_digest = hash_for_bank("sha256", &with_nul).unwrap();
+        let ev2 = MeasurementEvent {
+            pcr: 9,
+            event_type: EventType::Unknown(ev::IPL),
+            digests: vec![("sha256".into(), nul_digest)],
+            data: payload.to_vec(),
+        };
+        assert_eq!(ev2.measured_text("sha256").as_deref(), Some(std::str::from_utf8(payload).unwrap()));
+
+        // A digest bound to nothing in the data is not recovered.
+        let ev3 = MeasurementEvent {
+            pcr: 8,
+            event_type: EventType::Unknown(ev::IPL),
+            digests: vec![("sha256".into(), vec![0u8; 32])],
+            data: b"kernel_cmdline: /vmlinuz-x".to_vec(),
+        };
+        assert_eq!(ev3.measured_text("sha256"), None);
     }
 
     #[test]

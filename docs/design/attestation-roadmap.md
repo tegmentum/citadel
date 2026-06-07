@@ -23,7 +23,7 @@ harness cannot provide.
 |---|------|-------|--------|--------|
 | A1 | Real-platform event-log corpus validation | Boot appraisal | ✅ done | corpus captured (OVMF) |
 | A2 | X.509 / CA-chain authority validation | Boot appraisal | ✅ done (x509-path crate) | no |
-| A3 | Structured `ArtifactIdentity` extraction from events | Boot appraisal | 1–2 wk | no |
+| A3 | Structured `ArtifactIdentity` extraction from events | Boot appraisal | ✅ done | no |
 | B1 | Real event-log ingestion (vTPM `read_event_log`) | Hardware bring-up | ✅ done (vTPM) | done on vTPM; /sys+HW remain |
 | B2 | Signed reference values from a real RVP | Hardware bring-up | 1 wk | build pipeline |
 | C1 | IMA / runtime measurement (event-log Phase D) | Runtime | 2–3 wk | hardware (real) |
@@ -91,19 +91,34 @@ harness cannot provide.
   (real corpus). X.509 name-constraints / EKU are documented non-goals of
   `x509-path` for now.
 
-### A3 — Structured `ArtifactIdentity` extraction from events
-* **Goal:** derive `(component, publisher, version)` **directly from the event
-  log** instead of only from a signed digest→identity manifest — so policy can
-  judge a never-before-seen build's version without a manifest naming it.
-* **Scope:** parse `EV_EFI_BOOT_SERVICES_APPLICATION` device paths / PE-COFF
-  version resources, GRUB/IPL strings, and the cmdline into `ArtifactIdentity`;
-  feed them into the existing `FleetArtifactPolicy` (channel/baseline/denylist).
-  Firmware-variant heavy — start with the A1 reference platform.
-* **Seam:** new `eventlog` extractors → `ArtifactIdentity`; reuse
-  `appraise_eventlog`.
-* **Test:** extraction units over the A1 corpus; e2e version-baseline on an
-  event-derived (un-manifested) kernel.
-* **Effort:** 1–2 wk. **Gating:** none (uses A1 corpus). **Depends on A1.**
+### A3 — Structured `ArtifactIdentity` extraction from events — ✅ DONE
+* **Goal:** derive `(component, version)` **directly from the event log**
+  instead of only from a signed digest→identity manifest — so policy can judge a
+  never-before-seen build's version without a manifest naming it.
+* **Delivered (against the real A1 corpus):**
+  - `MeasurementEvent::measured_text` — recovers the **digest-bound** payload of
+    an event, reconciling real GRUB logging (it prefixes a descriptive
+    `"<label>: "` and hashes only the payload, sometimes with a trailing NUL, so
+    the old exact-bytes `data_is_measured` never held on real logs).
+  - `extract_kernel_artifact` / `extract_kernel_cmdline` (`reference.rs`) — pull
+    the **booted** kernel `vmlinuz-<ver>` + command line out of the digest-bound
+    `EV_IPL` events and parse the version (`6.8.0-117` → `[6,8,0,117]`).
+  - `appraise_eventlog` now gates the **booted** cmdline (require/deny) and the
+    event-derived kernel **version baseline / denylist** with no manifest —
+    `FleetArtifactPolicy::version_denied` (channel-independent, since the channel
+    isn't knowable from the log).
+* **Real-log correctness:** policy applies to the *booted* command line only,
+  not the full `menuentry`/`submenu` config GRUB also measures (which enumerates
+  every entry incl. recovery `nomodeset`) — so a `deny_cmdline("nomodeset")`
+  does **not** falsely trip on the recovery entry.
+* **Tests:** `tpm-core` `measured_text` unit (label + NUL recovery);
+  `citadel-mesh/tests/a3_artifact_extraction.rs` over the real OVMF corpus —
+  extracts `6.8.0-117`, gates by baseline/denylist with no manifest, and proves
+  the recovery-menuentry non-false-positive.
+* **Not derivable from the log (still need a manifest/authority):** `channel`
+  and `publisher`. PE-COFF version-resource extraction from
+  `EV_EFI_BOOT_SERVICES_APPLICATION` device paths is a possible follow-up; the
+  GRUB/IPL cmdline path covers the kernel today.
 
 ---
 

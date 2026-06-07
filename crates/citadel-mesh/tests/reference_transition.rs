@@ -479,8 +479,15 @@ fn a_forbidden_kernel_cmdline_distrusts_a_node() {
         }
     }
 
-    // The node boots with a forbidden cmdline measured into PCR 8.
-    mesh.measure_event(bad_node, "sha256", 8, 0x0000_000D /* EV_IPL */, b"ro init=/bin/sh");
+    // The node boots with a forbidden cmdline measured into PCR 8 (a realistic
+    // booted kernel command line: a /vmlinuz path + args, as GRUB measures it).
+    mesh.measure_event(
+        bad_node,
+        "sha256",
+        8,
+        0x0000_000D, // EV_IPL
+        b"/vmlinuz-6.8.0-117-generic root=LABEL=rootfs ro init=/bin/sh",
+    );
     mesh.run(12);
 
     for &o in &ids {
