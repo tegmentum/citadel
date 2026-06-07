@@ -138,6 +138,13 @@ pub enum PcrClass {
     Semantic,
     /// Ignored entirely. Runtime config, device ordering, ephemeral boot vars.
     Volatile,
+    /// **Append-only runtime measurement** (IMA, PCR 10): the value grows
+    /// monotonically as files are measured after boot, so exact-match is
+    /// meaningless. Integrity is appraised from the IMA runtime log
+    /// (`citadel_mesh::runtime`) rather than the PCR value — so it is skipped in
+    /// value-tier matching here, like `Volatile`, but for a different reason
+    /// (it *is* appraised, just elsewhere) (C1).
+    Runtime,
 }
 
 /// Whether standalone entries count, or only fully-satisfied coupled profiles.
@@ -967,6 +974,8 @@ impl AcceptedReferences {
                 PcrClass::Volatile => continue,
                 // Reserved for event-log policy (Layer 4); value-unchecked here.
                 PcrClass::Semantic => continue,
+                // Append-only IMA PCR: appraised via the runtime log, not value.
+                PcrClass::Runtime => continue,
                 // Exact value-tier appraisal.
                 PcrClass::Strict => {
                     match self.classify(pv.index, &pv.digest, &q, now_tick, now_revision, policy) {

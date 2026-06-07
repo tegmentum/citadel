@@ -26,7 +26,7 @@ harness cannot provide.
 | A3 | Structured `ArtifactIdentity` extraction from events | Boot appraisal | ✅ done | no |
 | B1 | Real event-log ingestion (vTPM `read_event_log`) | Hardware bring-up | ✅ done (vTPM) | done on vTPM; /sys+HW remain |
 | B2 | Signed reference values from a real RVP | Hardware bring-up | 1 wk | build pipeline |
-| C1 | IMA / runtime measurement (event-log Phase D) | Runtime | ◑ parser+policy built | real IMA corpus |
+| C1 | IMA / runtime measurement (event-log Phase D) | Runtime | ◑ software done | real IMA corpus |
 | D1 | Signed quote-bound checkpoints (log-ship §9–10) | Durability | ✅ done | no |
 | D2 | On-disk persistence (log-ship §17) | Durability | ✅ done | no |
 | D3 | Erasure placement as the default replication | Durability | ✅ done | no |
@@ -179,14 +179,25 @@ harness cannot provide.
     it via `aggregate_trust`) and persisted across restart (`NodeSnapshot`). An
     allowlist miss is report-only (lockdown enforcement is a control-plane
     choice). Tested in `tests/runtime_escalation.rs`.
-* **Remaining:** validate the parser against a **real** IMA list (needs a kernel
-  booted with an IMA policy, e.g. `ima_policy=tcb` — a default cloud image emits
-  only `boot_aggregate`); feed the rolling IMA log into the LtHash shipping
-  pipeline (`logship`) and periodic PCR-10 re-quote; an append-only PCR class;
-  and an IMA-list transport path (today a verifier appraises a list handed to it,
-  as the deterministic in-process model).
-* **Seam:** `tpm_core::ima`; `citadel_mesh::runtime`; `node::report_runtime`;
-  ties into `logship`.
+  - **Shipped through the LtHash pipeline** (`Node::ingest_own_ima`): a node
+    ingests its own IMA list, preserving each measured file as an LtHash log
+    element — so runtime evidence is reconciled, gossiped, and held across the
+    mesh exactly like boot evidence (and rides the `NodeSnapshot` for free) —
+    while appraising it against the runtime policy.
+  - **Append-only PCR class** (`PcrClass::Runtime`): PCR 10 grows monotonically
+    as files are measured, so it is skipped in value-tier matching and appraised
+    via the IMA log instead — a changing PCR-10 value no longer mints distrust
+    (contrast-tested against `Strict` to prove PCR 10 *is* appraised).
+  - Tests: `tests/ima_shipping.rs` (LtHash preservation; policy appraisal on
+    ingest; Runtime-class skip vs. Strict-distrust contrast).
+* **Remaining (real-data only):** validate the parser against a **real** IMA
+  list — needs a kernel booted with an IMA policy (e.g. `ima_policy=tcb`; a
+  default cloud image emits only `boot_aggregate`), captured via the lab
+  (`docs/a1-capture-handoff.md`). Optional: periodic PCR-10 re-quote cadence and
+  shipping the attester's IMA list inside evidence (today a verifier appraises a
+  list handed to it / a node ships its own).
+* **Seam:** `tpm_core::ima`; `citadel_mesh::runtime`; `node::report_runtime` /
+  `ingest_own_ima`; `reference::PcrClass::Runtime`; `logship`.
 
 ---
 

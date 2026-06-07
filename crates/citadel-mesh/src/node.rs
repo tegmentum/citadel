@@ -1032,6 +1032,36 @@ impl Node {
         self.own_log.root()
     }
 
+    /// Ingest this node's **own** IMA runtime measurement list (C1): preserve
+    /// every measured file in the LtHash log — so runtime evidence is shipped,
+    /// reconciled, and held across the mesh exactly like boot evidence — and
+    /// appraise it against the runtime policy. Returns `(violations, ingested)`.
+    /// (PCR 10 should be classed [`crate::reference::PcrClass::Runtime`]: its
+    /// value grows monotonically; integrity comes from this log, not the value.)
+    pub fn ingest_own_ima(
+        &mut self,
+        ima_ascii: &str,
+    ) -> (Vec<crate::runtime::RuntimeViolation>, usize) {
+        let (log, _skipped) = tpm_core::ima::ImaLog::parse_ascii(ima_ascii);
+        for e in &log.entries {
+            // A canonical per-entry element binding the template hash, path, and
+            // file content hash — stable across nodes for reconciliation.
+            let mut buf = Vec::new();
+            buf.extend_from_slice(&e.template_hash);
+            buf.extend_from_slice(e.path.as_bytes());
+            buf.extend_from_slice(e.file_algo.as_bytes());
+            buf.extend_from_slice(&e.file_hash);
+            let digest = tpm_core::backend::hash_for_bank("sha256", &buf).unwrap_or_default();
+            if digest.len() >= 32 {
+                let mut element = [0u8; 32];
+                element.copy_from_slice(&digest[..32]);
+                self.append_event(element);
+            }
+        }
+        let violations = self.runtime_policy.appraise(&log);
+        (violations, log.entries.len())
+    }
+
     /// Overwrite an existing event's payload — models a node *forking its own
     /// history* (the rewrite changes the sealed window's root, which peers
     /// detect as equivocation). Not something an honest node does.
