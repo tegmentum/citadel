@@ -173,13 +173,20 @@ harness cannot provide.
     `appraise` returns the violating files (report-always, like app appraisal).
   - Fixture-driven corpus harness (`tpm-core/tests/ima_corpus.rs`) + capture
     wired into the lab (`<name>.ima.ascii`) — see `docs/a1-capture-handoff.md`.
+  - **Wired into node trust** (`Node::report_runtime` + `runtime_escalated`): a
+    **denied** (known-bad) file that executed escalates the node to distrust,
+    mirroring the P3 app-escalation path — sticky (a clean boot quote can't clear
+    it via `aggregate_trust`) and persisted across restart (`NodeSnapshot`). An
+    allowlist miss is report-only (lockdown enforcement is a control-plane
+    choice). Tested in `tests/runtime_escalation.rs`.
 * **Remaining:** validate the parser against a **real** IMA list (needs a kernel
   booted with an IMA policy, e.g. `ima_policy=tcb` — a default cloud image emits
-  only `boot_aggregate`); wire `RuntimePolicy` violations into node trust /
-  quarantine (like the P3 app-escalation path); feed the rolling IMA log into the
-  LtHash shipping pipeline (`logship`) and periodic PCR-10 re-quote; an
-  append-only PCR class.
-* **Seam:** `tpm_core::ima`; `citadel_mesh::runtime`; ties into `logship` + `node`.
+  only `boot_aggregate`); feed the rolling IMA log into the LtHash shipping
+  pipeline (`logship`) and periodic PCR-10 re-quote; an append-only PCR class;
+  and an IMA-list transport path (today a verifier appraises a list handed to it,
+  as the deterministic in-process model).
+* **Seam:** `tpm_core::ima`; `citadel_mesh::runtime`; `node::report_runtime`;
+  ties into `logship`.
 
 ---
 

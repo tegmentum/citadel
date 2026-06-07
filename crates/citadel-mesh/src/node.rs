@@ -252,6 +252,13 @@ pub struct Node {
     /// Nodes escalated to distrust by app-failure policy (§5.3). Sticky: the
     /// platform witness quorum must not silently clear an app escalation.
     app_escalated: HashSet<NodeId>,
+    /// Policy for appraising the IMA runtime measurement list (C1). Empty =
+    /// report-only.
+    runtime_policy: crate::runtime::RuntimePolicy,
+    /// Nodes escalated to distrust by runtime (IMA) policy — a known-bad file
+    /// executed. Sticky like [`Self::app_escalated`]: a clean platform quote
+    /// must not silently clear a runtime-integrity failure.
+    runtime_escalated: HashSet<NodeId>,
     /// Named boot profiles this node can appraise subjects against (design §10.3).
     profiles: std::collections::BTreeMap<String, BootProfile>,
     /// Which profile each subject is assigned (`node_id → profile name`);
@@ -370,6 +377,8 @@ pub struct NodeSnapshot {
     sealed_roots: Vec<(NodeId, u64, u64, Vec<u8>)>,
     app_scopes: Vec<(NodeId, String, QuarantineScope)>,
     app_escalated: Vec<NodeId>,
+    #[serde(default)]
+    runtime_escalated: Vec<NodeId>,
 }
 
 /// Sub-range width at which network reconciliation stops bisecting and pulls
@@ -411,6 +420,8 @@ impl Node {
             reference_audit,
             last_reference_advert: 0,
             app_policy: AppPolicy::new(),
+            runtime_policy: crate::runtime::RuntimePolicy::new(),
+            runtime_escalated: HashSet::new(),
             app_results: HashMap::new(),
             app_audit,
             app_scopes: HashMap::new(),
@@ -511,6 +522,39 @@ impl Node {
     /// Install the policy this node uses to appraise registered applications.
     pub fn set_app_policy(&mut self, policy: AppPolicy) {
         self.app_policy = policy;
+    }
+
+    /// Set the runtime (IMA) appraisal policy (C1). Empty = report-only.
+    pub fn set_runtime_policy(&mut self, policy: crate::runtime::RuntimePolicy) {
+        self.runtime_policy = policy;
+    }
+
+    /// Appraise a subject's IMA runtime measurement list (the ASCII
+    /// `ascii_runtime_measurements`) against the runtime policy and act on it
+    /// (C1). Returns the violating files. A **denied** (known-bad) file that
+    /// executed escalates the *node* to distrust (sticky, like an app
+    /// escalation) — a pristine boot quote must not excuse it. An allowlist
+    /// miss (`NotAllowed`) is report-only here: it's reported but does not by
+    /// itself flip node trust (lockdown enforcement is a policy choice left to
+    /// the control plane), matching the app-appraisal graded response.
+    pub fn report_runtime(
+        &mut self,
+        subject: NodeId,
+        ima_ascii: &str,
+    ) -> Vec<crate::runtime::RuntimeViolation> {
+        use crate::runtime::RuntimeReason;
+        let (violations, _skipped) = self.runtime_policy.appraise_ascii(ima_ascii);
+        let executed_known_bad = violations.iter().any(|v| v.reason == RuntimeReason::Denied);
+        if executed_known_bad {
+            self.runtime_escalated.insert(subject);
+            self.membership.set_trust(&subject, TrustState::Suspicious);
+        }
+        violations
+    }
+
+    /// Whether `subject` has been escalated to distrust by runtime (IMA) policy.
+    pub fn runtime_escalated(&self, subject: NodeId) -> bool {
+        self.runtime_escalated.contains(&subject)
     }
 
     /// Validate a measurement's `pcr_bound` claim against this node's own event
@@ -655,6 +699,7 @@ impl Node {
                 .map(|((n, a), s)| (*n, a.clone(), *s))
                 .collect(),
             app_escalated: self.app_escalated.iter().copied().collect(),
+            runtime_escalated: self.runtime_escalated.iter().copied().collect(),
         }
     }
 
@@ -695,6 +740,7 @@ impl Node {
         self.app_scopes =
             snap.app_scopes.into_iter().map(|(n, a, s)| ((n, a), s)).collect();
         self.app_escalated = snap.app_escalated.into_iter().collect();
+        self.runtime_escalated = snap.runtime_escalated.into_iter().collect();
     }
 
     /// Storage key for this node's snapshot.
@@ -2041,6 +2087,12 @@ impl Node {
         // Likewise an app-escalated node stays distrusted until remediation —
         // a clean platform quote must not silently clear an app failure (§5.3).
         if self.app_escalated.contains(&subject) {
+            self.membership.set_trust(&subject, TrustState::Suspicious);
+            return;
+        }
+        // A runtime (IMA) escalation — a known-bad file executed — is likewise
+        // sticky: the boot quote can be pristine while runtime integrity failed.
+        if self.runtime_escalated.contains(&subject) {
             self.membership.set_trust(&subject, TrustState::Suspicious);
             return;
         }

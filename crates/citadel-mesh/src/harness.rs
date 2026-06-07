@@ -420,6 +420,24 @@ impl Mesh {
         }
     }
 
+    /// Set the runtime (IMA) appraisal policy on every node (C1).
+    pub fn set_runtime_policy_all(&mut self, policy: crate::runtime::RuntimePolicy) {
+        for n in &mut self.nodes {
+            n.set_runtime_policy(policy.clone());
+        }
+    }
+
+    /// A verifier appraises `subject`'s IMA runtime list; a known-bad file
+    /// escalates `subject` to distrust on that verifier. Returns the violations.
+    pub fn report_runtime(
+        &mut self,
+        verifier: NodeId,
+        subject: NodeId,
+        ima_ascii: &str,
+    ) -> Vec<crate::runtime::RuntimeViolation> {
+        self.node_mut(verifier).report_runtime(subject, ima_ascii)
+    }
+
     /// A node reports an application measurement (appraise → record → gossip).
     /// Returns the signed result the reporter produced.
     pub fn report_app(
