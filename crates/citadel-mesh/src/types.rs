@@ -121,6 +121,10 @@ pub enum GossipMessage {
     ReferenceDigest { ids: Vec<[u8; 32]> },
     /// A peer requests a reference manifest it is missing, by content id.
     ReferenceManifestRequest { id: [u8; 32] },
+    /// A signed, quote-bound checkpoint of a sealed log window (design §9–10).
+    /// Boxed: it embeds a TPM quote. A conflicting checkpoint for the same
+    /// `(node, boot, window)` is attributable proof of equivocation.
+    LogCheckpoint(Box<crate::logship::Checkpoint>),
 }
 
 // -- Attestation records (design §8) --

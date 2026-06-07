@@ -32,8 +32,8 @@ use crate::erasure::{self, ErasureScheme, EvidenceFragment};
 use crate::evidence::{self, assign_holders, EvidenceReceipt};
 use crate::id::{Epoch, MeshId, NodeId};
 use crate::logship::{
-    decode_records, encode_records, DigestAdvertisement, EventLog, EventRecord, LogFragment,
-    PlacementPolicy,
+    checkpoint_nonce, decode_records, encode_records, Checkpoint, DigestAdvertisement, EventLog,
+    EventRecord, LogFragment, PlacementPolicy,
 };
 use crate::membership::Membership;
 use crate::quarantine::{Ballot, QuarantineProposal, QuarantineScope, QuarantineVote};
@@ -78,6 +78,10 @@ pub struct NodeConfig {
     /// Ticks between advertising this node's log digests (`0` disables
     /// log-shipping).
     pub log_advertise_interval: u64,
+    /// Emit signed, quote-bound checkpoints for sealed log windows (design
+    /// §9–10), binding each window root to a TPM quote. `false` keeps the
+    /// lighter unsigned `DigestAdvertisement` path only.
+    pub checkpoint_enabled: bool,
     /// Ship sealed log windows as erasure-coded fragments to a bounded set of
     /// assigned holders (durable evidence vault; design §12.4) rather than
     /// relying on full-window replication to every peer. `false` keeps the
@@ -129,6 +133,7 @@ impl Default for NodeConfig {
             boot_id: 1,
             log_window_size: 16,
             log_advertise_interval: 5,
+            checkpoint_enabled: false,
             evidence_replication: false,
             evidence_data_shards: 3,
             evidence_parity_shards: 2,
@@ -244,6 +249,15 @@ pub struct Node {
     /// Roots observed for sealed `(node, boot, window)` log windows, used to
     /// detect a node forking its own history (equivocation).
     sealed_roots: HashMap<(NodeId, u64, u64), Vec<u8>>,
+    /// Verified signed checkpoints heard per `(node, boot, window)` (design
+    /// §9–10) — the quote-bound commitment a peer keeps to detect equivocation.
+    checkpoints: HashMap<(NodeId, u64, u64), Checkpoint>,
+    /// Attributable equivocation proofs: two validly-signed, quote-bound
+    /// checkpoints with conflicting roots for one `(node, boot, window)`.
+    equivocations: Vec<(Checkpoint, Checkpoint)>,
+    /// Root last checkpointed per own `(boot, window)`, so honest sealed windows
+    /// are checkpointed once but a forked rewrite re-emits the new root.
+    emitted_checkpoints: HashMap<(u64, u64), Vec<u8>>,
     /// Last tick this node advertised its log digests.
     last_log_advert: u64,
     /// Count of own-log records this node has served to replicas (the bytes
@@ -352,6 +366,9 @@ impl Node {
             own_log: EventLog::new(config_window),
             replicas: HashMap::new(),
             sealed_roots: HashMap::new(),
+            checkpoints: HashMap::new(),
+            equivocations: Vec::new(),
+            emitted_checkpoints: HashMap::new(),
             last_log_advert: 0,
             log_records_served: 0,
             shipped_windows: HashMap::new(),
@@ -689,6 +706,123 @@ impl Node {
         for ad in ads {
             self.broadcast(GossipMessage::LogDigest(ad));
         }
+    }
+
+    // -- signed quote-bound checkpoints (design §9-10) -------------------
+
+    /// Build a signed, quote-bound checkpoint for one **sealed**, non-empty
+    /// own-log window: quote with a nonce that binds the TPM to the window root,
+    /// then sign the whole record with the mesh key. `None` if the window is
+    /// unsealed, empty, or the quote fails.
+    pub fn checkpoint_window(&self, window_id: u64) -> Option<Checkpoint> {
+        let size = self.config.log_window_size;
+        let lo = window_id.saturating_mul(size);
+        let hi = lo.saturating_add(size);
+        if self.own_log.max_sequence() + 1 < hi {
+            return None; // not yet sealed
+        }
+        if self.own_log.records_in(lo, hi).is_empty() {
+            return None; // empty window
+        }
+        let root = self.own_log.window_root(window_id);
+        let nonce = checkpoint_nonce(self.config.boot_id, window_id, &root);
+        let challenge = AttestationChallenge {
+            challenger: self.id,
+            subject: self.id,
+            nonce,
+            pcr_bank: self.config.pcr_bank.clone(),
+            pcr_selection: self.config.pcr_selection.clone(),
+            policy_revision: self.config.policy_revision,
+            expires_at_tick: self.tick + 5,
+        };
+        let ev = self
+            .attestor
+            .produce(&challenge, self.config.policy_revision, None, None, self.tick)
+            .ok()?;
+        Some(Checkpoint::sign(
+            &self.keypair,
+            self.id,
+            self.config.boot_id,
+            window_id,
+            self.own_log.max_sequence(),
+            root,
+            ev.quote,
+            self.tick,
+        ))
+    }
+
+    /// Emit signed checkpoints for sealed own-log windows whose root we have not
+    /// yet checkpointed (a forked rewrite changes the root and re-emits — which
+    /// is exactly how peers catch equivocation).
+    fn advertise_checkpoints(&mut self, _now: u64) {
+        if !self.config.checkpoint_enabled || self.own_log.is_empty() {
+            return;
+        }
+        let size = self.config.log_window_size;
+        let max_seq = self.own_log.max_sequence();
+        for window_id in self.own_log.windows() {
+            let hi = window_id.saturating_mul(size).saturating_add(size);
+            if max_seq + 1 < hi {
+                continue; // not sealed
+            }
+            let root = self.own_log.window_root(window_id);
+            let key = (self.config.boot_id, window_id);
+            if self.emitted_checkpoints.get(&key) == Some(&root) {
+                continue; // already checkpointed at this root
+            }
+            if let Some(cp) = self.checkpoint_window(window_id) {
+                self.emitted_checkpoints.insert(key, root);
+                self.broadcast(GossipMessage::LogCheckpoint(Box::new(cp)));
+            }
+        }
+    }
+
+    /// Verify and record a peer's signed checkpoint; a conflicting root for an
+    /// already-checkpointed `(node, boot, window)` is attributable equivocation.
+    fn on_checkpoint(&mut self, sender: NodeId, cp: Checkpoint) {
+        // A node only checkpoints its own log.
+        if cp.node_id != sender {
+            return;
+        }
+        let Some(member) = self.membership.get(&sender) else {
+            return;
+        };
+        // Mesh signature, quote↔root binding, and a genuine quote.
+        if !cp.verify_signature(&member.public_key) || !cp.quote_binds_root() {
+            return;
+        }
+        match self
+            .attestor
+            .backend()
+            .verify_quote(&cp.quote, &cp.quote.ak_public, &cp.quote.nonce)
+        {
+            Ok(v) if v.signature_valid && v.nonce_matches => {}
+            _ => return,
+        }
+        let key = (cp.node_id, cp.boot_id, cp.window_id);
+        match self.checkpoints.get(&key) {
+            Some(prev) if prev.lthash_root != cp.lthash_root => {
+                // Two validly-signed, quote-bound roots for one sealed window —
+                // non-repudiable proof the node forked its history.
+                self.equivocations.push((prev.clone(), cp));
+                self.membership.set_trust(&sender, TrustState::Suspicious);
+            }
+            Some(_) => {}
+            None => {
+                self.checkpoints.insert(key, cp);
+            }
+        }
+    }
+
+    /// Attributable equivocation proofs this node holds (pairs of conflicting
+    /// signed checkpoints).
+    pub fn equivocation_proofs(&self) -> &[(Checkpoint, Checkpoint)] {
+        &self.equivocations
+    }
+
+    /// The signed checkpoint this node holds for a peer's sealed window, if any.
+    pub fn checkpoint_for(&self, node: NodeId, boot_id: u64, window_id: u64) -> Option<&Checkpoint> {
+        self.checkpoints.get(&(node, boot_id, window_id))
     }
 
     /// Handle a peer's log digest: detect equivocation, and reconcile our
@@ -1217,6 +1351,7 @@ impl Node {
         self.drop_stale_owed(now);
         self.run_witness_duties(now);
         self.advertise_logs(now);
+        self.advertise_checkpoints(now);
         self.ship_sealed_windows(now);
         self.migrate_windows(now);
         self.advertise_references(now);
@@ -1429,6 +1564,7 @@ impl Node {
             GossipMessage::ReferenceManifestRequest { id } => {
                 self.on_reference_manifest_request(env.sender, id)
             }
+            GossipMessage::LogCheckpoint(cp) => self.on_checkpoint(env.sender, *cp),
         }
     }
 

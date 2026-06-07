@@ -18,6 +18,9 @@ use lthash_rs::{LtHash, LtHash16};
 use serde::{Deserialize, Serialize};
 use sha3::Shake256;
 
+use tpm_core::backend::QuoteData;
+
+use crate::crypto::{MeshKeypair, MeshPublicKey, Signature};
 use crate::erasure::EvidenceFragment;
 use crate::id::NodeId;
 
@@ -180,6 +183,118 @@ pub fn decode_records(bytes: &[u8]) -> anyhow::Result<Vec<EventRecord>> {
     Ok(serde_json::from_slice(bytes)?)
 }
 
+/// The quote nonce that binds a TPM quote to a sealed window's log root: the
+/// TPM signs over (and thus attests) the exact root, so the quote cannot be
+/// reused for a different root.
+pub fn checkpoint_nonce(boot_id: u64, window_id: u64, lthash_root: &[u8]) -> Vec<u8> {
+    let mut h = blake3::Hasher::new();
+    h.update(b"citadel-checkpoint\x00");
+    h.update(&boot_id.to_be_bytes());
+    h.update(&window_id.to_be_bytes());
+    h.update(lthash_root);
+    h.finalize().as_bytes()[..16].to_vec()
+}
+
+/// A signed, quote-bound checkpoint of a **sealed** log window (design §9–10).
+///
+/// It commits the window's final LtHash root to the node's *attested measured
+/// state*: the embedded TPM quote's nonce is [`checkpoint_nonce`] over the root
+/// (binding the quote to the root), and the whole record is signed by the
+/// node's mesh key. So a window-root claim becomes non-repudiable and tied to a
+/// quote — and two validly-signed checkpoints with different roots for the same
+/// `(node, boot, window)` are cryptographic, attributable proof of equivocation
+/// (this is what unifies log-shipping with TPM attestation).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Checkpoint {
+    pub node_id: NodeId,
+    pub boot_id: u64,
+    pub window_id: u64,
+    pub max_sequence: u64,
+    pub lthash_root: Vec<u8>,
+    /// The TPM quote whose nonce binds it to `lthash_root`.
+    pub quote: QuoteData,
+    pub timestamp_tick: u64,
+    pub signature: Signature,
+}
+
+impl Checkpoint {
+    fn signing_bytes(
+        node_id: &NodeId,
+        boot_id: u64,
+        window_id: u64,
+        max_sequence: u64,
+        lthash_root: &[u8],
+        quote: &QuoteData,
+        timestamp_tick: u64,
+    ) -> Vec<u8> {
+        serde_json::to_vec(&(
+            "log-checkpoint",
+            node_id,
+            boot_id,
+            window_id,
+            max_sequence,
+            lthash_root,
+            quote,
+            timestamp_tick,
+        ))
+        .expect("serializable")
+    }
+
+    /// Build and sign a checkpoint with the node's mesh keypair.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sign(
+        kp: &MeshKeypair,
+        node_id: NodeId,
+        boot_id: u64,
+        window_id: u64,
+        max_sequence: u64,
+        lthash_root: Vec<u8>,
+        quote: QuoteData,
+        timestamp_tick: u64,
+    ) -> Self {
+        let signature = kp.sign(&Self::signing_bytes(
+            &node_id,
+            boot_id,
+            window_id,
+            max_sequence,
+            &lthash_root,
+            &quote,
+            timestamp_tick,
+        ));
+        Checkpoint {
+            node_id,
+            boot_id,
+            window_id,
+            max_sequence,
+            lthash_root,
+            quote,
+            timestamp_tick,
+            signature,
+        }
+    }
+
+    /// Verify the mesh-key signature over the checkpoint.
+    pub fn verify_signature(&self, node_pub: &MeshPublicKey) -> bool {
+        node_pub.verify(
+            &Self::signing_bytes(
+                &self.node_id,
+                self.boot_id,
+                self.window_id,
+                self.max_sequence,
+                &self.lthash_root,
+                &self.quote,
+                self.timestamp_tick,
+            ),
+            &self.signature,
+        )
+    }
+
+    /// Whether the embedded quote's nonce actually binds it to this root.
+    pub fn quote_binds_root(&self) -> bool {
+        self.quote.nonce == checkpoint_nonce(self.boot_id, self.window_id, &self.lthash_root)
+    }
+}
+
 /// A gossiped per-window digest (design §11). A peer compares it to its own
 /// window root; a mismatch triggers reconciliation of that window.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -275,6 +390,28 @@ mod tests {
 
     fn nid(n: u8) -> NodeId {
         NodeId([n; 32])
+    }
+
+    #[test]
+    fn checkpoint_signs_binds_and_detects_tamper() {
+        use tpm_core::backend::{MockBackend, TpmBackend};
+        let kp = MeshKeypair::from_seed([7u8; 32]);
+        let backend = MockBackend::new();
+        let ak = backend.create_ak(tpm_core::model::Algorithm::EccP256).unwrap();
+        let root = vec![1u8, 2, 3, 4];
+        let nonce = checkpoint_nonce(1, 0, &root);
+        let quote = backend.quote(&ak, &nonce, "sha256", &[0, 7]).unwrap();
+        let cp = Checkpoint::sign(&kp, nid(1), 1, 0, 7, root.clone(), quote, 5);
+
+        assert!(cp.verify_signature(&kp.public()));
+        assert!(cp.quote_binds_root(), "quote nonce binds the root");
+        // Wrong signer key fails.
+        assert!(!cp.verify_signature(&MeshKeypair::from_seed([9u8; 32]).public()));
+        // Tampering the root breaks both the signature and the quote binding.
+        let mut t = cp.clone();
+        t.lthash_root = vec![9, 9, 9];
+        assert!(!t.verify_signature(&kp.public()));
+        assert!(!t.quote_binds_root());
     }
 
     fn record(node: u8, boot: u64, seq: u64, payload: &str) -> EventRecord {

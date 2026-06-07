@@ -27,7 +27,7 @@ harness cannot provide.
 | B1 | Real event-log ingestion (`/sys`, vTPM, HW) | Hardware bring-up | 1 wk | hardware/vTPM |
 | B2 | Signed reference values from a real RVP | Hardware bring-up | 1 wk | build pipeline |
 | C1 | IMA / runtime measurement (event-log Phase D) | Runtime | 2–3 wk | hardware (real) |
-| D1 | Signed quote-bound checkpoints (log-ship §9–10) | Durability | 1–1.5 wk | no |
+| D1 | Signed quote-bound checkpoints (log-ship §9–10) | Durability | ✅ done | no |
 | D2 | On-disk persistence (log-ship §17) | Durability | 1–2 wk | no |
 | D3 | Erasure placement as the default replication | Durability | 3–5 d | no |
 | E1 | Reference/promotion flows over HTTP transport | Distribution | 1 wk | no |
@@ -135,10 +135,16 @@ harness cannot provide.
 
 ## Track D — durability & subsystem unification (software, no hardware)
 
-### D1 — Signed quote-bound checkpoints
+### D1 — Signed quote-bound checkpoints — ✅ DONE
 * **Goal:** close `distributed-log-shipping-lthash.md` §9–10 — bind the LtHash
   log root to a TPM quote in a signed `Checkpoint`, unifying the two
   subsystems (today log-shipping and attestation don't touch).
+* **Delivered:** `logship::Checkpoint` (mesh-signed, embeds a TPM quote whose
+  nonce = `checkpoint_nonce(boot, window, root)`); `node::checkpoint_window` /
+  `advertise_checkpoints` / `on_checkpoint` (verify sig + binding + quote;
+  record per sealed `(node, boot, window)`); conflicting checkpoints retained as
+  attributable `equivocation_proofs`. Gated by `checkpoint_enabled`. Tests:
+  `logship_checkpoint.rs` + a `Checkpoint` unit test.
 * **Scope:** a `Checkpoint { node, boot, window, lthash_root, pcr_quote_hash,
   … }` signed by the node key; emit on the advertise interval; verify the quote
   binding on receipt; make equivocation (§13) provably attributable to a quote.

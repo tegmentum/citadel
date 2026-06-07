@@ -52,13 +52,13 @@ Section-by-section map of this design against `crates/citadel-mesh`. ✅ done,
 | 16 | Quarantine workflow | ◑ | scopes/votes/operator gate done; most scope→action enforcement still inert |
 | 18 | Scaling | ◑ | advertisements-only steady state holds; legacy full-replication path is N-1 |
 | 20 | Future (mesh / cluster identity / consensus) | ◑ | mesh + TPM-keyed identity + witness-quorum trust exist; no Cluster Trust Score / PCR-outlier correlation |
-| 9 | Signed checkpoints | ✗ | no standalone `Checkpoint`; advertisements ride signed envelopes but aren't quote-bound |
-| 10 | TPM quote ↔ checkpoint link | ✗ | log-shipping and attestation are separate subsystems |
+| 9 | Signed checkpoints | ✅ | `logship::Checkpoint`, `node::checkpoint_window`/`on_checkpoint` (gated by `checkpoint_enabled`) |
+| 10 | TPM quote ↔ checkpoint link | ✅ | checkpoint quote nonce = `checkpoint_nonce(boot,window,root)` |
 | 5 | Event sources (`binary_bios_measurements`, IMA) | ✗ | events fed abstractly via `append_event(payload_hash)` |
 | 17 | Storage layout (on-disk) | ✗ | in-memory only (in-process harness + HTTP transport) |
 
-The three structural gaps are **signed quote-bound checkpoints (§9–10)**,
-**real event-source ingestion (§5)**, and **persistence (§17)**.
+Signed quote-bound checkpoints (§9–10) are now built; the remaining structural
+gaps are **real event-source ingestion (§5)** and **persistence (§17)**.
 
 ---
 
@@ -353,13 +353,17 @@ used.
 
 ## 9. Signed Checkpoints
 
-**Status: ✗ Gap.** There is no standalone `Checkpoint` type. Per-window
-`DigestAdvertisement`s carry `node_id`/`boot_id`/`window_id`/`max_sequence`/`root`
-and travel inside a signed `GossipEnvelope`, so the payload is authenticated —
-but it is **not** an independently signed, quote-bound checkpoint. This is the
-highest-leverage gap: a `Checkpoint` binding `lthash_root` + `pcr_quote_hash`,
-signed by the node key, would tie the distributed log to TPM attestation (§10)
-and make equivocation (§13) provably attributable.
+**Status: ✅ Built** (`logship.rs` `Checkpoint`; `node.rs`
+`checkpoint_window`/`advertise_checkpoints`/`on_checkpoint`; gated by
+`checkpoint_enabled`; tests `logship_checkpoint.rs`). A `Checkpoint` commits a
+sealed window's `lthash_root` to the node's attested state: it embeds a TPM
+quote whose **nonce is `checkpoint_nonce(boot, window, root)`** (binding the
+quote to the exact root) and is signed by the node's mesh key. Peers verify the
+mesh signature, the quote↔root binding, and the quote signature, then record one
+checkpoint per sealed `(node, boot, window)`. This ties the distributed log to
+TPM attestation (§10) and makes equivocation (§13) **provably attributable** —
+two conflicting validly-signed checkpoints are non-repudiable proof, retained as
+`equivocation_proofs`.
 
 Every interval (N events or T seconds) a node emits a checkpoint:
 
@@ -385,9 +389,10 @@ Sign(node_private_key, checkpoint)
 
 ## 10. TPM Quote Integration
 
-**Status: ✗ Gap.** Log-shipping (`logship.rs`) and attestation (`attest.rs`)
-are currently separate subsystems; nothing binds a window's `lthash_root` to a
-TPM quote. Closes together with §9.
+**Status: ✅ Built** (with §9). The checkpoint's embedded quote uses
+`checkpoint_nonce(boot, window, lthash_root)` as its nonce, so the TPM signs
+over the exact log root — the distributed log and TPM attestation are now bound
+in one signed artifact.
 
 The checkpoint references a quote:
 
