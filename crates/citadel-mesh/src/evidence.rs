@@ -382,7 +382,7 @@ pub fn assign_holders(record_id: [u8; 32], roster: &[NodeId], count: usize) -> V
             (*h.finalize().as_bytes(), *n)
         })
         .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.sort_by_key(|x| std::cmp::Reverse(x.0));
     scored.into_iter().take(count).map(|(_, n)| n).collect()
 }
 

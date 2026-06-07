@@ -48,7 +48,7 @@ pub fn assign(subject: NodeId, roster: &[NodeId], epoch: Epoch, k: usize) -> Wit
         .map(|n| ((weight(n, &subject, epoch), *n), *n))
         .collect();
     // Sort by (weight desc, node_id desc) — deterministic total order.
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.sort_by_key(|x| std::cmp::Reverse(x.0));
     let witnesses: Vec<NodeId> = scored.into_iter().take(k).map(|(_, n)| n).collect();
     // Strict majority of the *assigned* witnesses (at least 1).
     let quorum_threshold = witnesses.len() / 2 + 1;
