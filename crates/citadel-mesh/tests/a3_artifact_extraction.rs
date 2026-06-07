@@ -94,7 +94,9 @@ fn cmdline_policy_applies_to_the_booted_line_not_the_menuentry_blocks() {
 
     // require a token the booted cmdline has → accepted.
     let mut req_ok = AcceptedReferences::new("sha256");
-    req_ok.set_artifact_policy(FleetArtifactPolicy::new().require_cmdline("root=LABEL=cloudimg-rootfs"));
+    req_ok.set_artifact_policy(
+        FleetArtifactPolicy::new().require_cmdline("root=LABEL=cloudimg-rootfs"),
+    );
     assert_eq!(
         req_ok.appraise_eventlog(&log, "sha256", &semantic_pcrs()),
         ReferenceOutcome::Accepted
@@ -102,7 +104,9 @@ fn cmdline_policy_applies_to_the_booted_line_not_the_menuentry_blocks() {
 
     // require a token absent from the booted cmdline → denied.
     let mut req_no = AcceptedReferences::new("sha256");
-    req_no.set_artifact_policy(FleetArtifactPolicy::new().require_cmdline("lockdown=confidentiality"));
+    req_no.set_artifact_policy(
+        FleetArtifactPolicy::new().require_cmdline("lockdown=confidentiality"),
+    );
     assert_eq!(
         req_no.appraise_eventlog(&log, "sha256", &semantic_pcrs()),
         ReferenceOutcome::Denied

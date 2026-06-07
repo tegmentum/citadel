@@ -630,7 +630,6 @@ pub enum RepairCommand {
     Apply,
 }
 
-
 #[derive(Subcommand)]
 pub enum LogCommand {
     /// Show recent audit log entries
@@ -830,9 +829,7 @@ pub enum AuditStreamsCommand {
         description: Option<String>,
     },
     /// Show a single stream's metadata.
-    Show {
-        name: String,
-    },
+    Show { name: String },
     /// Change a stream's confidentiality tier.
     SetTier {
         name: String,
@@ -883,9 +880,7 @@ pub enum AuditSegmentsCommand {
         stream: String,
     },
     /// Show a single segment by id.
-    Show {
-        segment_id: u64,
-    },
+    Show { segment_id: u64 },
 }
 
 #[derive(Subcommand)]

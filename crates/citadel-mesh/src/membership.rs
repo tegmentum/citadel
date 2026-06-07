@@ -120,7 +120,10 @@ impl Membership {
     }
 
     pub fn my_incarnation(&self) -> u64 {
-        self.members.get(&self.me).map(|m| m.incarnation).unwrap_or(0)
+        self.members
+            .get(&self.me)
+            .map(|m| m.incarnation)
+            .unwrap_or(0)
     }
 
     pub fn get(&self, id: &NodeId) -> Option<&Member> {
@@ -281,7 +284,10 @@ impl Membership {
     /// Refute a suspicion about ourselves: bump our incarnation and assert
     /// `Alive`. The higher incarnation makes our `Alive` beat the `Suspect`.
     pub fn refute(&mut self, tick: u64) -> MemberUpdate {
-        let m = self.members.get_mut(&self.me).expect("self is always present");
+        let m = self
+            .members
+            .get_mut(&self.me)
+            .expect("self is always present");
         m.incarnation += 1;
         m.liveness = LivenessState::Alive;
         m.last_change_tick = tick;
@@ -301,7 +307,11 @@ impl Membership {
 
     /// A bounded set of member updates to piggyback on an outgoing message.
     pub fn digest(&self, limit: usize) -> Vec<MemberUpdate> {
-        self.members.values().take(limit).map(|m| m.update()).collect()
+        self.members
+            .values()
+            .take(limit)
+            .map(|m| m.update())
+            .collect()
     }
 }
 
@@ -326,14 +336,26 @@ mod tests {
     fn higher_incarnation_alive_refutes_suspect() {
         let mut m = fresh();
         m.apply(
-            &MemberUpdate { node_id: nid(2), public_key: key(2), incarnation: 0, liveness: LivenessState::Suspect, tls_cert: None },
+            &MemberUpdate {
+                node_id: nid(2),
+                public_key: key(2),
+                incarnation: 0,
+                liveness: LivenessState::Suspect,
+                tls_cert: None,
+            },
             1,
         );
         assert_eq!(m.get(&nid(2)).unwrap().liveness, LivenessState::Suspect);
 
         // Same incarnation Alive does NOT supersede Suspect.
         let changed = m.apply(
-            &MemberUpdate { node_id: nid(2), public_key: key(2), incarnation: 0, liveness: LivenessState::Alive, tls_cert: None },
+            &MemberUpdate {
+                node_id: nid(2),
+                public_key: key(2),
+                incarnation: 0,
+                liveness: LivenessState::Alive,
+                tls_cert: None,
+            },
             2,
         );
         assert!(!changed);
@@ -341,7 +363,13 @@ mod tests {
 
         // Higher incarnation Alive refutes.
         let changed = m.apply(
-            &MemberUpdate { node_id: nid(2), public_key: key(2), incarnation: 1, liveness: LivenessState::Alive, tls_cert: None },
+            &MemberUpdate {
+                node_id: nid(2),
+                public_key: key(2),
+                incarnation: 1,
+                liveness: LivenessState::Alive,
+                tls_cert: None,
+            },
             3,
         );
         assert!(changed);
@@ -352,7 +380,13 @@ mod tests {
     fn suspect_beats_alive_at_same_incarnation() {
         let mut m = fresh();
         let changed = m.apply(
-            &MemberUpdate { node_id: nid(2), public_key: key(2), incarnation: 0, liveness: LivenessState::Suspect, tls_cert: None },
+            &MemberUpdate {
+                node_id: nid(2),
+                public_key: key(2),
+                incarnation: 0,
+                liveness: LivenessState::Suspect,
+                tls_cert: None,
+            },
             1,
         );
         assert!(changed, "suspect outranks alive at the same incarnation");
@@ -362,7 +396,13 @@ mod tests {
     fn cannot_be_marked_faulty_about_self() {
         let mut m = fresh();
         let changed = m.apply(
-            &MemberUpdate { node_id: nid(1), public_key: key(1), incarnation: 5, liveness: LivenessState::Faulty, tls_cert: None },
+            &MemberUpdate {
+                node_id: nid(1),
+                public_key: key(1),
+                incarnation: 5,
+                liveness: LivenessState::Faulty,
+                tls_cert: None,
+            },
             1,
         );
         assert!(!changed);

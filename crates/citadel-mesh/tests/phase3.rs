@@ -19,7 +19,9 @@ fn mesh_of(n: u8, witness_count: usize) -> (Mesh, Vec<NodeId>) {
         attestation_interval: 3,
         ..NodeConfig::default()
     };
-    let ids: Vec<NodeId> = (1..=n).map(|s| mesh.add_node(s, "worker", cfg.clone())).collect();
+    let ids: Vec<NodeId> = (1..=n)
+        .map(|s| mesh.add_node(s, "worker", cfg.clone()))
+        .collect();
     mesh.wire_full_membership();
     (mesh, ids)
 }
@@ -30,7 +32,10 @@ fn each_subject_has_assigned_witnesses_all_observers_agree() {
     for &subject in &ids {
         let canonical = mesh.assigned_witnesses(ids[0], subject);
         assert_eq!(canonical.len(), 3, "k=3 witnesses per subject");
-        assert!(!canonical.contains(&subject), "subject is not its own witness");
+        assert!(
+            !canonical.contains(&subject),
+            "subject is not its own witness"
+        );
         // Assignment is deterministic, so every node computes the same set.
         for &observer in &ids {
             assert_eq!(
@@ -116,5 +121,8 @@ fn dashboard_shows_witness_agreement_ratio() {
         .unwrap();
     mesh.run(12);
     let s = mesh.witness_summary(ids[0], victim);
-    assert!(s.fail >= s.quorum, "witnesses agree the victim failed: {s:?}");
+    assert!(
+        s.fail >= s.quorum,
+        "witnesses agree the victim failed: {s:?}"
+    );
 }

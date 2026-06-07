@@ -41,9 +41,9 @@ const TPM_ST_HASHCHECK: u16 = 0x8024;
 // only be used by satisfying its authPolicy (a policy session).
 const OBJ_ATTR_SIGN_USERAUTH: u32 = 0x0004_0072;
 const OBJ_ATTR_SIGN_POLICY: u32 = 0x0004_0032; // userWithAuth cleared
-// External/authority signing key: fixedTPM + fixedParent cleared so its
-// public can be LoadExternal'd under a real hierarchy (required for a
-// usable VerifySignature ticket -> TPM2_PolicyAuthorize).
+                                               // External/authority signing key: fixedTPM + fixedParent cleared so its
+                                               // public can be LoadExternal'd under a real hierarchy (required for a
+                                               // usable VerifySignature ticket -> TPM2_PolicyAuthorize).
 const OBJ_ATTR_SIGN_EXTERNAL: u32 = 0x0004_0060;
 
 // TPMA_NV attribute bits (TPM 2.0 Part 2). Note OWNERREAD is bit 17 and
@@ -53,7 +53,7 @@ const TPMA_NV_OWNERWRITE: u32 = 0x0000_0002; // bit 1
 const TPMA_NV_COUNTER: u32 = 0x0000_0010; // TPM_NT=1 in bits [7:4]
 const TPMA_NV_OWNERREAD: u32 = 0x0002_0000; // bit 17
 const TPMA_NV_NO_DA: u32 = 0x0200_0000; // bit 25
-// NV index already defined — NV_DefineSpace is idempotent for our use.
+                                        // NV index already defined — NV_DefineSpace is idempotent for our use.
 const TPM_RC_NV_DEFINED: u32 = 0x0000_014C;
 
 const TPM_RH_OWNER: u32 = 0x40000001;
@@ -180,7 +180,14 @@ impl VtpmBackend {
             std::fs::create_dir_all(parent).ok();
         }
         let tmp = sp.with_extension("tpmstate.tmp");
-        std::fs::write(&tmp, StateSnapshot { permanent, resumable }.encode())?;
+        std::fs::write(
+            &tmp,
+            StateSnapshot {
+                permanent,
+                resumable,
+            }
+            .encode(),
+        )?;
         std::fs::rename(&tmp, &sp)?;
         Ok(())
     }
@@ -334,9 +341,7 @@ const TPM_RC_RETRY: u32 = 0x0000_0922;
 /// re-submitting on TPM_RC_RETRY.
 fn send_command(engine: &mut VtpmEngine, cmd: &[u8]) -> anyhow::Result<Vec<u8>> {
     for _ in 0..8 {
-        let resp = engine
-            .process(cmd)
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        let resp = engine.process(cmd).map_err(|e| anyhow::anyhow!("{}", e))?;
         if resp.len() >= 10 {
             let rc = u32::from_be_bytes([resp[6], resp[7], resp[8], resp[9]]);
             if rc == TPM_RC_RETRY {
@@ -348,7 +353,10 @@ fn send_command(engine: &mut VtpmEngine, cmd: &[u8]) -> anyhow::Result<Vec<u8>> 
         }
         return Ok(resp);
     }
-    anyhow::bail!("TPM error 0x{:08x} (still retrying after 8 attempts)", TPM_RC_RETRY)
+    anyhow::bail!(
+        "TPM error 0x{:08x} (still retrying after 8 attempts)",
+        TPM_RC_RETRY
+    )
 }
 
 fn create_primary_srk(engine: &mut VtpmEngine) -> anyhow::Result<u32> {
@@ -488,7 +496,10 @@ impl TpmBackend for VtpmBackend {
             let session = u32::from_be_bytes([start[10], start[11], start[12], start[13]]);
 
             let sign_res: anyhow::Result<Vec<u8>> = (|| {
-                send_command(&mut engine, &build_policy_pcr_cmd(session, hash_alg, indices))?;
+                send_command(
+                    &mut engine,
+                    &build_policy_pcr_cmd(session, hash_alg, indices),
+                )?;
                 tpm_hash_and_sign(&mut engine, kh, data, session)
             })();
 
@@ -572,7 +583,10 @@ impl TpmBackend for VtpmBackend {
             let kh = load_key(&mut engine, srk, &pub_blob, &priv_blob)?;
 
             // Verify the authority's approval -> ticket.
-            let le = send_command(&mut engine, &build_load_external_cmd(authority_pub, TPM_RH_OWNER))?;
+            let le = send_command(
+                &mut engine,
+                &build_load_external_cmd(authority_pub, TPM_RH_OWNER),
+            )?;
             let auth_handle = u32::from_be_bytes([le[10], le[11], le[12], le[13]]);
             let ticket = verify_signature_ticket(&mut engine, auth_handle, &ahash, approval_sig)?;
             flush_context(&mut engine, auth_handle).ok();
@@ -581,10 +595,19 @@ impl TpmBackend for VtpmBackend {
             let start = send_command(&mut engine, &build_start_auth_session_cmd())?;
             let session = u32::from_be_bytes([start[10], start[11], start[12], start[13]]);
             let sign_res: anyhow::Result<Vec<u8>> = (|| {
-                send_command(&mut engine, &build_policy_pcr_cmd(session, hash_alg, indices))?;
                 send_command(
                     &mut engine,
-                    &build_policy_authorize_cmd(session, approved_policy, policy_ref, &name, &ticket),
+                    &build_policy_pcr_cmd(session, hash_alg, indices),
+                )?;
+                send_command(
+                    &mut engine,
+                    &build_policy_authorize_cmd(
+                        session,
+                        approved_policy,
+                        policy_ref,
+                        &name,
+                        &ticket,
+                    ),
                 )?;
                 tpm_hash_and_sign(&mut engine, kh, data, session)
             })();
@@ -639,7 +662,10 @@ impl TpmBackend for VtpmBackend {
         let key_data: serde_json::Value = serde_json::from_slice(&handle.id)?;
         let pub_blob: Vec<u8> = serde_json::from_value(key_data["public"].clone())?;
 
-        let resp = send_command(&mut engine, &build_load_external_cmd(&pub_blob, TPM_RH_NULL))?;
+        let resp = send_command(
+            &mut engine,
+            &build_load_external_cmd(&pub_blob, TPM_RH_NULL),
+        )?;
         if resp.len() < 14 {
             anyhow::bail!("LoadExternal response too short: {} bytes", resp.len());
         }
@@ -759,9 +785,15 @@ impl TpmBackend for VtpmBackend {
     }
 
     /// Measure raw `data` into a PCR (extend with `H(data)`) and record the data
-    /// + TCG `event_type`, so the synthesized event log carries a digest-bound,
+    /// and TCG `event_type`, so the synthesized event log carries a digest-bound,
     /// classifiable event over the real vTPM (e.g. an IMA measurement; P4).
-    fn measure_event(&self, bank: &str, index: u32, event_type: u32, data: &[u8]) -> anyhow::Result<()> {
+    fn measure_event(
+        &self,
+        bank: &str,
+        index: u32,
+        event_type: u32,
+        data: &[u8],
+    ) -> anyhow::Result<()> {
         let digest = tpm_core::backend::hash_for_bank(bank, data)?;
         self.pcr_extend(bank, index, &digest)?;
         if let Some(rec) = self.extends.lock().unwrap().last_mut() {
@@ -863,7 +895,11 @@ impl TpmBackend for VtpmBackend {
             let attrs = nv_read_public_attributes(&mut engine, index)
                 .map(|a| format!("0x{a:08x}"))
                 .unwrap_or_else(|| "<readpublic failed>".into());
-            anyhow::bail!("NV_Increment failed: rc 0x{:08x} (nv attributes {})", irc, attrs);
+            anyhow::bail!(
+                "NV_Increment failed: rc 0x{:08x} (nv attributes {})",
+                irc,
+                attrs
+            );
         }
 
         let resp = send_command(&mut engine, &build_nv_read_cmd(index, 8))?;
@@ -1093,7 +1129,7 @@ fn build_start_auth_session_cmd() -> Vec<u8> {
     c.extend_from_slice(&TPM2_CC_START_AUTH_SESSION.to_be_bytes());
     c.extend_from_slice(&TPM_RH_NULL.to_be_bytes()); // tpmKey
     c.extend_from_slice(&TPM_RH_NULL.to_be_bytes()); // bind
-    // nonceCaller: TPM2B_NONCE (>= 16 bytes)
+                                                     // nonceCaller: TPM2B_NONCE (>= 16 bytes)
     c.extend_from_slice(&16u16.to_be_bytes());
     c.extend_from_slice(&[0u8; 16]);
     c.extend_from_slice(&0u16.to_be_bytes()); // encryptedSalt (empty)
@@ -1114,7 +1150,7 @@ fn build_policy_pcr_cmd(session: u32, hash_alg: u16, indices: &[u32]) -> Vec<u8>
     c.extend_from_slice(&TPM2_CC_POLICY_PCR.to_be_bytes());
     c.extend_from_slice(&session.to_be_bytes()); // policySession
     c.extend_from_slice(&0u16.to_be_bytes()); // pcrDigest (empty: TPM computes)
-    // pcrs: TPML_PCR_SELECTION
+                                              // pcrs: TPML_PCR_SELECTION
     c.extend_from_slice(&1u32.to_be_bytes()); // count
     c.extend_from_slice(&hash_alg.to_be_bytes());
     c.push(3); // sizeofSelect
@@ -1207,7 +1243,10 @@ fn verify_signature_ticket(
     digest: &[u8],
     signature: &[u8],
 ) -> anyhow::Result<Vec<u8>> {
-    let resp = send_command(engine, &build_verify_signature_cmd(key_handle, digest, signature))?;
+    let resp = send_command(
+        engine,
+        &build_verify_signature_cmd(key_handle, digest, signature),
+    )?;
     // VerifySignature is a NO_SESSIONS command: response is
     //   header(10) | TPMT_TK_VERIFIED  (no parameterSize field).
     if resp.len() < 10 {
@@ -1647,7 +1686,10 @@ mod tests {
         let quoted = backend.pcr_read("sha256", &[16]).unwrap();
 
         // The synthesized log must replay to exactly that value.
-        let bytes = backend.read_event_log().unwrap().expect("vtpm supplies a log");
+        let bytes = backend
+            .read_event_log()
+            .unwrap()
+            .expect("vtpm supplies a log");
         let log = BootEventLog::from_bytes(&bytes).unwrap();
         assert!(
             log.explains(&quoted),
@@ -1663,7 +1705,10 @@ mod tests {
             .events_of_type(0x0000_000D)
             .next()
             .expect("an EV_IPL-typed event");
-        assert!(ima.data_is_measured("sha256"), "event data binds to its digest");
+        assert!(
+            ima.data_is_measured("sha256"),
+            "event data binds to its digest"
+        );
     }
 
     /// In-process sign -> verify round-trip against the real libtpms
@@ -1696,7 +1741,9 @@ mod tests {
                 "valid ECDSA signature must verify"
             );
             assert!(
-                !backend.verify_signature(&handle, b"tampered", &sig).unwrap(),
+                !backend
+                    .verify_signature(&handle, b"tampered", &sig)
+                    .unwrap(),
                 "signature must not verify against a different message"
             );
             let mut bad = sig.clone();
@@ -1861,7 +1908,10 @@ mod tests {
 
         // Authority key (the offline approver) + its public blob.
         let authority = backend
-            .create_authority_key(Algorithm::EccP256, &ObjectPath::new("policy/authority").unwrap())
+            .create_authority_key(
+                Algorithm::EccP256,
+                &ObjectPath::new("policy/authority").unwrap(),
+            )
             .unwrap();
         let akd: serde_json::Value = serde_json::from_slice(&authority.id).unwrap();
         let authority_pub: Vec<u8> = serde_json::from_value(akd["public"].clone()).unwrap();
@@ -1879,15 +1929,37 @@ mod tests {
         let v1 = backend.pcr_policy_digest(bank, &indices).unwrap();
         let sig1 = backend.approve_policy(&authority, &v1, policy_ref).unwrap();
         let s = backend
-            .sign_authorized(&key, b"root", bank, &indices, &authority_pub, &v1, policy_ref, &sig1)
+            .sign_authorized(
+                &key,
+                b"root",
+                bank,
+                &indices,
+                &authority_pub,
+                &v1,
+                policy_ref,
+                &sig1,
+            )
             .expect("authorized key signs in an approved state");
-        assert!(s.len() >= 2 && s[0] == 0x00 && s[1] == 0x18, "real ECDSA sig, got {}", s.len());
+        assert!(
+            s.len() >= 2 && s[0] == 0x00 && s[1] == 0x18,
+            "real ECDSA sig, got {}",
+            s.len()
+        );
 
         // Change PCR 14: the old approval no longer applies -> refused.
         backend.pcr_extend(bank, 14, &[0x22u8; 32]).unwrap();
         assert!(
             backend
-                .sign_authorized(&key, b"root", bank, &indices, &authority_pub, &v1, policy_ref, &sig1)
+                .sign_authorized(
+                    &key,
+                    b"root",
+                    bank,
+                    &indices,
+                    &authority_pub,
+                    &v1,
+                    policy_ref,
+                    &sig1
+                )
                 .is_err(),
             "signing must fail for a state the authority did not approve"
         );
@@ -1897,7 +1969,16 @@ mod tests {
         assert_ne!(v1, v2);
         let sig2 = backend.approve_policy(&authority, &v2, policy_ref).unwrap();
         let s2 = backend
-            .sign_authorized(&key, b"root", bank, &indices, &authority_pub, &v2, policy_ref, &sig2)
+            .sign_authorized(
+                &key,
+                b"root",
+                bank,
+                &indices,
+                &authority_pub,
+                &v2,
+                policy_ref,
+                &sig2,
+            )
             .expect("same key signs after the authority approves the upgraded state");
         assert!(s2.len() >= 2 && s2[0] == 0x00 && s2[1] == 0x18);
     }
@@ -1969,7 +2050,9 @@ mod tests {
         let challenge = AttestationChallenge {
             challenger: verifier_id,
             subject,
-            nonce: vec![0xDE, 0xAD, 0xBE, 0xEF, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+            nonce: vec![
+                0xDE, 0xAD, 0xBE, 0xEF, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+            ],
             pcr_bank: "sha256".into(),
             pcr_selection: vec![0, 7],
             policy_revision: 1,
@@ -1979,8 +2062,14 @@ mod tests {
         // Healthy: the peer accepts a fresh, nonce-bound real quote.
         let evidence = attester.produce(&challenge, 1, None, None, 1).unwrap();
         let healthy = verifier.verify(
-            &challenge, &evidence, &reference, &TrustAnchors::default(), verifier_id, 2,
-            ReferenceMatchPolicy::Flexible, RetiredAction::Fail,
+            &challenge,
+            &evidence,
+            &reference,
+            &TrustAnchors::default(),
+            verifier_id,
+            2,
+            ReferenceMatchPolicy::Flexible,
+            RetiredAction::Fail,
         );
         assert_eq!(
             healthy.result,
@@ -1991,11 +2080,20 @@ mod tests {
 
         // Divergent: extend a PCR on the attester's vTPM, so its next quote
         // no longer matches the golden — the peer flags it.
-        attester.backend().pcr_extend("sha256", 0, &[0xAA; 32]).unwrap();
+        attester
+            .backend()
+            .pcr_extend("sha256", 0, &[0xAA; 32])
+            .unwrap();
         let tampered = attester.produce(&challenge, 1, None, None, 3).unwrap();
         let flagged = verifier.verify(
-            &challenge, &tampered, &reference, &TrustAnchors::default(), verifier_id, 4,
-            ReferenceMatchPolicy::Flexible, RetiredAction::Fail,
+            &challenge,
+            &tampered,
+            &reference,
+            &TrustAnchors::default(),
+            verifier_id,
+            4,
+            ReferenceMatchPolicy::Flexible,
+            RetiredAction::Fail,
         );
         assert_eq!(flagged.result, Verdict::Fail, "divergent state must fail");
         assert!(
@@ -2045,12 +2143,19 @@ mod tests {
             *b ^= 0xFF;
         }
         let res = verifier.verify(
-            &challenge, &evidence, &reference, &TrustAnchors::default(), NodeId([2u8; 32]), 2,
-            ReferenceMatchPolicy::Flexible, RetiredAction::Fail,
+            &challenge,
+            &evidence,
+            &reference,
+            &TrustAnchors::default(),
+            NodeId([2u8; 32]),
+            2,
+            ReferenceMatchPolicy::Flexible,
+            RetiredAction::Fail,
         );
         assert_eq!(res.result, Verdict::Fail, "a forged signature must fail");
         assert!(
-            res.reason_codes.contains(&ReasonCode::QuoteSignatureInvalid),
+            res.reason_codes
+                .contains(&ReasonCode::QuoteSignatureInvalid),
             "forged signature → QUOTE_SIGNATURE_INVALID: {:?}",
             res.reason_codes
         );

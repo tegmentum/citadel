@@ -19,7 +19,9 @@ fn mesh_of(n: u8) -> (Mesh, Vec<NodeId>) {
         attestation_interval: 3,
         ..NodeConfig::default()
     };
-    let ids: Vec<NodeId> = (1..=n).map(|s| mesh.add_node(s, "worker", cfg.clone())).collect();
+    let ids: Vec<NodeId> = (1..=n)
+        .map(|s| mesh.add_node(s, "worker", cfg.clone()))
+        .collect();
     mesh.wire_full_membership();
     (mesh, ids)
 }
@@ -98,7 +100,10 @@ fn a_failing_app_is_reported_but_does_not_distrust_the_node() {
     for &peer in &ids {
         if peer != host {
             // The failure is reported fleet-wide...
-            let r = mesh.node(peer).app_result_for(host, "billing-api").expect("reported");
+            let r = mesh
+                .node(peer)
+                .app_result_for(host, "billing-api")
+                .expect("reported");
             assert_eq!(r.verdict, AppVerdict::Failed);
             // ...but the NODE stays trusted — app failure is report-only (P1).
             assert_eq!(
@@ -121,7 +126,10 @@ fn graded_response_blocks_scheduling_without_quarantining_the_node() {
 
     let bad = measurement(b"tampered-digest", vec![2, 0]);
     let enacted = mesh.quarantine_app(host, &bad, QuarantineScope::BlockWorkloadScheduling, false);
-    assert!(enacted, "witnesses that see the app failed should enact the scope");
+    assert!(
+        enacted,
+        "witnesses that see the app failed should enact the scope"
+    );
 
     for &peer in &ids {
         // New workloads of the app are blocked on the host...
@@ -148,7 +156,9 @@ fn credential_revoke_needs_an_operator() {
 
     // CredentialRevoke requires operator sign-off — witnesses alone can't.
     assert!(!mesh.quarantine_app(host, &bad, QuarantineScope::CredentialRevoke, false));
-    assert!(!mesh.node(ids[0]).app_credentials_revoked(host, "billing-api"));
+    assert!(!mesh
+        .node(ids[0])
+        .app_credentials_revoked(host, "billing-api"));
 
     // With the operator, it enacts.
     assert!(mesh.quarantine_app(host, &bad, QuarantineScope::CredentialRevoke, true));
@@ -161,8 +171,14 @@ fn credential_revoke_needs_an_operator() {
 fn a_critical_app_failure_escalates_to_node_distrust() {
     // P3 §5.3: a *critical* app's failure rolls up to node distrust.
     let mut mesh = Mesh::new("prod-east-1");
-    let cfg = NodeConfig { witness_count: 3, attestation_interval: 3, ..NodeConfig::default() };
-    let ids: Vec<NodeId> = (1..=5).map(|s| mesh.add_node(s, "worker", cfg.clone())).collect();
+    let cfg = NodeConfig {
+        witness_count: 3,
+        attestation_interval: 3,
+        ..NodeConfig::default()
+    };
+    let ids: Vec<NodeId> = (1..=5)
+        .map(|s| mesh.add_node(s, "worker", cfg.clone()))
+        .collect();
     mesh.wire_full_membership();
     let mut policy = app_policy();
     policy.mark_critical("billing-api");
@@ -197,7 +213,9 @@ fn threshold_escalation_only_after_enough_apps_fail() {
         app_escalation_threshold: 2,
         ..NodeConfig::default()
     };
-    let ids: Vec<NodeId> = (1..=5).map(|s| mesh.add_node(s, "worker", cfg.clone())).collect();
+    let ids: Vec<NodeId> = (1..=5)
+        .map(|s| mesh.add_node(s, "worker", cfg.clone()))
+        .collect();
     mesh.wire_full_membership();
     let mut policy = app_policy();
     policy.accept("metrics", b"m1".to_vec(), artifact(vec![1, 0]));
@@ -235,8 +253,13 @@ fn pcr_bound_claim_is_verified_against_the_event_log() {
     // otherwise it is downgraded to advisory (confidence 0.5).
     use citadel_mesh::application::AppPolicy;
     let mut mesh = Mesh::new("prod-east-1");
-    let cfg = NodeConfig { witness_count: 0, ..NodeConfig::default() };
-    let ids: Vec<NodeId> = (1..=2).map(|s| mesh.add_node(s, "worker", cfg.clone())).collect();
+    let cfg = NodeConfig {
+        witness_count: 0,
+        ..NodeConfig::default()
+    };
+    let ids: Vec<NodeId> = (1..=2)
+        .map(|s| mesh.add_node(s, "worker", cfg.clone()))
+        .collect();
     mesh.wire_full_membership();
 
     let mut p = AppPolicy::new();
@@ -265,7 +288,10 @@ fn pcr_bound_claim_is_verified_against_the_event_log() {
     mesh.measure_event(host, "sha256", 10, 0xD, b"billing-image");
     let r2 = mesh.node(host).appraise_app(&claim);
     assert_eq!(r2.verdict, AppVerdict::Healthy);
-    assert_eq!(r2.confidence, 1.0, "a genuinely measured app is fully bound");
+    assert_eq!(
+        r2.confidence, 1.0,
+        "a genuinely measured app is fully bound"
+    );
 }
 
 #[test]
@@ -280,5 +306,8 @@ fn a_forged_app_report_is_ignored() {
     // Genuine report from the host records on peers.
     mesh.report_app(host, &measurement(b"v2-digest", vec![2, 0]));
     mesh.run(8);
-    assert!(mesh.node(observer).app_result_for(host, "billing-api").is_some());
+    assert!(mesh
+        .node(observer)
+        .app_result_for(host, "billing-api")
+        .is_some());
 }

@@ -296,7 +296,11 @@ impl TpmBackend for MockBackend {
             .unwrap()
             .entry(key)
             .or_default()
-            .push(RecordedExtend { digest: digest.to_vec(), data: Vec::new(), tcg_type: None });
+            .push(RecordedExtend {
+                digest: digest.to_vec(),
+                data: Vec::new(),
+                tcg_type: None,
+            });
         Ok(())
     }
 
@@ -304,11 +308,20 @@ impl TpmBackend for MockBackend {
     /// the synthesized event log carries a digest-bound, classifiable event
     /// (e.g. an `EV_IPL` kernel command line). Testing aid for the event-log
     /// semantic path.
-    fn measure_event(&self, bank: &str, index: u32, event_type: u32, data: &[u8]) -> anyhow::Result<()> {
+    fn measure_event(
+        &self,
+        bank: &str,
+        index: u32,
+        event_type: u32,
+        data: &[u8],
+    ) -> anyhow::Result<()> {
         let digest = hash_for_bank(bank, data)?;
         self.pcr_extend(bank, index, &digest)?;
         let mut extends = self.extends.lock().unwrap();
-        if let Some(rec) = extends.get_mut(&(bank.to_string(), index)).and_then(|v| v.last_mut()) {
+        if let Some(rec) = extends
+            .get_mut(&(bank.to_string(), index))
+            .and_then(|v| v.last_mut())
+        {
             rec.data = data.to_vec();
             rec.tcg_type = Some(event_type);
         }
@@ -492,8 +505,11 @@ impl TpmBackend for MockBackend {
             .zip(current_pcrs.iter())
             .map(|(quoted, current)| {
                 let q_hex: String = quoted.digest.iter().map(|b| format!("{:02x}", b)).collect();
-                let c_hex: String =
-                    current.digest.iter().map(|b| format!("{:02x}", b)).collect();
+                let c_hex: String = current
+                    .digest
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect();
                 super::traits::PcrMatchResult {
                     index: quoted.index,
                     bank: quoted.bank.clone(),

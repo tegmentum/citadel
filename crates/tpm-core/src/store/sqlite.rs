@@ -56,11 +56,11 @@ impl SqliteStore {
             );",
         )?;
 
-        let current: i64 = self
-            .conn
-            .query_row("SELECT COALESCE(MAX(version), 0) FROM migrations", [], |r| {
-                r.get(0)
-            })?;
+        let current: i64 = self.conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM migrations",
+            [],
+            |r| r.get(0),
+        )?;
 
         for &(version, sql) in migrations::MIGRATIONS {
             if version > current {
@@ -168,9 +168,10 @@ impl StoreBackend for SqliteStore {
     }
 
     fn delete_object(&self, path: &ObjectPath) -> anyhow::Result<bool> {
-        let count = self
-            .conn
-            .execute("DELETE FROM objects WHERE path = ?1", params![path.as_str()])?;
+        let count = self.conn.execute(
+            "DELETE FROM objects WHERE path = ?1",
+            params![path.as_str()],
+        )?;
         Ok(count > 0)
     }
 
@@ -784,10 +785,7 @@ struct RawIdentityRow {
 
 impl RawIdentityRow {
     fn into_identity(self) -> anyhow::Result<Identity> {
-        let usage: IdentityUsage = self
-            .usage
-            .parse()
-            .map_err(|e: String| anyhow::anyhow!(e))?;
+        let usage: IdentityUsage = self.usage.parse().map_err(|e: String| anyhow::anyhow!(e))?;
         Ok(Identity {
             id: self.id.parse()?,
             name: self.name,

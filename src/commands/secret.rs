@@ -130,7 +130,11 @@ pub fn unseal(
     })?;
 
     if obj.kind != ObjectKind::SealedBlob {
-        anyhow::bail!("object '{}' is not a sealed secret (it is a {})", name, obj.kind);
+        anyhow::bail!(
+            "object '{}' is not a sealed secret (it is a {})",
+            name,
+            obj.kind
+        );
     }
 
     let blob = obj
@@ -152,7 +156,11 @@ pub fn unseal(
         let indices: Vec<u32> = pcr_policy
             .get("indices")
             .and_then(|i| i.as_array())
-            .map(|a| a.iter().filter_map(|v| v.as_u64().map(|n| n as u32)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_u64().map(|n| n as u32))
+                    .collect()
+            })
             .unwrap_or_default();
 
         let current = backend.pcr_policy_digest(bank, &indices)?;
@@ -166,7 +174,9 @@ pub fn unseal(
                 "the secret is bound to {} PCR {:?}; those PCRs differ from their sealed values",
                 bank, indices
             ))
-            .with_suggestion("re-seal against the current state, or restore the expected PCR state");
+            .with_suggestion(
+                "re-seal against the current state, or restore the expected PCR state",
+            );
             eprintln!("{}", diag.render_text());
             anyhow::bail!("unseal refused: PCR policy not satisfied for {}", name);
         }
@@ -185,15 +195,13 @@ pub fn unseal(
         size: plaintext.len(),
         output_file: output.map(|p| p.display().to_string()),
         data_preview: if output.is_none() {
-            String::from_utf8(plaintext.clone())
-                .ok()
-                .map(|s| {
-                    if s.len() > 200 {
-                        format!("{}...", &s[..200])
-                    } else {
-                        s
-                    }
-                })
+            String::from_utf8(plaintext.clone()).ok().map(|s| {
+                if s.len() > 200 {
+                    format!("{}...", &s[..200])
+                } else {
+                    s
+                }
+            })
         } else {
             None
         },
@@ -270,7 +278,12 @@ impl TextRenderable for SecretListing {
         if self.secrets.is_empty() {
             return "No sealed secrets.\n".to_string();
         }
-        let max_path = self.secrets.iter().map(|s| s.path.len()).max().unwrap_or(10);
+        let max_path = self
+            .secrets
+            .iter()
+            .map(|s| s.path.len())
+            .max()
+            .unwrap_or(10);
         let mut out = String::new();
         out.push_str(&format!(
             "{:<pw$}  {:<10}  {:<8}  {}\n",
@@ -284,7 +297,9 @@ impl TextRenderable for SecretListing {
             out.push_str(&format!(
                 "{:<pw$}  {:<10}  {:<8}  {}\n",
                 s.path,
-                s.size.map(|sz| format!("{} B", sz)).unwrap_or_else(|| "?".to_string()),
+                s.size
+                    .map(|sz| format!("{} B", sz))
+                    .unwrap_or_else(|| "?".to_string()),
                 if s.has_policy { "yes" } else { "no" },
                 &s.created_at[..19],
                 pw = max_path
@@ -354,7 +369,15 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(tmp.path(), b"no-policy").unwrap();
 
-        seal(&store, &backend, "secret/plain", tmp.path(), None, OutputFormat::Json).unwrap();
+        seal(
+            &store,
+            &backend,
+            "secret/plain",
+            tmp.path(),
+            None,
+            OutputFormat::Json,
+        )
+        .unwrap();
         backend.pcr_extend("sha256", 0, &[0x42u8; 32]).unwrap();
         unseal(&store, &backend, "secret/plain", None, OutputFormat::Json)
             .expect("a secret with no PCR policy is unaffected by PCR changes");

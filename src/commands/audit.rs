@@ -15,16 +15,16 @@ use std::path::Path;
 
 use serde::Serialize;
 
+use secure_log_sqlite::SqliteSecureLogStore;
 use tpm_core::backend::TpmBackend;
 use tpm_core::output::format::{render, TextRenderable};
 use tpm_core::output::OutputFormat;
 use tpm_core::secure_log::{
-    crypto::SecretKey, hash::hex, verify_inclusion_proof, witness::WitnessSubmission,
-    CborEncoder, EntryFields, InclusionProof, NativeSecureLog, SecureLog, SegmentInfo,
+    crypto::SecretKey, hash::hex, verify_inclusion_proof, witness::WitnessSubmission, CborEncoder,
+    EntryFields, InclusionProof, NativeSecureLog, SecureLog, SegmentInfo,
 };
 use tpm_core::secure_log_signer::{PcrGuard, TpmCheckpointSigner};
 use tpm_core::store::Store;
-use secure_log_sqlite::SqliteSecureLogStore;
 
 /// Open a fresh secure-log instance backed by the given store path.
 /// The session id is freshly generated each invocation so CLI calls
@@ -171,7 +171,7 @@ struct SealedKeyFile {
 }
 
 fn hex_to_bytes(s: &str) -> anyhow::Result<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         anyhow::bail!("odd-length hex string");
     }
     (0..s.len())
@@ -207,8 +207,7 @@ pub fn key_init(
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ =
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
         }
         println!("audit key written to: {} (plaintext, 0600)", path.display());
     } else {
@@ -229,8 +228,7 @@ pub fn key_init(
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ =
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
         }
         println!("audit key written to: {} (sealed, 0600)", path.display());
     }
@@ -249,16 +247,12 @@ pub fn key_init(
 /// be encrypted. Returns the effective `encrypt` bool after applying
 /// stream policy and the user's requested flag.
 ///
-/// - `public`            : `--encrypt` is opt-in.
-/// - `protected`         : payload is always encrypted (caller flag
-///                          is ignored if false).
-/// - `highly-restricted` : same as protected. Metadata minimization
-///                          is the caller's responsibility for now.
-fn effective_encryption(
-    store: &Store,
-    stream: &str,
-    user_encrypt: bool,
-) -> anyhow::Result<bool> {
+/// - `public`: `--encrypt` is opt-in.
+/// - `protected`: payload is always encrypted (the caller flag is ignored if
+///   false).
+/// - `highly-restricted`: same as protected. Metadata minimization is the
+///   caller's responsibility for now.
+fn effective_encryption(store: &Store, stream: &str, user_encrypt: bool) -> anyhow::Result<bool> {
     let Some(row) = store.secure_log_stream_get(stream)? else {
         // Unknown stream: treat as public, but surface the fact so
         // users can explicitly create it.
@@ -281,11 +275,7 @@ fn effective_encryption(
             Ok(true)
         }
         other => {
-            anyhow::bail!(
-                "stream '{}' has unknown tier '{}'",
-                stream,
-                other
-            )
+            anyhow::bail!("stream '{}' has unknown tier '{}'", stream, other)
         }
     }
 }
@@ -348,11 +338,7 @@ pub fn streams_create(
     Ok(())
 }
 
-pub fn streams_show(
-    store_path: &Path,
-    name: &str,
-    format: OutputFormat,
-) -> anyhow::Result<()> {
+pub fn streams_show(store_path: &Path, name: &str, format: OutputFormat) -> anyhow::Result<()> {
     let store = Store::open(store_path)?;
     let row = store
         .secure_log_stream_get(name)?
@@ -386,11 +372,7 @@ pub fn streams_set_tier(
     streams_show(store_path, name, format)
 }
 
-pub fn streams_delete(
-    store_path: &Path,
-    name: &str,
-    format: OutputFormat,
-) -> anyhow::Result<()> {
+pub fn streams_delete(store_path: &Path, name: &str, format: OutputFormat) -> anyhow::Result<()> {
     let store = Store::open(store_path)?;
     if store.secure_log_stream_get(name)?.is_none() {
         anyhow::bail!("stream not found: {}", name);
@@ -516,6 +498,7 @@ pub fn append_value(
     Ok(result.seqno)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn append(
     store_path: &Path,
     backend: &dyn TpmBackend,
@@ -801,21 +784,13 @@ pub fn close_segment_value(store_path: &Path, stream: &str) -> anyhow::Result<Se
         .map_err(|e| anyhow::anyhow!("{}", e))
 }
 
-pub fn segments_close(
-    store_path: &Path,
-    stream: &str,
-    format: OutputFormat,
-) -> anyhow::Result<()> {
+pub fn segments_close(store_path: &Path, stream: &str, format: OutputFormat) -> anyhow::Result<()> {
     let seg = close_segment_value(store_path, stream)?;
     println!("{}", render(&SegmentOutput::from(&seg), format));
     Ok(())
 }
 
-pub fn segments_list(
-    store_path: &Path,
-    stream: &str,
-    format: OutputFormat,
-) -> anyhow::Result<()> {
+pub fn segments_list(store_path: &Path, stream: &str, format: OutputFormat) -> anyhow::Result<()> {
     let log = open_log(store_path)?;
     let segs = log
         .list_segments(stream)
@@ -841,19 +816,14 @@ pub fn segments_show(
     Ok(())
 }
 
-pub fn prove(
-    store_path: &Path,
-    seqno: u64,
-    format: OutputFormat,
-) -> anyhow::Result<()> {
+pub fn prove(store_path: &Path, seqno: u64, format: OutputFormat) -> anyhow::Result<()> {
     let log = open_log(store_path)?;
     let proof = log
         .inclusion_proof(seqno)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     // Sanity: verify the proof we just built, so the CLI round-trips
     // the proof and catches bugs locally before a verifier sees them.
-    verify_inclusion_proof(&proof, &proof.merkle_root)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    verify_inclusion_proof(&proof, &proof.merkle_root).map_err(|e| anyhow::anyhow!("{}", e))?;
     println!("{}", render(&ProofOutput::from(&proof), format));
     Ok(())
 }
@@ -990,10 +960,7 @@ impl TextRenderable for ProofOutput {
         out.push_str(&format!("  path_length:  {}\n", self.path_length));
         for (i, s) in self.path.iter().enumerate() {
             let side = if s.right { "R" } else { "L" };
-            out.push_str(&format!(
-                "    {}. [{}] {}\n",
-                i, side, s.sibling_hash
-            ));
+            out.push_str(&format!("    {}. [{}] {}\n", i, side, s.sibling_hash));
         }
         out.push_str("\nproof verified locally.\n");
         out
@@ -1046,10 +1013,10 @@ fn build_pcr_guard(store: &Store, baseline_name: &str) -> anyhow::Result<PcrGuar
     let mut values = Vec::new();
     let mut indices = Vec::new();
     for v in arr {
-        let index = v
-            .get("index")
-            .and_then(|i| i.as_u64())
-            .ok_or_else(|| anyhow::anyhow!("baseline entry missing index"))? as u32;
+        let index =
+            v.get("index")
+                .and_then(|i| i.as_u64())
+                .ok_or_else(|| anyhow::anyhow!("baseline entry missing index"))? as u32;
         let digest_hex = v
             .get("digest")
             .and_then(|d| d.as_str())
@@ -1072,12 +1039,14 @@ fn build_pcr_guard(store: &Store, baseline_name: &str) -> anyhow::Result<PcrGuar
 
 fn decode_hex(s: &str) -> anyhow::Result<Vec<u8>> {
     let s = s.trim();
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         anyhow::bail!("hex string has odd length");
     }
     (0..s.len())
         .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| anyhow::anyhow!("invalid hex: {e}")))
+        .map(|i| {
+            u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| anyhow::anyhow!("invalid hex: {e}"))
+        })
         .collect()
 }
 
@@ -1185,7 +1154,10 @@ struct ChainVerifyOutput {
 impl TextRenderable for ChainVerifyOutput {
     fn render_text(&self) -> String {
         let mut out = String::new();
-        out.push_str(&format!("verify checkpoint chain: stream={}\n", self.stream));
+        out.push_str(&format!(
+            "verify checkpoint chain: stream={}\n",
+            self.stream
+        ));
         if self.ok {
             out.push_str(&format!(
                 "  result: ok ({} segment(s) verified)\n",
@@ -1203,11 +1175,7 @@ impl TextRenderable for ChainVerifyOutput {
 
 // -- publish / rollback --
 
-pub fn publish(
-    store_path: &Path,
-    stream: &str,
-    format: OutputFormat,
-) -> anyhow::Result<()> {
+pub fn publish(store_path: &Path, stream: &str, format: OutputFormat) -> anyhow::Result<()> {
     let log = open_log(store_path)?;
     let sub = log
         .build_witness_submission(stream)
@@ -1362,11 +1330,7 @@ fn to_witness_row(r: tpm_core::store::WitnessLogRow) -> WitnessRow {
     }
 }
 
-pub fn witness_list(
-    store_path: &Path,
-    stream: &str,
-    format: OutputFormat,
-) -> anyhow::Result<()> {
+pub fn witness_list(store_path: &Path, stream: &str, format: OutputFormat) -> anyhow::Result<()> {
     let store = Store::open(store_path)?;
     let rows = store.witness_log_list(stream)?;
     let out = WitnessListOutput {
@@ -1376,11 +1340,7 @@ pub fn witness_list(
     Ok(())
 }
 
-pub fn witness_latest(
-    store_path: &Path,
-    stream: &str,
-    format: OutputFormat,
-) -> anyhow::Result<()> {
+pub fn witness_latest(store_path: &Path, stream: &str, format: OutputFormat) -> anyhow::Result<()> {
     let store = Store::open(store_path)?;
     match store.witness_log_latest(stream)? {
         Some(row) => println!("{}", render(&to_witness_row(row), format)),
@@ -1501,11 +1461,7 @@ fn count_gc_candidates(
     Ok(count)
 }
 
-pub fn witness_record(
-    store_path: &Path,
-    input: &str,
-    format: OutputFormat,
-) -> anyhow::Result<()> {
+pub fn witness_record(store_path: &Path, input: &str, format: OutputFormat) -> anyhow::Result<()> {
     let json_str = if input == "-" {
         let mut buf = String::new();
         std::io::stdin().read_to_string(&mut buf)?;
@@ -1535,7 +1491,9 @@ pub fn witness_record(
         Some(&sub.stream_id),
         &serde_json::json!({"segment_id": sub.segment_id, "row_id": id}),
     )?;
-    let recorded = store.witness_log_list(&sub.stream_id)?.into_iter()
+    let recorded = store
+        .witness_log_list(&sub.stream_id)?
+        .into_iter()
         .find(|r| r.id == Some(id as i64))
         .map(to_witness_row)
         .ok_or_else(|| anyhow::anyhow!("failed to retrieve recorded row"))?;

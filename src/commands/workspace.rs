@@ -13,11 +13,7 @@ use serde::{Deserialize, Serialize};
 
 // -- workspace export --
 
-pub fn export(
-    store: &Store,
-    output: &std::path::Path,
-    format: OutputFormat,
-) -> anyhow::Result<()> {
+pub fn export(store: &Store, output: &std::path::Path, format: OutputFormat) -> anyhow::Result<()> {
     let objects = store.list_objects()?;
     let policies = store.list_policies()?;
     let profiles = store.list_profiles()?;
@@ -31,7 +27,7 @@ pub fn export(
             .map(|o| ExportedObject {
                 id: o.id.to_string(),
                 path: o.path.to_string(),
-                kind: serde_json::to_value(&o.kind)
+                kind: serde_json::to_value(o.kind)
                     .ok()
                     .and_then(|v| v.as_str().map(String::from))
                     .unwrap_or_else(|| format!("{:?}", o.kind)),
@@ -290,23 +286,23 @@ pub fn import(
         );
     }
 
-    let mut report = ImportReport::default();
-    report.source = input.display().to_string();
-    report.version = snapshot.version;
+    let mut report = ImportReport {
+        source: input.display().to_string(),
+        version: snapshot.version,
+        ..Default::default()
+    };
 
     // --- Profiles ---
     let existing_profiles = store.list_profiles()?;
     for ep in &snapshot.profiles {
         if existing_profiles.iter().any(|p| p.name == ep.name) {
-            report
-                .warnings
-                .push(format!("[TPM0804] profile '{}' already exists; skipped", ep.name));
+            report.warnings.push(format!(
+                "[TPM0804] profile '{}' already exists; skipped",
+                ep.name
+            ));
             continue;
         }
-        let alg: Algorithm = ep
-            .default_algorithm
-            .parse()
-            .unwrap_or(Algorithm::EccP256);
+        let alg: Algorithm = ep.default_algorithm.parse().unwrap_or(Algorithm::EccP256);
         let profile = Profile {
             name: ep.name.clone(),
             default_algorithm: alg,
@@ -335,10 +331,7 @@ pub fn import(
             ));
             continue;
         }
-        let id = ep
-            .id
-            .parse()
-            .unwrap_or_else(|_| uuid::Uuid::new_v4());
+        let id = ep.id.parse().unwrap_or_else(|_| uuid::Uuid::new_v4());
         let policy = Policy {
             id,
             name: ep.name.clone(),
@@ -380,9 +373,10 @@ pub fn import(
         };
 
         if store.get_object(&path)?.is_some() {
-            report
-                .warnings
-                .push(format!("[TPM0804] key '{}' already exists; skipped", eo.path));
+            report.warnings.push(format!(
+                "[TPM0804] key '{}' already exists; skipped",
+                eo.path
+            ));
             continue;
         }
 
@@ -451,9 +445,10 @@ pub fn import(
             .and_then(|s| u32::from_str_radix(s, 16).ok())
             .or_else(|| en.index.parse::<u32>().ok());
         let Some(idx) = idx_parsed else {
-            report
-                .warnings
-                .push(format!("NV '{}' has unparseable index '{}'", en.name, en.index));
+            report.warnings.push(format!(
+                "NV '{}' has unparseable index '{}'",
+                en.name, en.index
+            ));
             continue;
         };
         store.insert_nv_index(&en.name, idx, en.size)?;

@@ -24,10 +24,16 @@ pub struct AppId {
 
 impl AppId {
     pub fn new(name: impl Into<String>) -> Self {
-        AppId { name: name.into(), instance: None }
+        AppId {
+            name: name.into(),
+            instance: None,
+        }
     }
     pub fn instance(name: impl Into<String>, instance: impl Into<String>) -> Self {
-        AppId { name: name.into(), instance: Some(instance.into()) }
+        AppId {
+            name: name.into(),
+            instance: Some(instance.into()),
+        }
     }
 }
 
@@ -96,12 +102,18 @@ impl AppPolicy {
 
     /// Accept a measured state for an app.
     pub fn accept(&mut self, app: impl Into<String>, digest: Vec<u8>, artifact: ArtifactIdentity) {
-        self.accepted.entry(app.into()).or_default().push(AppEntry { digest, artifact });
+        self.accepted
+            .entry(app.into())
+            .or_default()
+            .push(AppEntry { digest, artifact });
     }
 
     /// Authorize a role for an app (restricts to the named roles once any set).
     pub fn allow_role(&mut self, app: impl Into<String>, role: impl Into<String>) {
-        self.allowed_roles.entry(app.into()).or_default().insert(role.into());
+        self.allowed_roles
+            .entry(app.into())
+            .or_default()
+            .insert(role.into());
     }
 
     /// Install the artifact gating policy (channel / baseline / denylist).
@@ -121,7 +133,9 @@ impl AppPolicy {
     }
 
     fn role_ok(&self, app: &str, role: &str) -> bool {
-        self.allowed_roles.get(app).is_none_or(|roles| roles.contains(role))
+        self.allowed_roles
+            .get(app)
+            .is_none_or(|roles| roles.contains(role))
     }
 
     /// Appraise a measurement → (verdict, reasons, confidence). Pure; the node

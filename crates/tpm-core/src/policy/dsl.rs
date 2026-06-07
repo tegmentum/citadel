@@ -90,10 +90,7 @@ impl PolicyDefinition {
             if pcr.index > 23 {
                 issues.push(ValidationIssue {
                     field: format!("requires.pcr[{}].index", i),
-                    message: format!(
-                        "PCR index {} is out of range (valid: 0-23)",
-                        pcr.index
-                    ),
+                    message: format!("PCR index {} is out of range (valid: 0-23)", pcr.index),
                 });
             }
             let valid_banks = ["sha1", "sha256", "sha384", "sha512"];
@@ -118,7 +115,10 @@ impl PolicyDefinition {
             }
         }
 
-        if self.requires.pcr.is_empty() && !self.requires.auth_value && self.requires.locality.is_empty() {
+        if self.requires.pcr.is_empty()
+            && !self.requires.auth_value
+            && self.requires.locality.is_empty()
+        {
             issues.push(ValidationIssue {
                 field: "requires".to_string(),
                 message: "policy has no requirements — it would always be satisfied".to_string(),

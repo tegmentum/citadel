@@ -68,7 +68,10 @@ impl MeshPublicKey {
     }
 
     pub fn fingerprint_short(&self) -> String {
-        self.fingerprint()[..6].iter().map(|b| format!("{:02x}", b)).collect()
+        self.fingerprint()[..6]
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect()
     }
 
     pub fn to_hex(&self) -> String {
@@ -102,7 +105,8 @@ impl Serialize for MeshPublicKey {
 impl<'de> Deserialize<'de> for MeshPublicKey {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = String::deserialize(d)?;
-        MeshPublicKey::from_hex(&s).ok_or_else(|| serde::de::Error::custom("invalid public key hex"))
+        MeshPublicKey::from_hex(&s)
+            .ok_or_else(|| serde::de::Error::custom("invalid public key hex"))
     }
 }
 

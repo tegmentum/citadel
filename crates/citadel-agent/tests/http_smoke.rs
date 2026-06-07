@@ -80,5 +80,8 @@ async fn three_agents_converge_over_http() {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert!(converged, "three agents should converge on a live membership over HTTP");
+    assert!(
+        converged,
+        "three agents should converge on a live membership over HTTP"
+    );
 }

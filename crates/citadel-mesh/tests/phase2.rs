@@ -22,7 +22,9 @@ fn liveness_only_mesh() -> (Mesh, Vec<NodeId>) {
         witness_count: 0,
         ..NodeConfig::default()
     };
-    let ids: Vec<NodeId> = (1..=N).map(|s| mesh.add_node(s, "worker", cfg.clone())).collect();
+    let ids: Vec<NodeId> = (1..=N)
+        .map(|s| mesh.add_node(s, "worker", cfg.clone()))
+        .collect();
     mesh.wire_full_membership();
     (mesh, ids)
 }
@@ -72,7 +74,10 @@ fn restarted_node_refutes_at_scale() {
     let victim = ids[7];
     mesh.kill(victim);
     mesh.run(60);
-    assert_eq!(mesh.liveness_of(ids[0], victim), Some(LivenessState::Faulty));
+    assert_eq!(
+        mesh.liveness_of(ids[0], victim),
+        Some(LivenessState::Faulty)
+    );
 
     // It comes back and clears the stale suspicion mesh-wide.
     mesh.revive(victim);

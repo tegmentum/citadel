@@ -3,6 +3,7 @@
 //! This module is only compiled when the `tpm-hw` feature is enabled.
 //! It requires the tpm2-tss C library to be installed on the system.
 
+use std::str::FromStr;
 use tss_esapi::abstraction::cipher::Cipher;
 use tss_esapi::attributes::ObjectAttributesBuilder;
 use tss_esapi::interface_types::algorithm::{HashingAlgorithm, PublicAlgorithm, SymmetricMode};
@@ -10,10 +11,9 @@ use tss_esapi::interface_types::key_bits::AesKeyBits;
 use tss_esapi::interface_types::resource_handles::Hierarchy;
 use tss_esapi::structures::{
     Auth, CreatePrimaryKeyResult, EccScheme, HashScheme, KeyDerivationFunctionScheme, MaxBuffer,
-    Public, PublicBuilder, PublicEccParametersBuilder, PublicKeyRsa, RsaExponent,
-    RsaScheme, SymmetricDefinitionObject,
+    Public, PublicBuilder, PublicEccParametersBuilder, PublicKeyRsa, RsaExponent, RsaScheme,
+    SymmetricDefinitionObject,
 };
-use std::str::FromStr;
 
 use tss_esapi::tcti_ldr::{DeviceConfig, ServerAddress, TctiNameConf, TpmSimulatorConfig};
 use tss_esapi::Context;
@@ -89,11 +89,9 @@ impl HardwareBackend {
             .with_public_algorithm(PublicAlgorithm::SymCipher)
             .with_name_hashing_algorithm(HashingAlgorithm::Sha256)
             .with_object_attributes(object_attributes)
-            .with_symmetric_cipher_parameters(
-                tss_esapi::structures::SymCipherParameters::new(
-                    SymmetricDefinitionObject::AES_128_CFB,
-                ),
-            )
+            .with_symmetric_cipher_parameters(tss_esapi::structures::SymCipherParameters::new(
+                SymmetricDefinitionObject::AES_128_CFB,
+            ))
             .with_symmetric_cipher_unique_identifier(Default::default())
             .build()?;
 
@@ -150,12 +148,13 @@ impl HardwareBackend {
                     _ => unreachable!(),
                 };
 
-                let rsa_params = tss_esapi::structures::PublicRsaParametersBuilder::new_signing_key(
-                    RsaScheme::RsaPss(HashScheme::new(HashingAlgorithm::Sha256)),
-                    key_bits,
-                    RsaExponent::default(),
-                )
-                .build()?;
+                let rsa_params =
+                    tss_esapi::structures::PublicRsaParametersBuilder::new_signing_key(
+                        RsaScheme::RsaPss(HashScheme::new(HashingAlgorithm::Sha256)),
+                        key_bits,
+                        RsaExponent::default(),
+                    )
+                    .build()?;
 
                 PublicBuilder::new()
                     .with_public_algorithm(PublicAlgorithm::Rsa)
@@ -214,8 +213,8 @@ impl HardwareBackend {
 impl TpmBackend for HardwareBackend {
     fn status(&self) -> anyhow::Result<BackendStatus> {
         let mut ctx = self.open_context()?;
-        let (manufacturer, firmware) = get_tpm_properties(&mut ctx)
-            .unwrap_or(("unknown".to_string(), "unknown".to_string()));
+        let (manufacturer, firmware) =
+            get_tpm_properties(&mut ctx).unwrap_or(("unknown".to_string(), "unknown".to_string()));
 
         Ok(BackendStatus {
             backend_type: self.tcti_label().to_string(),
@@ -233,7 +232,14 @@ impl TpmBackend for HardwareBackend {
 
         // Create the signing key under the primary
         let key_public = self.algorithm_to_public(algorithm)?;
-        let result = ctx.create(primary.key_handle.into(), key_public, None, None, None, None)?;
+        let result = ctx.create(
+            primary.key_handle.into(),
+            key_public,
+            None,
+            None,
+            None,
+            None,
+        )?;
 
         // Serialize the key material for storage
         let key_data = serde_json::json!({
@@ -503,8 +509,12 @@ impl TpmBackend for HardwareBackend {
 
         // Perform the quote
         let scheme = tss_esapi::structures::SignatureScheme::Null;
-        let (attestation_data, signature) =
-            ctx.quote(ak_key_handle.into(), qualifying_data, scheme, pcr_selection.clone())?;
+        let (attestation_data, signature) = ctx.quote(
+            ak_key_handle.into(),
+            qualifying_data,
+            scheme,
+            pcr_selection.clone(),
+        )?;
 
         // Read the actual PCR values to include in the response
         let pcr_values = self.pcr_read(pcr_bank, pcr_indices)?;
@@ -554,36 +564,35 @@ impl TpmBackend for HardwareBackend {
         ctx.flush_context(ak_handle.into())?;
 
         // Compare current PCR values against quoted values
-        let pcr_matches: Vec<super::traits::PcrMatchResult> = if let Some(first) =
-            quote.pcr_values.first()
-        {
-            let indices: Vec<u32> = quote.pcr_values.iter().map(|v| v.index).collect();
-            let current = self.pcr_read(&first.bank, &indices)?;
+        let pcr_matches: Vec<super::traits::PcrMatchResult> =
+            if let Some(first) = quote.pcr_values.first() {
+                let indices: Vec<u32> = quote.pcr_values.iter().map(|v| v.index).collect();
+                let current = self.pcr_read(&first.bank, &indices)?;
 
-            quote
-                .pcr_values
-                .iter()
-                .zip(current.iter())
-                .map(|(quoted, current_val)| {
-                    let q_hex: String =
-                        quoted.digest.iter().map(|b| format!("{:02x}", b)).collect();
-                    let c_hex: String = current_val
-                        .digest
-                        .iter()
-                        .map(|b| format!("{:02x}", b))
-                        .collect();
-                    super::traits::PcrMatchResult {
-                        index: quoted.index,
-                        bank: quoted.bank.clone(),
-                        expected: q_hex.clone(),
-                        actual: c_hex.clone(),
-                        matches: q_hex == c_hex,
-                    }
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+                quote
+                    .pcr_values
+                    .iter()
+                    .zip(current.iter())
+                    .map(|(quoted, current_val)| {
+                        let q_hex: String =
+                            quoted.digest.iter().map(|b| format!("{:02x}", b)).collect();
+                        let c_hex: String = current_val
+                            .digest
+                            .iter()
+                            .map(|b| format!("{:02x}", b))
+                            .collect();
+                        super::traits::PcrMatchResult {
+                            index: quoted.index,
+                            bank: quoted.bank.clone(),
+                            expected: q_hex.clone(),
+                            actual: c_hex.clone(),
+                            matches: q_hex == c_hex,
+                        }
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
         let all_pcrs_match = pcr_matches.iter().all(|m| m.matches);
         let verified = signature_valid && nonce_matches && all_pcrs_match;

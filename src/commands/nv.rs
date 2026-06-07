@@ -111,7 +111,12 @@ pub fn read(
 
     if let Some(out_path) = output {
         std::fs::write(out_path, &data)?;
-        println!("read {} bytes from NV index '{}' to {}", data.len(), name, out_path.display());
+        println!(
+            "read {} bytes from NV index '{}' to {}",
+            data.len(),
+            name,
+            out_path.display()
+        );
     } else {
         let result = NvReadResult {
             name: name.to_string(),
@@ -183,7 +188,12 @@ impl TextRenderable for NvListing {
         if self.indices.is_empty() {
             return "No NV indices defined.\n".to_string();
         }
-        let max_name = self.indices.iter().map(|n| n.name.len()).max().unwrap_or(10);
+        let max_name = self
+            .indices
+            .iter()
+            .map(|n| n.name.len())
+            .max()
+            .unwrap_or(10);
         let mut out = String::new();
         out.push_str(&format!(
             "{:<nw$}  {:<14}  {}\n",

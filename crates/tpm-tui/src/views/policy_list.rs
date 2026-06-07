@@ -15,13 +15,15 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     if app.policies.is_empty() {
-        let empty = Paragraph::new("  No policies. Use `tpm policy create <name> --pcr 7,11` to get started.")
-            .block(
-                Block::default()
-                    .title(" Policies ")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Cyan)),
-            );
+        let empty = Paragraph::new(
+            "  No policies. Use `tpm policy create <name> --pcr 7,11` to get started.",
+        )
+        .block(
+            Block::default()
+                .title(" Policies ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        );
         frame.render_widget(empty, chunks[0]);
     } else {
         let header = Row::new(vec![

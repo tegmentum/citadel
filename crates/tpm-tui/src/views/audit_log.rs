@@ -13,14 +13,13 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     if app.audit_entries.is_empty() {
-        let empty =
-            Paragraph::new("  No audit log entries. Operations will be recorded here.")
-                .block(
-                    Block::default()
-                        .title(" Audit Log ")
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::Cyan)),
-                );
+        let empty = Paragraph::new("  No audit log entries. Operations will be recorded here.")
+            .block(
+                Block::default()
+                    .title(" Audit Log ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Cyan)),
+            );
         frame.render_widget(empty, chunks[0]);
     } else {
         let header = Row::new(vec![

@@ -40,7 +40,11 @@ impl TpmTlsIdentity {
         subject_cn: &str,
     ) -> anyhow::Result<Self> {
         let point = parse_ecc_point(&backend.public_blob(&handle)?)?;
-        let remote = TpmRemoteKeyPair { backend: backend.clone(), handle: handle.clone(), point };
+        let remote = TpmRemoteKeyPair {
+            backend: backend.clone(),
+            handle: handle.clone(),
+            point,
+        };
         let key_pair = rcgen::KeyPair::from_remote(Box::new(remote))
             .map_err(|e| anyhow::anyhow!("rcgen rejected the TPM key: {e}"))?;
 
@@ -55,7 +59,11 @@ impl TpmTlsIdentity {
             .self_signed(&key_pair)
             .map_err(|e| anyhow::anyhow!("TPM self-signing the cert failed: {e}"))?;
         let cert = CertificateDer::from(cert.der().to_vec());
-        Ok(TpmTlsIdentity { cert, backend, handle })
+        Ok(TpmTlsIdentity {
+            cert,
+            backend,
+            handle,
+        })
     }
 
     /// The DER certificate this identity presents — pin this on peers.
@@ -81,7 +89,9 @@ impl TpmTlsIdentity {
     ) -> anyhow::Result<rustls::ServerConfig> {
         install_provider();
         let verifier = Arc::new(PinnedClientAuth::new(pinned_clients.to_vec()));
-        let resolver = Arc::new(verify::SingleCert { certified: self.certified_key() });
+        let resolver = Arc::new(verify::SingleCert {
+            certified: self.certified_key(),
+        });
         Ok(rustls::ServerConfig::builder()
             .with_client_cert_verifier(verifier)
             .with_cert_resolver(resolver))

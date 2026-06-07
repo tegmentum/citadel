@@ -12,4 +12,4 @@ pub mod vtpm_credential;
 
 /// Re-export the extracted `secure-log` crate so existing imports of
 /// `tpm_core::secure_log` keep working.
-pub use ::secure_log as secure_log;
+pub use ::secure_log;

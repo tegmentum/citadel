@@ -22,7 +22,6 @@ use tpm_core::backend::{MockBackend, TpmBackend};
 use crate::attest::{Attestor, ReferenceMeasurements, TrustAnchors};
 use crate::crypto::{MeshKeypair, MeshPublicKey};
 use crate::enrollment::{self, AdmissionOutcome, EnrollmentChallenge};
-use crate::types::Endorsement;
 use crate::id::{Epoch, MeshId, NodeId};
 use crate::membership::Membership;
 use crate::node::{Node, NodeConfig, WitnessSummary};
@@ -30,6 +29,7 @@ use crate::promotion::{self, PromotionOutcome};
 use crate::quarantine::{self, QuarantineDecision, QuarantineScope};
 use crate::reference::{BootProfile, FleetArtifactPolicy, PcrClass, ReferenceManifest, Validity};
 use crate::state::{LivenessState, TrustState};
+use crate::types::Endorsement;
 use crate::witness;
 
 /// Per-node snapshot for the "dashboard" view (design §17.2).
@@ -119,10 +119,22 @@ impl Mesh {
     ) -> Node {
         let keypair = MeshKeypair::from_seed([seed; 32]);
         let pubkey = keypair.public();
-        let id = NodeId::derive(&self.mesh_id, Epoch(config.mesh_epoch), &pubkey.fingerprint(), &[seed]);
+        let id = NodeId::derive(
+            &self.mesh_id,
+            Epoch(config.mesh_epoch),
+            &pubkey.fingerprint(),
+            &[seed],
+        );
         let membership = Membership::new(id, pubkey, role, 0);
         let attestor = Attestor::new(backend).expect("attestor");
-        Node::new(self.mesh_id.clone(), id, keypair, membership, attestor, config)
+        Node::new(
+            self.mesh_id.clone(),
+            id,
+            keypair,
+            membership,
+            attestor,
+            config,
+        )
     }
 
     /// Make every node learn every other node (seed membership) and adopt a
@@ -223,12 +235,18 @@ impl Mesh {
 
     /// How `observer` classifies `subject`'s liveness.
     pub fn liveness_of(&self, observer: NodeId, subject: NodeId) -> Option<LivenessState> {
-        self.node(observer).membership().get(&subject).map(|m| m.liveness)
+        self.node(observer)
+            .membership()
+            .get(&subject)
+            .map(|m| m.liveness)
     }
 
     /// How `observer` classifies `subject`'s trust.
     pub fn trust_of(&self, observer: NodeId, subject: NodeId) -> Option<TrustState> {
-        self.node(observer).membership().get(&subject).map(|m| m.trust)
+        self.node(observer)
+            .membership()
+            .get(&subject)
+            .map(|m| m.trust)
     }
 
     /// The witnesses `observer` assigns to `subject` this epoch.
@@ -283,7 +301,12 @@ impl Mesh {
     /// new windows (`offbox`), the erasure `parity` paired with it, and the
     /// per-node migration concurrency. Models an operator flipping the
     /// placement policy (and bumping redundancy) on a live mesh.
-    pub fn set_evidence_placement_all(&mut self, offbox: bool, parity: usize, migration_rate: usize) {
+    pub fn set_evidence_placement_all(
+        &mut self,
+        offbox: bool,
+        parity: usize,
+        migration_rate: usize,
+    ) {
         for n in &mut self.nodes {
             n.set_evidence_placement(offbox, parity, migration_rate);
         }
@@ -312,7 +335,12 @@ impl Mesh {
         let tick = self.tick;
         let cfg = self.template_config.clone().unwrap_or_default();
         let roster: Vec<NodeId> = self.nodes.iter().map(|n| n.id()).collect();
-        let ws = witness::assign(subject, &roster, Epoch(cfg.mesh_epoch), cfg.witness_count.max(1));
+        let ws = witness::assign(
+            subject,
+            &roster,
+            Epoch(cfg.mesh_epoch),
+            cfg.witness_count.max(1),
+        );
 
         let proposal = self.node(proposer).propose_quarantine(subject, scope, tick);
         let mut votes = Vec::new();
@@ -355,7 +383,14 @@ impl Mesh {
     /// Measure a typed, data-carrying event into a node's PCR (e.g. an `EV_IPL`
     /// kernel command line) — appears in the node's synthesized event log for
     /// semantic appraisal (§10.4).
-    pub fn measure_event(&self, node: NodeId, bank: &str, index: u32, event_type: u32, data: &[u8]) {
+    pub fn measure_event(
+        &self,
+        node: NodeId,
+        bank: &str,
+        index: u32,
+        event_type: u32,
+        data: &[u8],
+    ) {
         self.node(node)
             .attestor()
             .backend()
@@ -462,7 +497,12 @@ impl Mesh {
         use crate::application::AppVerdict;
         let cfg = self.template_config.clone().unwrap_or_default();
         let roster: Vec<NodeId> = self.nodes.iter().map(|n| n.id()).collect();
-        let ws = witness::assign(subject, &roster, Epoch(cfg.mesh_epoch), cfg.witness_count.max(1));
+        let ws = witness::assign(
+            subject,
+            &roster,
+            Epoch(cfg.mesh_epoch),
+            cfg.witness_count.max(1),
+        );
 
         // Eligible witnesses that independently appraise the app as Failed.
         let mut approvals = 0usize;
@@ -474,8 +514,8 @@ impl Mesh {
             }
         }
         let req = scope.requirement(cfg.witness_count.max(1));
-        let enacted = approvals >= req.approvals_needed
-            && (!req.operator_required || operator_approved);
+        let enacted =
+            approvals >= req.approvals_needed && (!req.operator_required || operator_approved);
         if enacted {
             let app = measurement.app.name.clone();
             for n in &mut self.nodes {
@@ -514,8 +554,9 @@ impl Mesh {
         validity: Validity,
     ) -> PromotionOutcome {
         let tick = self.tick;
-        let proposal =
-            self.node(proposer).propose_promotion(profile, index, digest, artifact, validity, tick);
+        let proposal = self
+            .node(proposer)
+            .propose_promotion(profile, index, digest, artifact, validity, tick);
         let ids: Vec<NodeId> = self.nodes.iter().map(|n| n.id()).collect();
         let mut votes = Vec::new();
         let mut eligible = HashSet::new();
@@ -550,7 +591,12 @@ impl Mesh {
         let tick = self.tick;
         let cfg = self.template_config.clone().unwrap_or_default();
         let roster: Vec<NodeId> = self.nodes.iter().map(|n| n.id()).collect();
-        let ws = witness::assign(subject, &roster, Epoch(cfg.mesh_epoch), cfg.witness_count.max(1));
+        let ws = witness::assign(
+            subject,
+            &roster,
+            Epoch(cfg.mesh_epoch),
+            cfg.witness_count.max(1),
+        );
 
         let challenge = EnrollmentChallenge {
             mesh_id: self.mesh_id.clone(),
@@ -562,7 +608,10 @@ impl Mesh {
             admission_witnesses: ws.witnesses.clone(),
             quorum_threshold: ws.quorum_threshold,
         };
-        let claim = match self.node(subject).make_enrollment_claim(&challenge, "worker", "v2") {
+        let claim = match self
+            .node(subject)
+            .make_enrollment_claim(&challenge, "worker", "v2")
+        {
             Ok(c) => c,
             Err(_) => return false,
         };
@@ -679,7 +728,13 @@ impl Mesh {
                 .collect();
             // Existing members admit the candidate as probationary.
             for n in &mut self.nodes {
-                n.admit_probationary(candidate_id, candidate_key, role, tick, claim.tls_cert.clone());
+                n.admit_probationary(
+                    candidate_id,
+                    candidate_key,
+                    role,
+                    tick,
+                    claim.tls_cert.clone(),
+                );
             }
             // The candidate learns the existing members.
             for (id, key) in &roster_keys {

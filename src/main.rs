@@ -18,11 +18,9 @@ use tpm_core::store::Store;
 use app::{
     AttestCommand, AuditChainCommand, AuditCommand, AuditKeyCommand, AuditSegmentsCommand,
     AuditStreamsCommand, AuditWitnessCommand, Cli, Command, DaemonCommand, GcCommand,
-    IdentityCommand, KeyCommand,
-    LogCommand, MeasureCommand, NvCommand, ObjectCommand, PcrBaselineCommand, PcrCommand,
-    PolicyCommand,
-    ProfileCommand, RecoverCommand, RepairCommand, SecretCommand, TemplateCommand,
-    VtpmCommand, VtpmCredentialCommand, WorkspaceCommand,
+    IdentityCommand, KeyCommand, LogCommand, MeasureCommand, NvCommand, ObjectCommand,
+    PcrBaselineCommand, PcrCommand, PolicyCommand, ProfileCommand, RecoverCommand, RepairCommand,
+    SecretCommand, TemplateCommand, VtpmCommand, VtpmCredentialCommand, WorkspaceCommand,
 };
 
 fn default_store_path() -> std::path::PathBuf {
@@ -68,8 +66,8 @@ fn create_backend(
             } else if let Ok(path) = std::env::var("TPM_SWTPM_SOCKET") {
                 tpm_core::backend::HardwareBackend::new_swtpm_unix(&path)
             } else {
-                let host = std::env::var("TPM_SWTPM_HOST")
-                    .unwrap_or_else(|_| "localhost".to_string());
+                let host =
+                    std::env::var("TPM_SWTPM_HOST").unwrap_or_else(|_| "localhost".to_string());
                 let port = std::env::var("TPM_SWTPM_PORT")
                     .ok()
                     .and_then(|p| p.parse::<u16>().ok())
@@ -97,11 +95,7 @@ fn create_backend(
                         std::path::PathBuf::from("tpm-ephemeral.component.wasm"),
                         dirs_home().join(".local/share/tpm/tpm-ephemeral.component.wasm"),
                     ];
-                    candidates
-                        .iter()
-                        .find(|p| p.exists())
-                        .cloned()
-                        .ok_or(())
+                    candidates.iter().find(|p| p.exists()).cloned().ok_or(())
                 })
                 .map_err(|_| {
                     anyhow::anyhow!(
@@ -137,9 +131,9 @@ fn check_constraints(
 ) -> anyhow::Result<()> {
     // Map command to operation name and extract relevant fields
     let (operation, path, algorithm) = match cmd {
-        Command::Key(KeyCommand::Create { path, algorithm, .. }) => {
-            ("key.create", Some(path.as_str()), Some(algorithm.as_str()))
-        }
+        Command::Key(KeyCommand::Create {
+            path, algorithm, ..
+        }) => ("key.create", Some(path.as_str()), Some(algorithm.as_str())),
         Command::Key(KeyCommand::Delete { path }) => ("key.delete", Some(path.as_str()), None),
         Command::Key(KeyCommand::Sign { path, .. }) => ("key.sign", Some(path.as_str()), None),
         Command::Key(KeyCommand::Rotate { path }) => ("key.rotate", Some(path.as_str()), None),
@@ -150,7 +144,9 @@ fn check_constraints(
     };
 
     // Check forbidden operations
-    constraints.check_operation(operation).map_err(|e| anyhow::anyhow!(e))?;
+    constraints
+        .check_operation(operation)
+        .map_err(|e| anyhow::anyhow!(e))?;
 
     // Check path restrictions
     if let Some(p) = path {
@@ -159,7 +155,9 @@ fn check_constraints(
 
     // Check algorithm restrictions
     if let Some(a) = algorithm {
-        constraints.check_algorithm(a).map_err(|e| anyhow::anyhow!(e))?;
+        constraints
+            .check_algorithm(a)
+            .map_err(|e| anyhow::anyhow!(e))?;
     }
 
     Ok(())
@@ -318,9 +316,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     match cli.command {
-        Some(Command::Completions { shell }) => {
-            return generate_completions(&shell);
-        }
+        Some(Command::Completions { shell }) => generate_completions(&shell),
         Some(cmd) => {
             let store_path = cli.store_path.unwrap_or_else(default_store_path);
             let store = Store::open(&store_path)?;
@@ -343,9 +339,7 @@ fn main() -> anyhow::Result<()> {
                 ),
                 Command::Status => commands::status::run(&store, backend.as_ref(), format),
                 Command::Doctor => commands::doctor::run(&store, backend.as_ref(), format),
-                Command::Capabilities => {
-                    commands::capabilities::run(backend.as_ref(), format)
-                }
+                Command::Capabilities => commands::capabilities::run(backend.as_ref(), format),
                 Command::Debug { output } => commands::capabilities::debug_bundle(
                     backend.as_ref(),
                     &store,
@@ -360,9 +354,7 @@ fn main() -> anyhow::Result<()> {
                     cli.plan,
                     format,
                 ),
-                Command::Diff { file } => {
-                    commands::apply::diff_cmd(&store, &file, format)
-                }
+                Command::Diff { file } => commands::apply::diff_cmd(&store, &file, format),
                 Command::Key(key_cmd) => match key_cmd {
                     KeyCommand::Create {
                         path,
@@ -391,9 +383,7 @@ fn main() -> anyhow::Result<()> {
                         output.as_ref(),
                         format,
                     ),
-                    KeyCommand::Delete { path } => {
-                        commands::key::delete(&store, &path, format)
-                    }
+                    KeyCommand::Delete { path } => commands::key::delete(&store, &path, format),
                     KeyCommand::ExportPub {
                         path,
                         key_format,
@@ -410,15 +400,13 @@ fn main() -> anyhow::Result<()> {
                     }
                 },
                 Command::Attest(att_cmd) => match att_cmd {
-                    AttestCommand::AkCreate { name, algorithm } => {
-                        commands::attest::ak_create(
-                            &store,
-                            backend.as_ref(),
-                            &name,
-                            &algorithm,
-                            format,
-                        )
-                    }
+                    AttestCommand::AkCreate { name, algorithm } => commands::attest::ak_create(
+                        &store,
+                        backend.as_ref(),
+                        &name,
+                        &algorithm,
+                        format,
+                    ),
                     AttestCommand::Quote {
                         ak,
                         bank,
@@ -475,9 +463,13 @@ fn main() -> anyhow::Result<()> {
                     NvCommand::Write { name, input } => {
                         commands::nv::write(&store, backend.as_ref(), &name, &input)
                     }
-                    NvCommand::Read { name, output } => {
-                        commands::nv::read(&store, backend.as_ref(), &name, output.as_deref(), format)
-                    }
+                    NvCommand::Read { name, output } => commands::nv::read(
+                        &store,
+                        backend.as_ref(),
+                        &name,
+                        output.as_deref(),
+                        format,
+                    ),
                     NvCommand::List => commands::nv::list(&store, format),
                     NvCommand::Delete { name } => {
                         commands::nv::delete(&store, backend.as_ref(), &name)
@@ -503,15 +495,18 @@ fn main() -> anyhow::Result<()> {
                     PcrCommand::Baseline(bl_cmd) => match bl_cmd {
                         PcrBaselineCommand::Save { name, bank, index } => {
                             commands::pcr::baseline_save(
-                                &store, backend.as_ref(), &name, &bank, &index, format,
+                                &store,
+                                backend.as_ref(),
+                                &name,
+                                &bank,
+                                &index,
+                                format,
                             )
                         }
                         PcrBaselineCommand::Diff { name } => {
                             commands::pcr::baseline_diff(&store, backend.as_ref(), &name, format)
                         }
-                        PcrBaselineCommand::List => {
-                            commands::pcr::baseline_list(&store, format)
-                        }
+                        PcrBaselineCommand::List => commands::pcr::baseline_list(&store, format),
                     },
                 },
                 Command::Policy(pol_cmd) => match pol_cmd {
@@ -520,13 +515,9 @@ fn main() -> anyhow::Result<()> {
                         pcr,
                         pcr_bank,
                         password,
-                    } => commands::policy::create(
-                        &store, &name, &pcr, &pcr_bank, password, format,
-                    ),
+                    } => commands::policy::create(&store, &name, &pcr, &pcr_bank, password, format),
                     PolicyCommand::List => commands::policy::list(&store, format),
-                    PolicyCommand::Show { name } => {
-                        commands::policy::show(&store, &name, format)
-                    }
+                    PolicyCommand::Show { name } => commands::policy::show(&store, &name, format),
                     PolicyCommand::Explain { name } => {
                         commands::policy::explain(&store, &name, format)
                     }
@@ -564,9 +555,7 @@ fn main() -> anyhow::Result<()> {
                         commands::object::rename(&store, &from, &to, format)
                     }
                     ObjectCommand::Retire { path } => commands::object::retire(&store, &path),
-                    ObjectCommand::Activate { path } => {
-                        commands::object::activate(&store, &path)
-                    }
+                    ObjectCommand::Activate { path } => commands::object::activate(&store, &path),
                 },
                 Command::Gc(gc_cmd) => match gc_cmd {
                     GcCommand::Plan => commands::object::gc_plan(&store, format),
@@ -574,9 +563,7 @@ fn main() -> anyhow::Result<()> {
                 },
                 Command::Recover(rec_cmd) => match rec_cmd {
                     RecoverCommand::List => commands::recover::list(format),
-                    RecoverCommand::Show { name } => {
-                        commands::recover::show(&name, format)
-                    }
+                    RecoverCommand::Show { name } => commands::recover::show(&name, format),
                 },
                 Command::Profile(prof_cmd) => match prof_cmd {
                     ProfileCommand::List => commands::profile::list(&store, format),
@@ -586,12 +573,8 @@ fn main() -> anyhow::Result<()> {
                     ProfileCommand::Set { name } => commands::profile::set(&store, &name),
                 },
                 Command::Repair(rep_cmd) => match rep_cmd {
-                    RepairCommand::Scan => {
-                        commands::repair::scan(&store, backend.as_ref(), format)
-                    }
-                    RepairCommand::Plan => {
-                        commands::repair::plan(&store, backend.as_ref(), format)
-                    }
+                    RepairCommand::Scan => commands::repair::scan(&store, backend.as_ref(), format),
+                    RepairCommand::Plan => commands::repair::plan(&store, backend.as_ref(), format),
                     RepairCommand::Apply => {
                         commands::repair::apply(&store, backend.as_ref(), format)
                     }
@@ -611,9 +594,7 @@ fn main() -> anyhow::Result<()> {
                 },
                 Command::Template(tmpl_cmd) => match tmpl_cmd {
                     TemplateCommand::List => commands::template::list(format),
-                    TemplateCommand::Show { name } => {
-                        commands::template::show(&name, format)
-                    }
+                    TemplateCommand::Show { name } => commands::template::show(&name, format),
                 },
                 Command::Workspace(ws_cmd) => match ws_cmd {
                     WorkspaceCommand::Info => {
@@ -648,22 +629,16 @@ fn main() -> anyhow::Result<()> {
                         encrypt,
                         format,
                     ),
-                    AuditCommand::Show { seqno, decrypt } => commands::audit::show(
-                        &store_path,
-                        backend.as_ref(),
-                        seqno,
-                        decrypt,
-                        format,
-                    ),
+                    AuditCommand::Show { seqno, decrypt } => {
+                        commands::audit::show(&store_path, backend.as_ref(), seqno, decrypt, format)
+                    }
                     AuditCommand::Key(key_cmd) => match key_cmd {
-                        AuditKeyCommand::Init { out, plaintext } => {
-                            commands::audit::key_init(
-                                &store_path,
-                                backend.as_ref(),
-                                Some(&out),
-                                plaintext,
-                            )
-                        }
+                        AuditKeyCommand::Init { out, plaintext } => commands::audit::key_init(
+                            &store_path,
+                            backend.as_ref(),
+                            Some(&out),
+                            plaintext,
+                        ),
                         AuditKeyCommand::Show => commands::audit::key_show(&store_path),
                     },
                     AuditCommand::Streams(streams_cmd) => match streams_cmd {
@@ -685,12 +660,7 @@ fn main() -> anyhow::Result<()> {
                             commands::audit::streams_show(&store_path, &name, format)
                         }
                         AuditStreamsCommand::SetTier { name, tier } => {
-                            commands::audit::streams_set_tier(
-                                &store_path,
-                                &name,
-                                &tier,
-                                format,
-                            )
+                            commands::audit::streams_set_tier(&store_path, &name, &tier, format)
                         }
                         AuditStreamsCommand::Delete { name } => {
                             commands::audit::streams_delete(&store_path, &name, format)
@@ -907,8 +877,8 @@ fn main() -> anyhow::Result<()> {
                     }
                     DaemonCommand::Status => {
                         // Try to connect to daemon
-                        let addr =
-                            std::env::var("TPMD_LISTEN").unwrap_or_else(|_| "127.0.0.1:7701".into());
+                        let addr = std::env::var("TPMD_LISTEN")
+                            .unwrap_or_else(|_| "127.0.0.1:7701".into());
                         match std::net::TcpStream::connect_timeout(
                             &addr.parse().unwrap_or_else(|_| {
                                 std::net::SocketAddr::from(([127, 0, 0, 1], 7701))

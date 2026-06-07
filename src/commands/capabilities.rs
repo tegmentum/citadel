@@ -13,11 +13,12 @@ pub fn run(backend: &dyn TpmBackend, format: OutputFormat) -> anyhow::Result<()>
         manufacturer: status.manufacturer,
         firmware_version: status.firmware_version,
         available: status.available,
-        supported_algorithms: Algorithm::all()
-            .iter()
-            .map(|a| a.to_string())
-            .collect(),
-        pcr_banks: vec!["sha256".to_string(), "sha384".to_string(), "sha1".to_string()],
+        supported_algorithms: Algorithm::all().iter().map(|a| a.to_string()).collect(),
+        pcr_banks: vec![
+            "sha256".to_string(),
+            "sha384".to_string(),
+            "sha1".to_string(),
+        ],
         max_nv_size: 2048,
         max_persistent_handles: 7,
     };
@@ -103,7 +104,10 @@ impl TextRenderable for Capabilities {
         for bank in &self.pcr_banks {
             out.push_str(&format!("    - {}\n", bank));
         }
-        out.push_str(&format!("\n  max NV size:          {} bytes\n", self.max_nv_size));
+        out.push_str(&format!(
+            "\n  max NV size:          {} bytes\n",
+            self.max_nv_size
+        ));
         out.push_str(&format!(
             "  max persistent handles: {}\n",
             self.max_persistent_handles

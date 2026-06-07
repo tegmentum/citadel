@@ -8,11 +8,7 @@ use serde::Serialize;
 
 // -- repair scan --
 
-pub fn scan(
-    store: &Store,
-    backend: &dyn TpmBackend,
-    format: OutputFormat,
-) -> anyhow::Result<()> {
+pub fn scan(store: &Store, backend: &dyn TpmBackend, format: OutputFormat) -> anyhow::Result<()> {
     let issues = detect_issues(store, backend)?;
 
     let report = ScanReport {
@@ -33,10 +29,12 @@ pub fn scan(
 
     if !issues.is_empty() {
         eprintln!();
-        let diag =
-            Diagnostic::warning(DiagCode::E0006, format!("{} issue(s) detected", issues.len()))
-                .with_suggestion("run `tpm repair plan` to see proposed fixes")
-                .with_suggestion("run `tpm repair apply` to fix automatically");
+        let diag = Diagnostic::warning(
+            DiagCode::E0006,
+            format!("{} issue(s) detected", issues.len()),
+        )
+        .with_suggestion("run `tpm repair plan` to see proposed fixes")
+        .with_suggestion("run `tpm repair apply` to fix automatically");
         eprintln!("{}", diag.render_text());
     }
 
@@ -45,11 +43,7 @@ pub fn scan(
 
 // -- repair plan --
 
-pub fn plan(
-    store: &Store,
-    backend: &dyn TpmBackend,
-    format: OutputFormat,
-) -> anyhow::Result<()> {
+pub fn plan(store: &Store, backend: &dyn TpmBackend, format: OutputFormat) -> anyhow::Result<()> {
     let issues = detect_issues(store, backend)?;
 
     if issues.is_empty() {
@@ -77,11 +71,7 @@ pub fn plan(
 
 // -- repair apply --
 
-pub fn apply(
-    store: &Store,
-    backend: &dyn TpmBackend,
-    format: OutputFormat,
-) -> anyhow::Result<()> {
+pub fn apply(store: &Store, backend: &dyn TpmBackend, format: OutputFormat) -> anyhow::Result<()> {
     let issues = detect_issues(store, backend)?;
 
     if issues.is_empty() {
@@ -289,10 +279,7 @@ fn detect_issues(store: &Store, backend: &dyn TpmBackend) -> anyhow::Result<Vec<
     // Check 7: fragile policies (PCR 0-7 boot-sensitive)
     for policy in store.list_policies()? {
         let report = tpm_core::service::rate_policy(&policy);
-        if matches!(
-            report.overall,
-            tpm_core::service::FragilityRating::High
-        ) {
+        if matches!(report.overall, tpm_core::service::FragilityRating::High) {
             issues.push(Issue {
                 severity: "warning".to_string(),
                 code: "REPAIR007".to_string(),
@@ -348,7 +335,10 @@ impl TextRenderable for ScanReport {
                 "info" => "INFO",
                 _ => "    ",
             };
-            out.push_str(&format!("  [{}] [{}] {}\n", icon, issue.code, issue.message));
+            out.push_str(&format!(
+                "  [{}] [{}] {}\n",
+                icon, issue.code, issue.message
+            ));
             if let Some(ref obj) = issue.object {
                 out.push_str(&format!("         object: {}\n", obj));
             }

@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Fetch git deps (the public tegmentum/* siblings) via the git CLI so the
+  # same flow works locally under `act`.
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # System libraries the build links against: aws-lc-rs (rustls/tpm-tls)
+      # needs cmake + clang; secure-log-sqlite needs libsqlite3; openssl-sys
+      # needs libssl + pkg-config.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake clang libclang-dev pkg-config libssl-dev libsqlite3-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Build
+        run: cargo build --workspace --all-targets
+
+      # TPM-backed tests self-skip without TPM_VTPM_COMPONENT, so CI exercises
+      # the deterministic suite; the vTPM path is validated on a TPM-equipped host.
+      - name: Test (default features)
+        run: cargo test --workspace
+
+      - name: Test (x509-authority feature)
+        run: cargo test -p citadel-mesh --features x509-authority

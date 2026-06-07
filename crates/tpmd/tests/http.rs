@@ -121,8 +121,7 @@ async fn identities_rotate_sets_rotated_from() {
     )
     .await;
 
-    let (status, body) =
-        send_json(&app, Method::POST, "/v1/identities/rot/rotate", None).await;
+    let (status, body) = send_json(&app, Method::POST, "/v1/identities/rot/rotate", None).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["new_key_object_id"].is_string());
     assert!(
@@ -149,8 +148,7 @@ async fn policy_fragility_high_for_pcr_0() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    let (status, body) =
-        send_json(&app, Method::GET, "/v1/policies/fragile/fragility", None).await;
+    let (status, body) = send_json(&app, Method::GET, "/v1/policies/fragile/fragility", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["policy"], "fragile");
     assert_eq!(body["overall"], "high");
@@ -160,8 +158,7 @@ async fn policy_fragility_high_for_pcr_0() {
 #[tokio::test]
 async fn policy_fragility_unknown_returns_404() {
     let app = new_app();
-    let (status, _) =
-        send(&app, Method::GET, "/v1/policies/ghost/fragility", None).await;
+    let (status, _) = send(&app, Method::GET, "/v1/policies/ghost/fragility", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -192,7 +189,7 @@ async fn apply_creates_resources_from_manifest() {
     .await;
 
     assert_eq!(status, StatusCode::OK, "body={}", body);
-    assert!(body["correlation_id"].as_str().unwrap().len() > 0);
+    assert!(!body["correlation_id"].as_str().unwrap().is_empty());
     let created = body["created"].as_array().unwrap();
     assert!(created.iter().any(|v| v == "policy:boot"));
     assert!(created.iter().any(|v| v == "key:signing/release"));
@@ -250,8 +247,7 @@ async fn witness_accepts_new_submission() {
         "signature_hex": "bb".repeat(16),
         "signer_identity": "abc",
     });
-    let (status, body) =
-        send_json(&app, Method::POST, "/v1/audit/witness", Some(sub)).await;
+    let (status, body) = send_json(&app, Method::POST, "/v1/audit/witness", Some(sub)).await;
     assert_eq!(status, StatusCode::OK, "body={}", body);
     assert_eq!(body["accepted"], true);
 }
@@ -298,8 +294,7 @@ async fn witness_get_returns_latest_record() {
     });
     send_json(&app, Method::POST, "/v1/audit/witness", Some(first)).await;
 
-    let (status, body) =
-        send_json(&app, Method::GET, "/v1/audit/witness/default", None).await;
+    let (status, body) = send_json(&app, Method::GET, "/v1/audit/witness/default", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["segment_id"], 1);
     assert_eq!(body["checkpoint_hash_hex"], "aa".repeat(32));
@@ -308,8 +303,7 @@ async fn witness_get_returns_latest_record() {
 #[tokio::test]
 async fn witness_get_missing_stream_404() {
     let app = new_app();
-    let (status, _) =
-        send(&app, Method::GET, "/v1/audit/witness/ghost", None).await;
+    let (status, _) = send(&app, Method::GET, "/v1/audit/witness/ghost", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -333,8 +327,7 @@ async fn witness_idempotent_republish_is_accepted() {
 
     // Second publish of the exact same submission: accepted,
     // idempotent — no new row.
-    let (status, body) =
-        send_json(&app, Method::POST, "/v1/audit/witness", Some(sub)).await;
+    let (status, body) = send_json(&app, Method::POST, "/v1/audit/witness", Some(sub)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["idempotent"], true);
 }
@@ -354,8 +347,7 @@ async fn witness_list_returns_full_history() {
         });
         send_json(&app, Method::POST, "/v1/audit/witness", Some(sub)).await;
     }
-    let (status, body) =
-        send_json(&app, Method::GET, "/v1/audit/witness/default/list", None).await;
+    let (status, body) = send_json(&app, Method::GET, "/v1/audit/witness/default/list", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["count"], 3);
     let records = body["records"].as_array().unwrap();

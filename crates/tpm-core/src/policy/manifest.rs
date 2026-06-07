@@ -292,7 +292,9 @@ spec: {}
 "#;
         let m = Manifest::from_yaml(yaml).unwrap();
         let issues = m.validate();
-        assert!(issues.iter().any(|i| i.message.contains("unsupported apiVersion")));
+        assert!(issues
+            .iter()
+            .any(|i| i.message.contains("unsupported apiVersion")));
     }
 
     #[test]

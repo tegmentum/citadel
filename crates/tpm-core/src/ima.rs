@@ -66,7 +66,9 @@ impl ImaLog {
 
     /// Every measured file's `(algo, hash)`, for allow/deny appraisal.
     pub fn file_hashes(&self) -> impl Iterator<Item = (&str, &[u8])> {
-        self.entries.iter().map(|e| (e.file_algo.as_str(), e.file_hash.as_slice()))
+        self.entries
+            .iter()
+            .map(|e| (e.file_algo.as_str(), e.file_hash.as_slice()))
     }
 }
 
@@ -100,11 +102,19 @@ fn parse_line(line: &str) -> Option<ImaEntry> {
         _ => return None,
     };
 
-    Some(ImaEntry { pcr, template_hash, template, file_algo, file_hash, path, signature })
+    Some(ImaEntry {
+        pcr,
+        template_hash,
+        template,
+        file_algo,
+        file_hash,
+        path,
+        signature,
+    })
 }
 
 fn unhex(s: &str) -> Option<Vec<u8>> {
-    if s.is_empty() || s.len() % 2 != 0 {
+    if s.is_empty() || !s.len().is_multiple_of(2) {
         return None;
     }
     (0..s.len())

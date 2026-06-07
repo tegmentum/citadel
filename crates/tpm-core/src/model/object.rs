@@ -91,9 +91,11 @@ impl std::fmt::Display for ObjectKind {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum Algorithm {
     Rsa2048,
     Rsa3072,
+    #[default]
     EccP256,
     EccP384,
 }
@@ -106,12 +108,6 @@ impl Algorithm {
             Algorithm::EccP256,
             Algorithm::EccP384,
         ]
-    }
-}
-
-impl Default for Algorithm {
-    fn default() -> Self {
-        Self::EccP256
     }
 }
 

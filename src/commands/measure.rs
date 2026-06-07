@@ -102,7 +102,8 @@ pub fn enroll(
 ) -> anyhow::Result<()> {
     let exe = std::env::current_exe()
         .map_err(|e| anyhow::anyhow!("locating the Citadel executable: {e}"))?;
-    let data = std::fs::read(&exe).map_err(|e| anyhow::anyhow!("reading {}: {e}", exe.display()))?;
+    let data =
+        std::fs::read(&exe).map_err(|e| anyhow::anyhow!("reading {}: {e}", exe.display()))?;
     let digest = hash_for_bank(bank, &data)?;
     let digest_hex = hex(&digest);
 
@@ -207,7 +208,10 @@ pub fn latest_agent_enrollment(store_path: &Path) -> anyhow::Result<Option<Agent
     let v: serde_json::Value = serde_json::from_slice(&row.payload)?;
     Ok(Some(AgentProvenance {
         version: v.get("version").and_then(|x| x.as_str()).map(String::from),
-        digest_alg: v.get("digest_alg").and_then(|x| x.as_str()).map(String::from),
+        digest_alg: v
+            .get("digest_alg")
+            .and_then(|x| x.as_str())
+            .map(String::from),
         digest: v.get("digest").and_then(|x| x.as_str()).map(String::from),
         ima_corroborated: v.get("ima_corroborated").and_then(|x| x.as_bool()),
     }))
@@ -216,8 +220,9 @@ pub fn latest_agent_enrollment(store_path: &Path) -> anyhow::Result<Option<Agent
 /// File-data digest the kernel IMA log recorded for `target`, if any:
 /// `(alg, hex)` from the matching `ascii_runtime_measurements` line.
 fn ima_digest_for_path(ima_path: &Path, target: &Path) -> anyhow::Result<Option<(String, String)>> {
-    let contents = std::fs::read_to_string(ima_path)
-        .map_err(|e| anyhow::anyhow!("reading IMA measurements from {}: {e}", ima_path.display()))?;
+    let contents = std::fs::read_to_string(ima_path).map_err(|e| {
+        anyhow::anyhow!("reading IMA measurements from {}: {e}", ima_path.display())
+    })?;
     let target_str = target.to_string_lossy();
     for line in contents.lines() {
         if let Some(e) = parse_ima_line(line) {
@@ -249,11 +254,16 @@ impl TextRenderable for EnrollOutput {
             self.seqno, self.version, self.path, self.digest_alg, self.digest
         );
         match self.pcr {
-            Some(i) => out.push_str(&format!("  pcr:      extended {}[{}]\n", self.digest_alg, i)),
+            Some(i) => out.push_str(&format!(
+                "  pcr:      extended {}[{}]\n",
+                self.digest_alg, i
+            )),
             None => out.push_str("  pcr:      (not extended)\n"),
         }
         match self.ima_corroborated {
-            Some(true) => out.push_str("  ima:      corroborated (kernel measured the same hash)\n"),
+            Some(true) => {
+                out.push_str("  ima:      corroborated (kernel measured the same hash)\n")
+            }
             Some(false) => out.push_str("  ima:      NOT corroborated (see warning)\n"),
             None => {}
         }
@@ -640,8 +650,7 @@ mod tests {
 
     #[test]
     fn parses_ima_ng_line() {
-        let line =
-            "10 a1b2c3 ima-ng sha256:deadbeef /usr/bin/bash";
+        let line = "10 a1b2c3 ima-ng sha256:deadbeef /usr/bin/bash";
         let e = parse_ima_line(line).expect("should parse");
         assert_eq!(e.pcr, "10");
         assert_eq!(e.template, "ima-ng");
@@ -680,19 +689,46 @@ mod tests {
         let store = Store::open(path).unwrap();
 
         crate::commands::identity::init(
-            &store, &backend, "auditor", "generic", "ecc-p256", None, None, None, None, false,
-            None, OutputFormat::Json,
+            &store,
+            &backend,
+            "auditor",
+            "generic",
+            "ecc-p256",
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            OutputFormat::Json,
         )
         .unwrap();
 
         let app = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(app.path(), b"workload").unwrap();
-        file(path, &backend, app.path(), "binary", "sha256", None, OutputFormat::Json).unwrap();
+        file(
+            path,
+            &backend,
+            app.path(),
+            "binary",
+            "sha256",
+            None,
+            OutputFormat::Json,
+        )
+        .unwrap();
         checkpoint(path, &backend, None, "sha256", OutputFormat::Json).unwrap();
 
         // Sign with anti-rollback: binds NV counter 1 into the checkpoint.
-        sign(path, &backend, 1, "auditor", None, Some(ANCHOR_COUNTER_NV_INDEX), OutputFormat::Json)
-            .unwrap();
+        sign(
+            path,
+            &backend,
+            1,
+            "auditor",
+            None,
+            Some(ANCHOR_COUNTER_NV_INDEX),
+            OutputFormat::Json,
+        )
+        .unwrap();
 
         // The checkpoint chain verifies (the bound counter is reconstructed).
         assert_eq!(
@@ -701,14 +737,28 @@ mod tests {
         );
 
         // Live NV (1) matches the latest checkpoint counter (1): no rollback.
-        rollback_check(path, &backend, Some(ANCHOR_COUNTER_NV_INDEX), OutputFormat::Json).unwrap();
+        rollback_check(
+            path,
+            &backend,
+            Some(ANCHOR_COUNTER_NV_INDEX),
+            OutputFormat::Json,
+        )
+        .unwrap();
 
         // Advance the NV counter without recording a checkpoint, as if a
         // signed checkpoint were removed: now detected.
         anchor_counter(&backend, Some(ANCHOR_COUNTER_NV_INDEX), OutputFormat::Json).unwrap();
-        let err = rollback_check(path, &backend, Some(ANCHOR_COUNTER_NV_INDEX), OutputFormat::Json)
-            .expect_err("advancing the live counter past recorded checkpoints is a rollback");
-        assert!(err.to_string().contains("rollback"), "unexpected error: {err}");
+        let err = rollback_check(
+            path,
+            &backend,
+            Some(ANCHOR_COUNTER_NV_INDEX),
+            OutputFormat::Json,
+        )
+        .expect_err("advancing the live counter past recorded checkpoints is a rollback");
+        assert!(
+            err.to_string().contains("rollback"),
+            "unexpected error: {err}"
+        );
     }
 
     /// PolicyAuthorize end-to-end: a key bound `--authorized-by` an
@@ -730,19 +780,48 @@ mod tests {
         // The offline authority (upgrade approver) and a signing key bound
         // to it via PolicyAuthorize over PCR 14.
         crate::commands::identity::init(
-            &store, &backend, "release-authority", "attestation", "ecc-p256", None, None, None,
-            None, true, None, OutputFormat::Json,
+            &store,
+            &backend,
+            "release-authority",
+            "attestation",
+            "ecc-p256",
+            None,
+            None,
+            None,
+            None,
+            true,
+            None,
+            OutputFormat::Json,
         )
         .unwrap();
         crate::commands::identity::init(
-            &store, &backend, "anchor", "attestation", "ecc-p256", None, None, None, Some(&[14]),
-            false, Some("release-authority"), OutputFormat::Json,
+            &store,
+            &backend,
+            "anchor",
+            "attestation",
+            "ecc-p256",
+            None,
+            None,
+            None,
+            Some(&[14]),
+            false,
+            Some("release-authority"),
+            OutputFormat::Json,
         )
         .unwrap();
 
         let app = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(app.path(), b"workload").unwrap();
-        file(path, &backend, app.path(), "binary", "sha256", None, OutputFormat::Json).unwrap();
+        file(
+            path,
+            &backend,
+            app.path(),
+            "binary",
+            "sha256",
+            None,
+            OutputFormat::Json,
+        )
+        .unwrap();
         checkpoint(path, &backend, None, "sha256", OutputFormat::Json).unwrap();
 
         // No approval yet: the key must refuse to sign this state.
@@ -755,8 +834,16 @@ mod tests {
 
         // The authority approves the current PCR 14 state → witnessed in
         // the MMA log as a `policy.approve` event.
-        policy::approve(&store, path, &backend, "release-authority", &[14], "sha256", OutputFormat::Json)
-            .unwrap();
+        policy::approve(
+            &store,
+            path,
+            &backend,
+            "release-authority",
+            &[14],
+            "sha256",
+            OutputFormat::Json,
+        )
+        .unwrap();
 
         // Now the same key signs (the upgrade ceremony, no re-key).
         sign(path, &backend, 1, "anchor", None, None, OutputFormat::Json).unwrap();
@@ -789,19 +876,48 @@ mod tests {
         let store = Store::open(path).unwrap();
 
         crate::commands::identity::init(
-            &store, &backend, "release-authority", "attestation", "ecc-p256", None, None, None,
-            None, true, None, OutputFormat::Json,
+            &store,
+            &backend,
+            "release-authority",
+            "attestation",
+            "ecc-p256",
+            None,
+            None,
+            None,
+            None,
+            true,
+            None,
+            OutputFormat::Json,
         )
         .unwrap();
         crate::commands::identity::init(
-            &store, &backend, "anchor", "attestation", "ecc-p256", None, None, None, Some(&[14]),
-            false, Some("release-authority"), OutputFormat::Json,
+            &store,
+            &backend,
+            "anchor",
+            "attestation",
+            "ecc-p256",
+            None,
+            None,
+            None,
+            Some(&[14]),
+            false,
+            Some("release-authority"),
+            OutputFormat::Json,
         )
         .unwrap();
 
         let app = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(app.path(), b"workload").unwrap();
-        file(path, &backend, app.path(), "binary", "sha256", None, OutputFormat::Json).unwrap();
+        file(
+            path,
+            &backend,
+            app.path(),
+            "binary",
+            "sha256",
+            None,
+            OutputFormat::Json,
+        )
+        .unwrap();
         checkpoint(path, &backend, None, "sha256", OutputFormat::Json).unwrap();
 
         // No witnessed approval: the TPM-bound key refuses to sign.
@@ -813,8 +929,16 @@ mod tests {
         );
 
         // Authority approves the live PCR 14 state → logged in the MMA.
-        policy::approve(&store, path, &backend, "release-authority", &[14], "sha256", OutputFormat::Json)
-            .unwrap();
+        policy::approve(
+            &store,
+            path,
+            &backend,
+            "release-authority",
+            &[14],
+            "sha256",
+            OutputFormat::Json,
+        )
+        .unwrap();
 
         // The TPM now signs under PolicyAuthorize with the logged approval.
         sign(path, &backend, 1, "anchor", None, None, OutputFormat::Json).unwrap();
@@ -885,18 +1009,44 @@ mod tests {
         std::fs::write(secret_file.path(), b"deploy-key").unwrap();
 
         // Measure v1 and anchor the Merkle root into PCR 23.
-        file(path, &backend, app1.path(), "binary", "sha256", None, OutputFormat::Json).unwrap();
+        file(
+            path,
+            &backend,
+            app1.path(),
+            "binary",
+            "sha256",
+            None,
+            OutputFormat::Json,
+        )
+        .unwrap();
         checkpoint(path, &backend, Some(23), "sha256", OutputFormat::Json).unwrap();
 
         // Seal a secret to the attested set; it unseals now.
-        secret::seal(&store, &backend, "secret/deploy", secret_file.path(), Some("attested"), OutputFormat::Json).unwrap();
+        secret::seal(
+            &store,
+            &backend,
+            "secret/deploy",
+            secret_file.path(),
+            Some("attested"),
+            OutputFormat::Json,
+        )
+        .unwrap();
         secret::unseal(&store, &backend, "secret/deploy", None, OutputFormat::Json)
             .expect("unseals while the attested set is unchanged");
 
         // A new measurement changes the anchored PCR (the attested set).
         let app2 = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(app2.path(), b"app-v2-rogue").unwrap();
-        file(path, &backend, app2.path(), "binary", "sha256", None, OutputFormat::Json).unwrap();
+        file(
+            path,
+            &backend,
+            app2.path(),
+            "binary",
+            "sha256",
+            None,
+            OutputFormat::Json,
+        )
+        .unwrap();
         checkpoint(path, &backend, Some(23), "sha256", OutputFormat::Json).unwrap();
 
         // The secret is now sealed to a state that no longer holds.

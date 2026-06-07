@@ -63,9 +63,7 @@ fn run(args: &[String]) -> anyhow::Result<()> {
         "status" => cmd_status(&store, &backend, format),
         "init" => cmd_init(&store, format),
         "key" if cmd_args.len() > 1 => match cmd_args[1] {
-            "create" if cmd_args.len() > 2 => {
-                cmd_key_create(&store, &backend, cmd_args[2], format)
-            }
+            "create" if cmd_args.len() > 2 => cmd_key_create(&store, &backend, cmd_args[2], format),
             "list" => cmd_key_list(&store, format),
             "show" if cmd_args.len() > 2 => cmd_key_show(&store, cmd_args[2], format),
             "delete" if cmd_args.len() > 2 => cmd_key_delete(&store, cmd_args[2], format),
@@ -259,7 +257,14 @@ fn cmd_key_show(store: &Store, path_str: &str, _format: OutputFormat) -> anyhow:
     println!("id:        {}", obj.id);
     println!("kind:      {}", obj.kind);
     println!("algorithm: {}", obj.algorithm);
-    println!("handle:    {}", if obj.handle_blob.is_some() { "present" } else { "none" });
+    println!(
+        "handle:    {}",
+        if obj.handle_blob.is_some() {
+            "present"
+        } else {
+            "none"
+        }
+    );
     Ok(())
 }
 
@@ -411,7 +416,10 @@ fn cmd_capabilities(backend: &dyn TpmBackend, _format: OutputFormat) -> anyhow::
     println!("TPM Capabilities\n");
     println!("  backend:     {}", status.backend_type);
     println!("  manufacturer: {}", status.manufacturer);
-    println!("  available:    {}", if status.available { "yes" } else { "no" });
+    println!(
+        "  available:    {}",
+        if status.available { "yes" } else { "no" }
+    );
     println!("\n  algorithms:");
     for alg in tpm_core::model::Algorithm::all() {
         println!("    - {}", alg);

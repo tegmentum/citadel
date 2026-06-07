@@ -17,7 +17,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use citadel_agent::http::{mtls_client, router, serve_mtls, HttpTransport};
-use citadel_agent::{build_node_with_backend, mint_tls_identity, peer_id, peer_public_key, spawn_node};
+use citadel_agent::{
+    build_node_with_backend, mint_tls_identity, peer_id, peer_public_key, spawn_node,
+};
 use citadel_mesh::id::MeshId;
 use citadel_mesh::node::NodeConfig;
 use citadel_mesh::NodeId;
@@ -59,13 +61,17 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let mesh_id = MeshId::new(std::env::var("CITADEL_MESH_ID").unwrap_or_else(|_| "citadel".into()));
+    let mesh_id =
+        MeshId::new(std::env::var("CITADEL_MESH_ID").unwrap_or_else(|_| "citadel".into()));
     let seed: u8 = std::env::var("CITADEL_SEED")
         .map_err(|_| anyhow::anyhow!("CITADEL_SEED is required (0-255)"))?
         .parse()?;
     let role = std::env::var("CITADEL_ROLE").unwrap_or_else(|_| "worker".into());
     let listen = std::env::var("CITADEL_LISTEN").unwrap_or_else(|_| "127.0.0.1:7800".into());
-    let tick_ms: u64 = std::env::var("CITADEL_TICK_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(500);
+    let tick_ms: u64 = std::env::var("CITADEL_TICK_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(500);
     let peers_cfg: Vec<(u8, String)> =
         serde_json::from_str(&std::env::var("CITADEL_PEERS").unwrap_or_else(|_| "[]".into()))?;
 
@@ -85,7 +91,8 @@ async fn main() -> anyhow::Result<()> {
         .map(|(s, url)| (peer_id(&mesh_id, epoch, *s), url.clone()))
         .collect();
 
-    let (mut node, id) = build_node_with_backend(&mesh_id, seed, &role, config, &peers, make_backend());
+    let (mut node, id) =
+        build_node_with_backend(&mesh_id, seed, &role, config, &peers, make_backend());
 
     // E2: mint a mutual-TLS identity on this node's TPM, if the backend can
     // (the demo MockBackend can't → `None` → plain HTTP). Peers learn our cert
@@ -98,7 +105,10 @@ async fn main() -> anyhow::Result<()> {
     let transport = match &mtls {
         Some(identity) => {
             tracing::info!("citadel-agent {id} (seed {seed}) mutual-TLS on {listen}");
-            Arc::new(HttpTransport::with_client(url_map, mtls_client(identity, peer_certs.clone())?))
+            Arc::new(HttpTransport::with_client(
+                url_map,
+                mtls_client(identity, peer_certs.clone())?,
+            ))
         }
         None => {
             tracing::info!("citadel-agent {id} (seed {seed}) plain HTTP on {listen}");

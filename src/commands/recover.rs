@@ -20,15 +20,12 @@ pub fn list(format: OutputFormat) -> anyhow::Result<()> {
 
 /// Show a specific recovery playbook.
 pub fn show(name: &str, format: OutputFormat) -> anyhow::Result<()> {
-    let playbook = PLAYBOOKS
-        .iter()
-        .find(|p| p.name == name)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "playbook not found: '{}'\nrun `tpm recover list` to see available playbooks",
-                name
-            )
-        })?;
+    let playbook = PLAYBOOKS.iter().find(|p| p.name == name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "playbook not found: '{}'\nrun `tpm recover list` to see available playbooks",
+            name
+        )
+    })?;
 
     let detail = PlaybookDetail {
         name: playbook.name.to_string(),

@@ -19,11 +19,17 @@ pub enum Screen {
 pub enum Modal {
     None,
     /// Text input for creating a key. Holds the current input buffer.
-    CreateKey { input: String },
+    CreateKey {
+        input: String,
+    },
     /// Confirmation to delete the selected object.
-    ConfirmDelete { path: String },
+    ConfirmDelete {
+        path: String,
+    },
     /// Status message shown briefly after an action.
-    Message { text: String },
+    Message {
+        text: String,
+    },
 }
 
 pub struct App {
@@ -40,6 +46,12 @@ pub struct App {
     pub health_score: u8,
     pub selected_index: usize,
     pub command_preview: Option<String>,
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl App {
@@ -66,11 +78,7 @@ impl App {
         self.objects = store.list_objects().unwrap_or_default();
         self.policies = store.list_policies().unwrap_or_default();
         self.audit_entries = store.list_audit_log(None, None, 100).unwrap_or_default();
-        self.active_profile = store
-            .get_active_profile()
-            .ok()
-            .flatten()
-            .map(|p| p.name);
+        self.active_profile = store.get_active_profile().ok().flatten().map(|p| p.name);
         self.compute_health();
         self.update_command_preview();
     }
@@ -245,9 +253,7 @@ impl App {
                         };
                         self.refresh(store, backend);
                         // Adjust selection
-                        if self.selected_index > 0
-                            && self.selected_index >= self.objects.len()
-                        {
+                        if self.selected_index > 0 && self.selected_index >= self.objects.len() {
                             self.selected_index = self.objects.len().saturating_sub(1);
                         }
                     } else {

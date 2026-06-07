@@ -113,7 +113,10 @@ fn diagnostic_rendering() {
 
     let json = diag.render_json();
     assert_eq!(json["code"], "TPM0004");
-    assert_eq!(json["suggestions"][0], "run `tpm key list` to see available keys");
+    assert_eq!(
+        json["suggestions"][0],
+        "run `tpm key list` to see available keys"
+    );
 }
 
 #[test]

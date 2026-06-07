@@ -117,15 +117,13 @@ pub fn baseline_save(
 ) -> anyhow::Result<()> {
     let values = backend.pcr_read(bank, indices)?;
 
-    let values_json = serde_json::json!(
-        values
-            .iter()
-            .map(|v| serde_json::json!({
-                "index": v.index,
-                "digest": hex_encode(&v.digest),
-            }))
-            .collect::<Vec<_>>()
-    );
+    let values_json = serde_json::json!(values
+        .iter()
+        .map(|v| serde_json::json!({
+            "index": v.index,
+            "digest": hex_encode(&v.digest),
+        }))
+        .collect::<Vec<_>>());
 
     store.save_pcr_baseline(name, bank, &values_json)?;
     store.log_action(
@@ -182,10 +180,7 @@ pub fn baseline_diff(
 
     let mut diffs = Vec::new();
     for (saved, current_val) in saved_entries.iter().zip(current.iter()) {
-        let saved_digest = saved
-            .get("digest")
-            .and_then(|d| d.as_str())
-            .unwrap_or("");
+        let saved_digest = saved.get("digest").and_then(|d| d.as_str()).unwrap_or("");
         let current_digest = hex_encode(&current_val.digest);
         let matches = saved_digest == current_digest;
         diffs.push(PcrDiffEntry {
@@ -285,14 +280,13 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 fn hex_decode(s: &str) -> anyhow::Result<Vec<u8>> {
     let s = s.trim();
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         anyhow::bail!("hex string has odd length");
     }
     (0..s.len())
         .step_by(2)
         .map(|i| {
-            u8::from_str_radix(&s[i..i + 2], 16)
-                .map_err(|e| anyhow::anyhow!("invalid hex: {e}"))
+            u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| anyhow::anyhow!("invalid hex: {e}"))
         })
         .collect()
 }

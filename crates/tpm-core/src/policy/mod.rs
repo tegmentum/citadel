@@ -9,6 +9,9 @@ pub use manifest::{
 
 /// Result of parsing a YAML document that may be either a single
 /// PolicyDefinition or a full Manifest.
+// A short-lived parse result constructed rarely; the size asymmetry between the
+// variants doesn't warrant boxing.
+#[allow(clippy::large_enum_variant)]
 pub enum ParsedPolicyDocument {
     Single(PolicyDefinition),
     Manifest(Manifest),
@@ -21,7 +24,7 @@ pub fn from_any_yaml(text: &str) -> Result<ParsedPolicyDocument, serde_yaml::Err
     if let Some(m) = try_parse_manifest(text) {
         return Ok(ParsedPolicyDocument::Manifest(m));
     }
-    Ok(ParsedPolicyDocument::Single(
-        PolicyDefinition::from_yaml(text)?,
-    ))
+    Ok(ParsedPolicyDocument::Single(PolicyDefinition::from_yaml(
+        text,
+    )?))
 }

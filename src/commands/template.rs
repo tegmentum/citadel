@@ -87,10 +87,12 @@ pub fn list(format: OutputFormat) -> anyhow::Result<()> {
 }
 
 pub fn show(name: &str, format: OutputFormat) -> anyhow::Result<()> {
-    let tmpl = TEMPLATES
-        .iter()
-        .find(|t| t.name == name)
-        .ok_or_else(|| anyhow::anyhow!("template not found: {}\nrun `tpm template list` to see available templates", name))?;
+    let tmpl = TEMPLATES.iter().find(|t| t.name == name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "template not found: {}\nrun `tpm template list` to see available templates",
+            name
+        )
+    })?;
 
     let detail = TemplateDetail {
         name: tmpl.name.to_string(),

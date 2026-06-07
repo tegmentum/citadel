@@ -12,8 +12,14 @@ use citadel_mesh::NodeId;
 
 fn mesh_of(n: u8) -> (Mesh, Vec<NodeId>) {
     let mut mesh = Mesh::new("prod-east-1");
-    let cfg = NodeConfig { witness_count: 3, attestation_interval: 3, ..NodeConfig::default() };
-    let ids: Vec<NodeId> = (1..=n).map(|s| mesh.add_node(s, "worker", cfg.clone())).collect();
+    let cfg = NodeConfig {
+        witness_count: 3,
+        attestation_interval: 3,
+        ..NodeConfig::default()
+    };
+    let ids: Vec<NodeId> = (1..=n)
+        .map(|s| mesh.add_node(s, "worker", cfg.clone()))
+        .collect();
     mesh.wire_full_membership();
     (mesh, ids)
 }
@@ -70,7 +76,10 @@ fn runtime_escalation_is_sticky_against_a_clean_requote() {
 
     mesh.set_runtime_policy_all(RuntimePolicy::new().deny("sha256", evil_hash()));
     mesh.report_runtime(verifier, subject, &with_evil());
-    assert_eq!(mesh.trust_of(verifier, subject), Some(TrustState::Suspicious));
+    assert_eq!(
+        mesh.trust_of(verifier, subject),
+        Some(TrustState::Suspicious)
+    );
 
     // The platform keeps producing pristine boot quotes — runtime integrity
     // failed regardless, so trust must NOT silently recover.
@@ -96,9 +105,16 @@ fn runtime_escalation_survives_a_restart() {
 
     // A fresh node hydrates the persisted escalation.
     let mut fresh = Mesh::new("prod-east-1");
-    let cfg = NodeConfig { witness_count: 3, attestation_interval: 3, ..NodeConfig::default() };
+    let cfg = NodeConfig {
+        witness_count: 3,
+        attestation_interval: 3,
+        ..NodeConfig::default()
+    };
     fresh.add_node(1, "worker", cfg);
-    assert!(fresh.node_mut(verifier).hydrate(&store).unwrap(), "snapshot present");
+    assert!(
+        fresh.node_mut(verifier).hydrate(&store).unwrap(),
+        "snapshot present"
+    );
     assert!(
         fresh.node(verifier).runtime_escalated(subject),
         "the runtime escalation is restored on restart, not silently cleared"

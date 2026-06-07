@@ -73,8 +73,7 @@ fn key_create_list_show_delete() {
     let store = dir.path().join("test.db");
 
     // Create
-    let (stdout, _, ok) = run(tpm_cmd_with_store(&store)
-        .args(["key", "create", "signing/test"]));
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store).args(["key", "create", "signing/test"]));
     assert!(ok);
     assert!(stdout.contains("key created: signing/test"));
     assert!(stdout.contains("ecc-p256"));
@@ -85,16 +84,14 @@ fn key_create_list_show_delete() {
     assert!(stdout.contains("signing/test"));
 
     // Show
-    let (stdout, _, ok) = run(tpm_cmd_with_store(&store)
-        .args(["key", "show", "signing/test"]));
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store).args(["key", "show", "signing/test"]));
     assert!(ok);
     assert!(stdout.contains("path:"));
     assert!(stdout.contains("signing/test"));
     assert!(stdout.contains("signing key"));
 
     // Delete
-    let (stdout, _, ok) = run(tpm_cmd_with_store(&store)
-        .args(["key", "delete", "signing/test"]));
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store).args(["key", "delete", "signing/test"]));
     assert!(ok);
     assert!(stdout.contains("key deleted"));
 
@@ -110,8 +107,7 @@ fn key_create_duplicate_fails() {
     let store = dir.path().join("test.db");
 
     run(tpm_cmd_with_store(&store).args(["key", "create", "signing/dup"]));
-    let (_, stderr, ok) = run(tpm_cmd_with_store(&store)
-        .args(["key", "create", "signing/dup"]));
+    let (_, stderr, ok) = run(tpm_cmd_with_store(&store).args(["key", "create", "signing/dup"]));
     assert!(!ok);
     assert!(stderr.contains("TPM0007") || stderr.contains("already exists"));
 }
@@ -131,8 +127,7 @@ fn json_output_valid() {
     let store = dir.path().join("test.db");
 
     run(tpm_cmd_with_store(&store).args(["key", "create", "signing/json-test"]));
-    let (stdout, _, ok) = run(tpm_cmd_with_store(&store)
-        .args(["key", "list", "--format", "json"]));
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store).args(["key", "list", "--format", "json"]));
     assert!(ok);
 
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
@@ -157,8 +152,8 @@ fn policy_create_list_delete() {
     let dir = tempfile::tempdir().unwrap();
     let store = dir.path().join("test.db");
 
-    let (stdout, _, ok) = run(tpm_cmd_with_store(&store)
-        .args(["policy", "create", "boot", "--pcr", "7,11"]));
+    let (stdout, _, ok) =
+        run(tpm_cmd_with_store(&store).args(["policy", "create", "boot", "--pcr", "7,11"]));
     assert!(ok);
     assert!(stdout.contains("policy created: boot"));
 
@@ -167,8 +162,7 @@ fn policy_create_list_delete() {
     assert!(stdout.contains("boot"));
     assert!(stdout.contains("sha256:7,11"));
 
-    let (stdout, _, ok) = run(tpm_cmd_with_store(&store)
-        .args(["policy", "delete", "boot"]));
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store).args(["policy", "delete", "boot"]));
     assert!(ok);
     assert!(stdout.contains("deleted"));
 }
@@ -188,8 +182,7 @@ fn secret_seal_unseal() {
     assert!(ok);
     assert!(stdout.contains("secret sealed: db/pass"));
 
-    let (stdout, _, ok) = run(tpm_cmd_with_store(&store)
-        .args(["secret", "unseal", "db/pass"]));
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store).args(["secret", "unseal", "db/pass"]));
     assert!(ok);
     assert!(stdout.contains("super-secret-value"));
 }
@@ -203,18 +196,22 @@ fn attestation_flow() {
     let quote_file = dir.path().join("quote.json");
 
     // Create AK
-    let (stdout, _, ok) = run(tpm_cmd_with_store(&store)
-        .args(["attest", "ak-create", "attest/main"]));
+    let (stdout, _, ok) =
+        run(tpm_cmd_with_store(&store).args(["attest", "ak-create", "attest/main"]));
     assert!(ok);
     assert!(stdout.contains("attestation key created"));
 
     // Generate quote
     let (stdout, _, ok) = run(tpm_cmd_with_store(&store)
         .args([
-            "attest", "quote",
-            "--ak", "attest/main",
-            "--pcr", "0,7",
-            "--nonce", "test-challenge",
+            "attest",
+            "quote",
+            "--ak",
+            "attest/main",
+            "--pcr",
+            "0,7",
+            "--nonce",
+            "test-challenge",
             "--output",
         ])
         .arg(&quote_file));
@@ -243,8 +240,7 @@ fn object_tree() {
     run(tpm_cmd_with_store(&store)
         .args(["secret", "seal", "secret/b", "--input"])
         .arg(&secret_file));
-    run(tpm_cmd_with_store(&store)
-        .args(["policy", "create", "pol", "--pcr", "7"]));
+    run(tpm_cmd_with_store(&store).args(["policy", "create", "pol", "--pcr", "7"]));
 
     let (stdout, _, ok) = run(tpm_cmd_with_store(&store).args(["object", "tree"]));
     assert!(ok);
@@ -300,8 +296,8 @@ fn plan_mode_no_side_effects() {
     let dir = tempfile::tempdir().unwrap();
     let store = dir.path().join("test.db");
 
-    let (stdout, _, ok) = run(tpm_cmd_with_store(&store)
-        .args(["--plan", "key", "create", "signing/planned"]));
+    let (stdout, _, ok) =
+        run(tpm_cmd_with_store(&store).args(["--plan", "key", "create", "signing/planned"]));
     assert!(ok);
     assert!(stdout.contains("plan:"));
     assert!(stdout.contains("no changes made"));
@@ -353,15 +349,13 @@ fn key_rotate() {
     let store = dir.path().join("test.db");
 
     run(tpm_cmd_with_store(&store).args(["key", "create", "signing/rot"]));
-    let (stdout, _, ok) = run(tpm_cmd_with_store(&store)
-        .args(["key", "rotate", "signing/rot"]));
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store).args(["key", "rotate", "signing/rot"]));
     assert!(ok);
     assert!(stdout.contains("key rotated"));
     assert!(stdout.contains("archived"));
 
     // Original name should still exist (new key)
-    let (stdout, _, _) = run(tpm_cmd_with_store(&store)
-        .args(["key", "show", "signing/rot"]));
+    let (stdout, _, _) = run(tpm_cmd_with_store(&store).args(["key", "show", "signing/rot"]));
     assert!(stdout.contains("signing/rot"));
 }
 
@@ -393,13 +387,23 @@ fn key_export_pub_formats() {
 
     run(tpm_cmd_with_store(&store).args(["key", "create", "signing/exp"]));
 
-    let (stdout, _, ok) = run(tpm_cmd_with_store(&store)
-        .args(["key", "export-pub", "signing/exp", "--export-for", "ssh"]));
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store).args([
+        "key",
+        "export-pub",
+        "signing/exp",
+        "--export-for",
+        "ssh",
+    ]));
     assert!(ok);
     assert!(stdout.contains("ssh-"));
 
-    let (stdout, _, ok) = run(tpm_cmd_with_store(&store)
-        .args(["key", "export-pub", "signing/exp", "--export-for", "pkcs11"]));
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store).args([
+        "key",
+        "export-pub",
+        "signing/exp",
+        "--export-for",
+        "pkcs11",
+    ]));
     assert!(ok);
     assert!(stdout.contains("pkcs11:"));
 }
@@ -432,12 +436,10 @@ spec:
     )
     .unwrap();
 
-    let (stdout, _, ok) = run(
-        tpm_cmd_with_store(&store)
-            .arg("apply")
-            .arg("--file")
-            .arg(&manifest),
-    );
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store)
+        .arg("apply")
+        .arg("--file")
+        .arg(&manifest));
     assert!(ok, "{}", stdout);
     assert!(stdout.contains("created"));
     assert!(stdout.contains("policy:boot-policy"));
@@ -463,13 +465,14 @@ spec:
     )
     .unwrap();
 
-    run(tpm_cmd_with_store(&store).arg("apply").arg("--file").arg(&manifest));
-    let (stdout, _, ok) = run(
-        tpm_cmd_with_store(&store)
-            .arg("apply")
-            .arg("--file")
-            .arg(&manifest),
-    );
+    run(tpm_cmd_with_store(&store)
+        .arg("apply")
+        .arg("--file")
+        .arg(&manifest));
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store)
+        .arg("apply")
+        .arg("--file")
+        .arg(&manifest));
     assert!(ok);
     assert!(stdout.contains("no changes"));
 }
@@ -493,12 +496,10 @@ spec:
     )
     .unwrap();
 
-    let (stdout, _, ok) = run(
-        tpm_cmd_with_store(&store)
-            .arg("diff")
-            .arg("--file")
-            .arg(&manifest),
-    );
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store)
+        .arg("diff")
+        .arg("--file")
+        .arg(&manifest));
     assert!(ok);
     assert!(stdout.contains("create policy"));
 }
@@ -522,13 +523,11 @@ spec:
     )
     .unwrap();
 
-    let (stdout, _, ok) = run(
-        tpm_cmd_with_store(&store)
-            .arg("--plan")
-            .arg("apply")
-            .arg("--file")
-            .arg(&manifest),
-    );
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store)
+        .arg("--plan")
+        .arg("apply")
+        .arg("--file")
+        .arg(&manifest));
     assert!(ok);
     assert!(stdout.contains("plan:"));
     assert!(stdout.contains("no changes made"));
@@ -546,8 +545,8 @@ fn policy_fragility_high() {
     let store = dir.path().join("test.db");
 
     run(tpm_cmd_with_store(&store).args(["policy", "create", "firmware-bound", "--pcr", "0,4"]));
-    let (stdout, _, ok) = run(tpm_cmd_with_store(&store)
-        .args(["policy", "fragility", "firmware-bound"]));
+    let (stdout, _, ok) =
+        run(tpm_cmd_with_store(&store).args(["policy", "fragility", "firmware-bound"]));
     assert!(ok);
     assert!(stdout.contains("high"));
     assert!(stdout.contains("firmware"));
@@ -559,8 +558,13 @@ fn policy_fragility_json() {
     let store = dir.path().join("test.db");
 
     run(tpm_cmd_with_store(&store).args(["policy", "create", "secure-boot", "--pcr", "7"]));
-    let (stdout, _, ok) = run(tpm_cmd_with_store(&store)
-        .args(["policy", "fragility", "secure-boot", "--format", "json"]));
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store).args([
+        "policy",
+        "fragility",
+        "secure-boot",
+        "--format",
+        "json",
+    ]));
     assert!(ok);
 
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
@@ -590,8 +594,7 @@ fn identity_init_creates_key_and_identity() {
     assert!(stdout.contains("code-signing"));
 
     // backing key should exist
-    let (stdout, _, ok) =
-        run(tpm_cmd_with_store(&store).args(["key", "show", "signing/release"]));
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store).args(["key", "show", "signing/release"]));
     assert!(ok);
     assert!(stdout.contains("signing/release"));
 }
@@ -645,9 +648,8 @@ fn identity_delete_with_cascade_removes_key() {
     let store = dir.path().join("test.db");
 
     run(tpm_cmd_with_store(&store).args(["identity", "init", "nuke"]));
-    let (stdout, _, ok) = run(
-        tpm_cmd_with_store(&store).args(["identity", "delete", "nuke", "--cascade"])
-    );
+    let (stdout, _, ok) =
+        run(tpm_cmd_with_store(&store).args(["identity", "delete", "nuke", "--cascade"]));
     assert!(ok);
     assert!(stdout.contains("including backing key"));
 
@@ -662,9 +664,8 @@ fn object_dependents_surfaces_linked_identity() {
     let store = dir.path().join("test.db");
 
     run(tpm_cmd_with_store(&store).args(["identity", "init", "dep"]));
-    let (stdout, _, ok) = run(
-        tpm_cmd_with_store(&store).args(["object", "dependents", "signing/dep"])
-    );
+    let (stdout, _, ok) =
+        run(tpm_cmd_with_store(&store).args(["object", "dependents", "signing/dep"]));
     assert!(ok);
     assert!(stdout.contains("linked identities"));
     assert!(stdout.contains("dep"));
@@ -700,9 +701,7 @@ fn graph_dot_output() {
 fn repair_scan_flags_fragile_policy() {
     let dir = tempfile::tempdir().unwrap();
     let store = dir.path().join("test.db");
-    run(tpm_cmd_with_store(&store).args([
-        "policy", "create", "fragile", "--pcr", "0,4",
-    ]));
+    run(tpm_cmd_with_store(&store).args(["policy", "create", "fragile", "--pcr", "0,4"]));
     let (stdout, _, _) = run(tpm_cmd_with_store(&store).args(["repair", "scan"]));
     assert!(stdout.contains("REPAIR007"));
 }
@@ -730,22 +729,18 @@ spec:
     )
     .unwrap();
 
-    let (stdout, stderr, ok) = run(
-        tpm_cmd_with_store(&store)
-            .arg("apply")
-            .arg("--file")
-            .arg(&manifest),
-    );
+    let (stdout, stderr, ok) = run(tpm_cmd_with_store(&store)
+        .arg("apply")
+        .arg("--file")
+        .arg(&manifest));
     assert!(ok, "stdout={} stderr={}", stdout, stderr);
     assert!(stdout.contains("identity:release-signer"));
 
     // second apply should be idempotent
-    let (stdout, _, ok) = run(
-        tpm_cmd_with_store(&store)
-            .arg("apply")
-            .arg("--file")
-            .arg(&manifest),
-    );
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store)
+        .arg("apply")
+        .arg("--file")
+        .arg(&manifest));
     assert!(ok);
     assert!(stdout.contains("no changes"));
 }
@@ -763,8 +758,9 @@ fn workspace_export_includes_v2_fields() {
     run(tpm_cmd_with_store(&store).args(["key", "create", "signing/app", "--policy", "boot"]));
     run(tpm_cmd_with_store(&store).args(["identity", "init", "svc"]));
 
-    let (stdout, _, ok) =
-        run(tpm_cmd_with_store(&store).args(["workspace", "export", "--output"]).arg(&export));
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store)
+        .args(["workspace", "export", "--output"])
+        .arg(&export));
     assert!(ok, "{}", stdout);
 
     let snapshot: serde_json::Value =
@@ -775,20 +771,20 @@ fn workspace_export_includes_v2_fields() {
     // Policies now include id and rules
     let policies = snapshot["policies"].as_array().unwrap();
     let boot = policies.iter().find(|p| p["name"] == "boot").unwrap();
-    assert!(boot["id"].as_str().unwrap().len() > 0);
+    assert!(!boot["id"].as_str().unwrap().is_empty());
     assert!(!boot["rules"].as_array().unwrap().is_empty());
 
     // Objects now include id and policy_id
     let objects = snapshot["objects"].as_array().unwrap();
     let key = objects.iter().find(|o| o["path"] == "signing/app").unwrap();
-    assert!(key["id"].as_str().unwrap().len() > 0);
+    assert!(!key["id"].as_str().unwrap().is_empty());
     assert!(key["policy_id"].is_string());
 
     // Identities now include id
     let identities = snapshot["identities"].as_array().unwrap();
     let svc = identities.iter().find(|i| i["name"] == "svc").unwrap();
-    assert!(svc["id"].as_str().unwrap().len() > 0);
-    assert!(svc["key_object_id"].as_str().unwrap().len() > 0);
+    assert!(!svc["id"].as_str().unwrap().is_empty());
+    assert!(!svc["key_object_id"].as_str().unwrap().is_empty());
 }
 
 #[test]
@@ -804,20 +800,16 @@ fn workspace_roundtrip_structural() {
     run(tpm_cmd_with_store(&store1).args(["key", "create", "signing/release", "--policy", "boot"]));
     run(tpm_cmd_with_store(&store1).args(["identity", "init", "rel", "--usage", "code-signing"]));
 
-    let (_, _, ok) = run(
-        tpm_cmd_with_store(&store1)
-            .args(["workspace", "export", "--output"])
-            .arg(&export),
-    );
+    let (_, _, ok) = run(tpm_cmd_with_store(&store1)
+        .args(["workspace", "export", "--output"])
+        .arg(&export));
     assert!(ok);
 
     // Target: fresh store, import the snapshot.
     run(tpm_cmd_with_store(&store2).arg("init"));
-    let (stdout, _, ok) = run(
-        tpm_cmd_with_store(&store2)
-            .args(["workspace", "import", "--input"])
-            .arg(&export),
-    );
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store2)
+        .args(["workspace", "import", "--input"])
+        .arg(&export));
     assert!(ok, "{}", stdout);
     // Report should mention policies, keys, identities
     assert!(stdout.contains("policies:"));
@@ -835,9 +827,8 @@ fn workspace_roundtrip_structural() {
     assert!(stdout.contains("rel"));
 
     // Identity→key linkage survived the round-trip.
-    let (stdout, _, _) = run(
-        tpm_cmd_with_store(&store2).args(["object", "dependents", "signing/rel"]),
-    );
+    let (stdout, _, _) =
+        run(tpm_cmd_with_store(&store2).args(["object", "dependents", "signing/rel"]));
     // identity init creates signing/<name>, so identity "rel" binds to signing/rel.
     assert!(stdout.contains("linked identities"));
     assert!(stdout.contains("rel"));
@@ -852,25 +843,19 @@ fn workspace_import_idempotent() {
 
     run(tpm_cmd_with_store(&store1).arg("init"));
     run(tpm_cmd_with_store(&store1).args(["key", "create", "signing/a"]));
-    run(
-        tpm_cmd_with_store(&store1)
-            .args(["workspace", "export", "--output"])
-            .arg(&export),
-    );
+    run(tpm_cmd_with_store(&store1)
+        .args(["workspace", "export", "--output"])
+        .arg(&export));
 
     run(tpm_cmd_with_store(&store2).arg("init"));
-    run(
-        tpm_cmd_with_store(&store2)
-            .args(["workspace", "import", "--input"])
-            .arg(&export),
-    );
+    run(tpm_cmd_with_store(&store2)
+        .args(["workspace", "import", "--input"])
+        .arg(&export));
 
     // Second import should report skipped conflicts, not fail.
-    let (stdout, _, ok) = run(
-        tpm_cmd_with_store(&store2)
-            .args(["workspace", "import", "--input"])
-            .arg(&export),
-    );
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store2)
+        .args(["workspace", "import", "--input"])
+        .arg(&export));
     assert!(ok, "second import should succeed: {}", stdout);
     assert!(
         stdout.contains("already exists"),
@@ -902,11 +887,9 @@ fn workspace_v1_snapshot_still_loads() {
     )
     .unwrap();
 
-    let (stdout, stderr, ok) = run(
-        tpm_cmd_with_store(&store)
-            .args(["workspace", "import", "--input"])
-            .arg(&snapshot),
-    );
+    let (stdout, stderr, ok) = run(tpm_cmd_with_store(&store)
+        .args(["workspace", "import", "--input"])
+        .arg(&snapshot));
     assert!(ok, "stdout={} stderr={}", stdout, stderr);
     assert!(stdout.contains("snapshot version: 1"));
     assert!(stdout.contains("profiles:   1"));
@@ -935,11 +918,9 @@ fn workspace_import_unsupported_version_fails() {
     )
     .unwrap();
 
-    let (_, stderr, ok) = run(
-        tpm_cmd_with_store(&store)
-            .args(["workspace", "import", "--input"])
-            .arg(&snapshot),
-    );
+    let (_, stderr, ok) = run(tpm_cmd_with_store(&store)
+        .args(["workspace", "import", "--input"])
+        .arg(&snapshot));
     assert!(!ok);
     assert!(stderr.contains("TPM0803"), "stderr={}", stderr);
 }
@@ -952,16 +933,19 @@ fn audit_append_and_show() {
     let store = dir.path().join("audit.db");
 
     run(tpm_cmd_with_store(&store).arg("init"));
-    let (stdout, stderr, ok) = run(
-        tpm_cmd_with_store(&store)
-            .args(["audit", "append", "--event", "user.login", "--payload", "alice"]),
-    );
+    let (stdout, stderr, ok) = run(tpm_cmd_with_store(&store).args([
+        "audit",
+        "append",
+        "--event",
+        "user.login",
+        "--payload",
+        "alice",
+    ]));
     assert!(ok, "stdout={} stderr={}", stdout, stderr);
     assert!(stdout.contains("seqno:"));
     assert!(stdout.contains("entry_hash:"));
 
-    let (stdout, _, ok) =
-        run(tpm_cmd_with_store(&store).args(["audit", "show", "1"]));
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store).args(["audit", "show", "1"]));
     assert!(ok);
     assert!(stdout.contains("event_type:    user.login"));
     assert!(stdout.contains("prev_hash:     0000000000000000"));
@@ -1007,8 +991,7 @@ fn audit_chain_verify_succeeds_after_clean_appends() {
             &format!("v{}", i),
         ]));
     }
-    let (stdout, _, ok) =
-        run(tpm_cmd_with_store(&store).args(["audit", "chain", "verify"]));
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store).args(["audit", "chain", "verify"]));
     assert!(ok, "stdout={}", stdout);
     assert!(stdout.contains("ok (all links verified)"));
 }
@@ -1028,9 +1011,7 @@ fn audit_segment_close_and_prove() {
             &format!("v{}", i),
         ]));
     }
-    let (stdout, _, ok) = run(
-        tpm_cmd_with_store(&store).args(["audit", "segments", "close"]),
-    );
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store).args(["audit", "segments", "close"]));
     assert!(ok, "{}", stdout);
     assert!(stdout.contains("segment_id:"));
     assert!(stdout.contains("range:          [1, 5]"));
@@ -1084,14 +1065,12 @@ fn audit_encrypt_and_decrypt_round_trip() {
     assert!(!stdout.contains("alice-password"));
 
     // Show with --decrypt: plaintext present.
-    let (stdout, _, _) =
-        run(tpm_cmd_with_store(&store).args(["audit", "show", "1", "--decrypt"]));
+    let (stdout, _, _) = run(tpm_cmd_with_store(&store).args(["audit", "show", "1", "--decrypt"]));
     assert!(stdout.contains("alice-password"));
 
     // Chain verification still succeeds — it works over the
     // ciphertext canonical bytes, no decryption key needed.
-    let (stdout, _, ok) =
-        run(tpm_cmd_with_store(&store).args(["audit", "chain", "verify"]));
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store).args(["audit", "chain", "verify"]));
     assert!(ok);
     assert!(stdout.contains("ok (all links verified)"));
 }
@@ -1102,8 +1081,7 @@ fn audit_streams_default_present_after_init() {
     let store = dir.path().join("audit.db");
     run(tpm_cmd_with_store(&store).arg("init"));
 
-    let (stdout, _, ok) =
-        run(tpm_cmd_with_store(&store).args(["audit", "streams", "list"]));
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store).args(["audit", "streams", "list"]));
     assert!(ok);
     assert!(stdout.contains("default"));
     assert!(stdout.contains("[public]"));
@@ -1184,8 +1162,7 @@ fn audit_append_on_protected_stream_is_auto_encrypted() {
     assert!(stdout.contains("(encrypted)"));
 
     // The stored payload is ciphertext-tagged.
-    let (stdout, _, _) =
-        run(tpm_cmd_with_store(&store).args(["audit", "show", "1"]));
+    let (stdout, _, _) = run(tpm_cmd_with_store(&store).args(["audit", "show", "1"]));
     assert!(stdout.contains("cbor+aead-chacha20poly1305"));
     assert!(!stdout.contains("top-secret"));
 }
@@ -1196,9 +1173,9 @@ fn audit_streams_rejects_bogus_tier() {
     let store = dir.path().join("audit.db");
     run(tpm_cmd_with_store(&store).arg("init"));
 
-    let (_, stderr, ok) = run(tpm_cmd_with_store(&store).args([
-        "audit", "streams", "create", "s", "--tier", "bogus",
-    ]));
+    let (_, stderr, ok) = run(
+        tpm_cmd_with_store(&store).args(["audit", "streams", "create", "s", "--tier", "bogus"])
+    );
     assert!(!ok);
     assert!(stderr.contains("unknown confidentiality tier"));
 }
@@ -1211,18 +1188,22 @@ fn audit_streams_delete_deprecates_stream() {
     run(tpm_cmd_with_store(&store).args(["audit", "streams", "create", "mystream"]));
 
     // Deprecate the stream.
-    let (stdout, _stderr, ok) = run(tpm_cmd_with_store(&store).args([
-        "audit", "streams", "delete", "mystream",
-    ]));
+    let (stdout, _stderr, ok) =
+        run(tpm_cmd_with_store(&store).args(["audit", "streams", "delete", "mystream"]));
     assert!(ok, "streams delete should succeed");
-    assert!(stdout.contains("deprecated"), "output should mention deprecated");
+    assert!(
+        stdout.contains("deprecated"),
+        "output should mention deprecated"
+    );
 
     // Show should reflect the deprecated_at timestamp.
-    let (stdout, _stderr, ok) = run(tpm_cmd_with_store(&store).args([
-        "audit", "streams", "show", "mystream",
-    ]));
+    let (stdout, _stderr, ok) =
+        run(tpm_cmd_with_store(&store).args(["audit", "streams", "show", "mystream"]));
     assert!(ok);
-    assert!(stdout.contains("deprecated:"), "show should include deprecated field");
+    assert!(
+        stdout.contains("deprecated:"),
+        "show should include deprecated field"
+    );
 }
 
 #[test]
@@ -1233,9 +1214,8 @@ fn audit_streams_delete_rejects_new_appends() {
     run(tpm_cmd_with_store(&store).args(["audit", "streams", "create", "mystream"]));
 
     // Deprecate the stream.
-    let (_, _, ok) = run(tpm_cmd_with_store(&store).args([
-        "audit", "streams", "delete", "mystream",
-    ]));
+    let (_, _, ok) =
+        run(tpm_cmd_with_store(&store).args(["audit", "streams", "delete", "mystream"]));
     assert!(ok);
 
     // Append should now be rejected.
@@ -1264,11 +1244,13 @@ fn audit_streams_delete_nonexistent_fails() {
     let store = dir.path().join("audit.db");
     run(tpm_cmd_with_store(&store).arg("init"));
 
-    let (_, stderr, ok) = run(tpm_cmd_with_store(&store).args([
-        "audit", "streams", "delete", "nosuchstream",
-    ]));
+    let (_, stderr, ok) =
+        run(tpm_cmd_with_store(&store).args(["audit", "streams", "delete", "nosuchstream"]));
     assert!(!ok);
-    assert!(stderr.contains("not found"), "should report stream not found");
+    assert!(
+        stderr.contains("not found"),
+        "should report stream not found"
+    );
 }
 
 #[test]
@@ -1295,8 +1277,7 @@ fn audit_key_sealed_round_trip() {
     // Sealed file is JSON, so not 32 bytes.
     assert_ne!(std::fs::read(&key_path).unwrap().len(), 32);
 
-    let (stdout, _, ok) =
-        run(tpm_cmd_with_store(&store).args(["audit", "key", "show"]));
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store).args(["audit", "key", "show"]));
     assert!(ok);
     assert!(stdout.contains("format:  sealed"));
 
@@ -1310,8 +1291,7 @@ fn audit_key_sealed_round_trip() {
         "under-seal",
         "--encrypt",
     ]));
-    let (stdout, _, ok) =
-        run(tpm_cmd_with_store(&store).args(["audit", "show", "1", "--decrypt"]));
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store).args(["audit", "show", "1", "--decrypt"]));
     assert!(ok);
     assert!(stdout.contains("under-seal"));
 }
@@ -1321,13 +1301,10 @@ fn audit_decrypt_without_key_file_fails() {
     let dir = tempfile::tempdir().unwrap();
     let store = dir.path().join("audit.db");
     run(tpm_cmd_with_store(&store).arg("init"));
-    run(tpm_cmd_with_store(&store).args([
-        "audit", "append", "--event", "e", "--payload", "plain",
-    ]));
+    run(tpm_cmd_with_store(&store).args(["audit", "append", "--event", "e", "--payload", "plain"]));
     // Default is plaintext; decrypting a plaintext entry should
     // just pass through successfully.
-    let (stdout, _, ok) =
-        run(tpm_cmd_with_store(&store).args(["audit", "show", "1", "--decrypt"]));
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store).args(["audit", "show", "1", "--decrypt"]));
     assert!(ok, "{}", stdout);
     assert!(stdout.contains("plaintext:     plain"));
 }
@@ -1338,19 +1315,18 @@ fn audit_publish_emits_witness_submission() {
     let store = dir.path().join("audit.db");
     run(tpm_cmd_with_store(&store).arg("init"));
     run(tpm_cmd_with_store(&store).args([
-        "identity", "init", "log-signer", "--usage", "attestation",
+        "identity",
+        "init",
+        "log-signer",
+        "--usage",
+        "attestation",
     ]));
-    run(tpm_cmd_with_store(&store).args([
-        "audit", "append", "--event", "e", "--payload", "x",
-    ]));
+    run(tpm_cmd_with_store(&store).args(["audit", "append", "--event", "e", "--payload", "x"]));
     run(tpm_cmd_with_store(&store).args(["audit", "segments", "close"]));
-    run(tpm_cmd_with_store(&store).args([
-        "audit", "sign", "1", "--identity", "log-signer",
-    ]));
+    run(tpm_cmd_with_store(&store).args(["audit", "sign", "1", "--identity", "log-signer"]));
 
-    let (stdout, _, ok) = run(
-        tpm_cmd_with_store(&store).args(["audit", "publish", "--format", "json"]),
-    );
+    let (stdout, _, ok) =
+        run(tpm_cmd_with_store(&store).args(["audit", "publish", "--format", "json"]));
     assert!(ok);
     let sub: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(sub["stream_id"], "default");
@@ -1365,17 +1341,16 @@ fn audit_rollback_passes_on_fresh_signed_chain() {
     let store = dir.path().join("audit.db");
     run(tpm_cmd_with_store(&store).arg("init"));
     run(tpm_cmd_with_store(&store).args([
-        "identity", "init", "log-signer", "--usage", "attestation",
+        "identity",
+        "init",
+        "log-signer",
+        "--usage",
+        "attestation",
     ]));
-    run(tpm_cmd_with_store(&store).args([
-        "audit", "append", "--event", "e", "--payload", "x",
-    ]));
+    run(tpm_cmd_with_store(&store).args(["audit", "append", "--event", "e", "--payload", "x"]));
     run(tpm_cmd_with_store(&store).args(["audit", "segments", "close"]));
-    run(tpm_cmd_with_store(&store).args([
-        "audit", "sign", "1", "--identity", "log-signer",
-    ]));
-    let (stdout, _, ok) =
-        run(tpm_cmd_with_store(&store).args(["audit", "rollback"]));
+    run(tpm_cmd_with_store(&store).args(["audit", "sign", "1", "--identity", "log-signer"]));
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store).args(["audit", "rollback"]));
     assert!(ok, "{}", stdout);
     assert!(stdout.contains("no rollback detected"));
 }
@@ -1405,11 +1380,8 @@ fn audit_sign_and_verify_checkpoint_chain() {
         ]));
     }
     run(tpm_cmd_with_store(&store).args(["audit", "segments", "close"]));
-    let (stdout, stderr, ok) = run(
-        tpm_cmd_with_store(&store).args([
-            "audit", "sign", "1", "--identity", "log-signer",
-        ]),
-    );
+    let (stdout, stderr, ok) =
+        run(tpm_cmd_with_store(&store).args(["audit", "sign", "1", "--identity", "log-signer"]));
     assert!(ok, "stdout={} stderr={}", stdout, stderr);
     assert!(stdout.contains("signed segment"));
 
@@ -1424,20 +1396,14 @@ fn audit_segment_list_shows_two_segments() {
     let store = dir.path().join("audit.db");
     run(tpm_cmd_with_store(&store).arg("init"));
     for _ in 0..2 {
-        run(tpm_cmd_with_store(&store).args([
-            "audit", "append", "--event", "e", "--payload", "a",
-        ]));
+        run(tpm_cmd_with_store(&store).args(["audit", "append", "--event", "e", "--payload", "a"]));
     }
     run(tpm_cmd_with_store(&store).args(["audit", "segments", "close"]));
     for _ in 0..2 {
-        run(tpm_cmd_with_store(&store).args([
-            "audit", "append", "--event", "e", "--payload", "b",
-        ]));
+        run(tpm_cmd_with_store(&store).args(["audit", "append", "--event", "e", "--payload", "b"]));
     }
     run(tpm_cmd_with_store(&store).args(["audit", "segments", "close"]));
-    let (stdout, _, ok) = run(
-        tpm_cmd_with_store(&store).args(["audit", "segments", "list"]),
-    );
+    let (stdout, _, ok) = run(tpm_cmd_with_store(&store).args(["audit", "segments", "list"]));
     assert!(ok);
     assert!(stdout.contains("segment 1:"));
     assert!(stdout.contains("segment 2:"));
@@ -1476,8 +1442,7 @@ fn audit_chain_verify_detects_payload_tamper() {
         .unwrap();
     }
 
-    let (stdout, stderr, ok) =
-        run(tpm_cmd_with_store(&store).args(["audit", "chain", "verify"]));
+    let (stdout, stderr, ok) = run(tpm_cmd_with_store(&store).args(["audit", "chain", "verify"]));
     assert!(!ok, "expected chain verify to fail; stdout={}", stdout);
     let combined = format!("{}{}", stdout, stderr);
     assert!(
@@ -1498,30 +1463,24 @@ fn workspace_roundtrip_identity_key_binding_preserved() {
     run(tpm_cmd_with_store(&store1).args(["identity", "init", "cross"]));
 
     // Note original identity id + key_object_id.
-    let (stdout, _, _) = run(
-        tpm_cmd_with_store(&store1).args(["identity", "show", "cross", "--format", "json"]),
-    );
+    let (stdout, _, _) =
+        run(tpm_cmd_with_store(&store1).args(["identity", "show", "cross", "--format", "json"]));
     let original: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     let original_id = original["id"].as_str().unwrap().to_string();
     let original_key_id = original["key_object_id"].as_str().unwrap().to_string();
 
-    run(
-        tpm_cmd_with_store(&store1)
-            .args(["workspace", "export", "--output"])
-            .arg(&export),
-    );
+    run(tpm_cmd_with_store(&store1)
+        .args(["workspace", "export", "--output"])
+        .arg(&export));
 
     run(tpm_cmd_with_store(&store2).arg("init"));
-    run(
-        tpm_cmd_with_store(&store2)
-            .args(["workspace", "import", "--input"])
-            .arg(&export),
-    );
+    run(tpm_cmd_with_store(&store2)
+        .args(["workspace", "import", "--input"])
+        .arg(&export));
 
     // After import the same UUIDs should be preserved.
-    let (stdout, _, _) = run(
-        tpm_cmd_with_store(&store2).args(["identity", "show", "cross", "--format", "json"]),
-    );
+    let (stdout, _, _) =
+        run(tpm_cmd_with_store(&store2).args(["identity", "show", "cross", "--format", "json"]));
     let imported: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(imported["id"].as_str().unwrap(), original_id);
     assert_eq!(imported["key_object_id"].as_str().unwrap(), original_key_id);
@@ -1533,8 +1492,7 @@ fn audit_witness_list_empty() {
     let store = dir.path().join("audit.db");
     run(tpm_cmd_with_store(&store).arg("init"));
 
-    let (stdout, _stderr, ok) =
-        run(tpm_cmd_with_store(&store).args(["audit", "witness", "list"]));
+    let (stdout, _stderr, ok) = run(tpm_cmd_with_store(&store).args(["audit", "witness", "list"]));
     assert!(ok);
     assert!(stdout.contains("no witness receipts"));
 }
@@ -1545,8 +1503,7 @@ fn audit_witness_gc_requires_filter() {
     let store = dir.path().join("audit.db");
     run(tpm_cmd_with_store(&store).arg("init"));
 
-    let (_stdout, stderr, ok) =
-        run(tpm_cmd_with_store(&store).args(["audit", "witness", "gc"]));
+    let (_stdout, stderr, ok) = run(tpm_cmd_with_store(&store).args(["audit", "witness", "gc"]));
     assert!(!ok);
     assert!(
         stderr.contains("--keep-latest") || stderr.contains("--older-than"),
@@ -1588,14 +1545,16 @@ fn audit_witness_gc_keep_latest_dry_run() {
     let store = dir.path().join("audit.db");
     run(tpm_cmd_with_store(&store).arg("init"));
     run(tpm_cmd_with_store(&store).args([
-        "identity", "init", "log-signer", "--usage", "attestation",
+        "identity",
+        "init",
+        "log-signer",
+        "--usage",
+        "attestation",
     ]));
 
     // Create 3 signed segments and record each witness receipt.
     for seg in 1..=3u64 {
-        run(tpm_cmd_with_store(&store).args([
-            "audit", "append", "--event", "e", "--payload", "x",
-        ]));
+        run(tpm_cmd_with_store(&store).args(["audit", "append", "--event", "e", "--payload", "x"]));
         run(tpm_cmd_with_store(&store).args(["audit", "segments", "close"]));
         publish_and_record(&store, &dir, seg);
     }
@@ -1629,27 +1588,27 @@ fn audit_witness_gc_keep_latest_deletes() {
     let store = dir.path().join("audit.db");
     run(tpm_cmd_with_store(&store).arg("init"));
     run(tpm_cmd_with_store(&store).args([
-        "identity", "init", "log-signer", "--usage", "attestation",
+        "identity",
+        "init",
+        "log-signer",
+        "--usage",
+        "attestation",
     ]));
 
     for seg in 1..=3u64 {
-        run(tpm_cmd_with_store(&store).args([
-            "audit", "append", "--event", "e", "--payload", "x",
-        ]));
+        run(tpm_cmd_with_store(&store).args(["audit", "append", "--event", "e", "--payload", "x"]));
         run(tpm_cmd_with_store(&store).args(["audit", "segments", "close"]));
         publish_and_record(&store, &dir, seg);
     }
 
     // Real GC: keep 1.
-    let (stdout, _stderr, ok) = run(tpm_cmd_with_store(&store).args([
-        "audit",
-        "witness",
-        "gc",
-        "--keep-latest",
-        "1",
-    ]));
+    let (stdout, _stderr, ok) =
+        run(tpm_cmd_with_store(&store).args(["audit", "witness", "gc", "--keep-latest", "1"]));
     assert!(ok, "gc should succeed");
-    assert!(stdout.contains("deleted 2"), "should report 2 deletions: {stdout}");
+    assert!(
+        stdout.contains("deleted 2"),
+        "should report 2 deletions: {stdout}"
+    );
 
     // Only 1 receipt should remain.
     let (stdout, _stderr, ok) =

@@ -44,7 +44,9 @@ pub fn mtls_client(
     peer_certs: Vec<tpm_tls::CertificateDer<'static>>,
 ) -> anyhow::Result<reqwest::Client> {
     let tls = identity.client_config(&peer_certs)?;
-    Ok(reqwest::Client::builder().use_preconfigured_tls(tls).build()?)
+    Ok(reqwest::Client::builder()
+        .use_preconfigured_tls(tls)
+        .build()?)
 }
 
 /// Serve `app` over mutual TLS (E2): present `identity`'s TPM-held cert and
@@ -56,7 +58,8 @@ pub async fn serve_mtls(
     peer_certs: Vec<tpm_tls::CertificateDer<'static>>,
 ) -> anyhow::Result<()> {
     let server_config = identity.server_config(&peer_certs)?;
-    let tls = axum_server::tls_rustls::RustlsConfig::from_config(std::sync::Arc::new(server_config));
+    let tls =
+        axum_server::tls_rustls::RustlsConfig::from_config(std::sync::Arc::new(server_config));
     axum_server::bind_rustls(addr, tls)
         .serve(app.into_make_service())
         .await?;
@@ -86,7 +89,10 @@ pub fn router(handle: AgentHandle) -> Router {
         .with_state(handle)
 }
 
-async fn gossip(State(handle): State<AgentHandle>, Json(envelope): Json<GossipEnvelope>) -> StatusCode {
+async fn gossip(
+    State(handle): State<AgentHandle>,
+    Json(envelope): Json<GossipEnvelope>,
+) -> StatusCode {
     handle.deliver(envelope).await;
     StatusCode::ACCEPTED
 }

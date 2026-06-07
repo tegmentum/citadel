@@ -465,5 +465,4 @@ impl StoreBackend for MemoryStore {
             .copied()
             .max())
     }
-
 }

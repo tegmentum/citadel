@@ -23,7 +23,11 @@ fn run(cmd: &mut Command) -> (String, String, bool) {
 
 fn assert_ok(cmd: &mut Command) -> String {
     let (stdout, stderr, ok) = run(cmd);
-    assert!(ok, "command failed:\nstdout: {}\nstderr: {}", stdout, stderr);
+    assert!(
+        ok,
+        "command failed:\nstdout: {}\nstderr: {}",
+        stdout, stderr
+    );
     stdout
 }
 
@@ -72,7 +76,11 @@ fn workflow_ci_signing() {
 
     // Export public key for verification
     let out = assert_ok(tpm(&store).args([
-        "key", "export-pub", "signing/release", "--export-for", "cosign",
+        "key",
+        "export-pub",
+        "signing/release",
+        "--export-for",
+        "cosign",
     ]));
     assert!(out.contains("BEGIN PUBLIC KEY"));
     assert!(out.contains("cosign verify"));
@@ -110,9 +118,7 @@ fn workflow_secret_management() {
     assert_ok(tpm(&store).arg("init"));
 
     // Create a boot policy
-    let out = assert_ok(
-        tpm(&store).args(["policy", "create", "boot-seal", "--pcr", "7,11"]),
-    );
+    let out = assert_ok(tpm(&store).args(["policy", "create", "boot-seal", "--pcr", "7,11"]));
     assert!(out.contains("policy created"));
 
     // Seal a secret with the policy
@@ -163,18 +169,20 @@ fn workflow_attestation() {
     assert!(out.contains("attestation key created"));
 
     // Save a PCR baseline
-    assert_ok(tpm(&store).args([
-        "pcr", "baseline", "save", "pre-attest", "--index", "0,7,11",
-    ]));
+    assert_ok(tpm(&store).args(["pcr", "baseline", "save", "pre-attest", "--index", "0,7,11"]));
 
     // Generate a quote with a nonce
     let out = assert_ok(
         tpm(&store)
             .args([
-                "attest", "quote",
-                "--ak", "attest/node",
-                "--pcr", "0,7,11",
-                "--nonce", "verifier-challenge-abc",
+                "attest",
+                "quote",
+                "--ak",
+                "attest/node",
+                "--pcr",
+                "0,7,11",
+                "--nonce",
+                "verifier-challenge-abc",
                 "--output",
             ])
             .arg(&quote_file),
@@ -297,7 +305,11 @@ requires:
 
     // Create a key with this policy
     let out = assert_ok(tpm(&store).args([
-        "key", "create", "signing/boot-signed", "--policy", "measured-boot",
+        "key",
+        "create",
+        "signing/boot-signed",
+        "--policy",
+        "measured-boot",
     ]));
     assert!(out.contains("key created"));
 
@@ -473,9 +485,8 @@ fn workflow_error_handling() {
     assert!(err.contains("TPM0003") || err.contains("invalid"));
 
     // Policy not found
-    let err = assert_fail(
-        tpm(&store).args(["key", "create", "signing/x", "--policy", "no-such-policy"]),
-    );
+    let err =
+        assert_fail(tpm(&store).args(["key", "create", "signing/x", "--policy", "no-such-policy"]));
     assert!(err.contains("not found"));
 
     // Plan mode produces no side effects

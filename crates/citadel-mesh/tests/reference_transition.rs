@@ -22,7 +22,9 @@ fn mesh_of(n: u8) -> (Mesh, Vec<NodeId>) {
         reference_advertise_interval: 2,
         ..NodeConfig::default()
     };
-    let ids: Vec<NodeId> = (1..=n).map(|s| mesh.add_node(s, "worker", cfg.clone())).collect();
+    let ids: Vec<NodeId> = (1..=n)
+        .map(|s| mesh.add_node(s, "worker", cfg.clone()))
+        .collect();
     mesh.wire_full_membership();
     (mesh, ids)
 }
@@ -212,21 +214,27 @@ fn revoking_an_artifact_version_distrusts_running_nodes() {
     let authority = MeshKeypair::from_seed([200u8; 32]);
     mesh.set_reference_authorities_all(TrustAnchors::with(authority.public()));
     mesh.set_artifact_policy_all(
-        FleetArtifactPolicy::new().allow_channel("kernel", "prod").min_version("kernel", vec![6, 8, 0]),
+        FleetArtifactPolicy::new()
+            .allow_channel("kernel", "prod")
+            .min_version("kernel", vec![6, 8, 0]),
     );
 
     // The node moves to kernel 6.8.0; the authority signs a manifest carrying
     // that provenance, and it is accepted fleet-wide.
     mesh.measured_state_change(node, "sha256", 0, &[0x33; 32]);
     let digest = mesh.pcr_digest(node, "sha256", 0);
-    let entry = ReferenceEntry::new(0, digest, Validity::always()).with_artifact(ArtifactIdentity {
-        component: "kernel".into(),
-        publisher: "canonical".into(),
-        channel: "prod".into(),
-        version: vec![6, 8, 0],
-        build_id: None,
-    });
-    mesh.broadcast_reference_manifest(ids[0], ReferenceManifest::issue(&authority, "prod", vec![entry], vec![]));
+    let entry =
+        ReferenceEntry::new(0, digest, Validity::always()).with_artifact(ArtifactIdentity {
+            component: "kernel".into(),
+            publisher: "canonical".into(),
+            channel: "prod".into(),
+            version: vec![6, 8, 0],
+            build_id: None,
+        });
+    mesh.broadcast_reference_manifest(
+        ids[0],
+        ReferenceManifest::issue(&authority, "prod", vec![entry], vec![]),
+    );
     mesh.run(12);
     for &observer in &ids {
         if observer != node {
@@ -267,7 +275,11 @@ fn anti_entropy_propagates_a_missed_manifest() {
     let manifest = ReferenceManifest::issue(
         &authority,
         "prod",
-        vec![ReferenceEntry::new(5, b"some-state".to_vec(), Validity::always())],
+        vec![ReferenceEntry::new(
+            5,
+            b"some-state".to_vec(),
+            Validity::always(),
+        )],
         vec![],
     );
     let id = manifest.content_id();
@@ -275,7 +287,10 @@ fn anti_entropy_propagates_a_missed_manifest() {
     // Deliver it to a single node only (no broadcast).
     assert!(mesh.node_mut(ids[0]).apply_reference_manifest(&manifest));
     assert!(mesh.node(ids[0]).has_reference_manifest(id));
-    assert!(!mesh.node(ids[3]).has_reference_manifest(id), "others start without it");
+    assert!(
+        !mesh.node(ids[3]).has_reference_manifest(id),
+        "others start without it"
+    );
 
     // Anti-entropy spreads it to the whole fleet.
     mesh.run(10);
@@ -377,7 +392,9 @@ fn quorum_promotes_a_new_state_and_restores_trust() {
 
     // Fleet policy: prod-channel kernels >= 6.8.0 are acceptable.
     mesh.set_artifact_policy_all(
-        FleetArtifactPolicy::new().allow_channel("kernel", "prod").min_version("kernel", vec![6, 8, 0]),
+        FleetArtifactPolicy::new()
+            .allow_channel("kernel", "prod")
+            .min_version("kernel", vec![6, 8, 0]),
     );
 
     // The canary moves to a new, unrecognised state → distrusted.
@@ -399,7 +416,10 @@ fn quorum_promotes_a_new_state_and_restores_trust() {
         build_id: None,
     };
     let outcome = mesh.promote_state(ids[0], "", 0, new_pcr0, Some(artifact), Validity::always());
-    assert!(outcome.accepted, "eligible peers should promote a valid state: {outcome:?}");
+    assert!(
+        outcome.accepted,
+        "eligible peers should promote a valid state: {outcome:?}"
+    );
 
     // Fleet-accepted → the canary is trusted again.
     mesh.run(12);
@@ -421,7 +441,9 @@ fn quorum_rejects_promotion_of_a_disallowed_artifact() {
     let canary = ids[4];
 
     mesh.set_artifact_policy_all(
-        FleetArtifactPolicy::new().allow_channel("kernel", "prod").min_version("kernel", vec![6, 8, 0]),
+        FleetArtifactPolicy::new()
+            .allow_channel("kernel", "prod")
+            .min_version("kernel", vec![6, 8, 0]),
     );
     mesh.measured_state_change(canary, "sha256", 0, &[0x77; 32]);
     mesh.run(12);
@@ -437,7 +459,10 @@ fn quorum_rejects_promotion_of_a_disallowed_artifact() {
         build_id: None,
     };
     let outcome = mesh.promote_state(ids[0], "", 0, new_pcr0, Some(artifact), Validity::always());
-    assert!(!outcome.accepted, "a disallowed artifact must not be promoted");
+    assert!(
+        !outcome.accepted,
+        "a disallowed artifact must not be promoted"
+    );
     assert_eq!(outcome.approvals, 0);
 
     mesh.run(12);
@@ -464,7 +489,9 @@ fn a_forbidden_kernel_cmdline_distrusts_a_node() {
         pcr_selection: vec![0, 7, 8], // include the semantic PCR in the quote
         ..NodeConfig::default()
     };
-    let ids: Vec<NodeId> = (1..=6).map(|s| mesh.add_node(s, "worker", cfg.clone())).collect();
+    let ids: Vec<NodeId> = (1..=6)
+        .map(|s| mesh.add_node(s, "worker", cfg.clone()))
+        .collect();
     mesh.wire_full_membership();
     mesh.set_pcr_class_all(8, PcrClass::Semantic);
     mesh.set_artifact_policy_all(FleetArtifactPolicy::new().deny_cmdline("init=/bin/sh"));
@@ -513,11 +540,15 @@ fn secure_boot_authority_accepts_by_publisher_then_dbx_revokes() {
         pcr_selection: vec![0, 7, 4],
         ..NodeConfig::default()
     };
-    let ids: Vec<NodeId> = (1..=6).map(|s| mesh.add_node(s, "worker", cfg.clone())).collect();
+    let ids: Vec<NodeId> = (1..=6)
+        .map(|s| mesh.add_node(s, "worker", cfg.clone()))
+        .collect();
     mesh.wire_full_membership();
     mesh.set_pcr_class_all(4, PcrClass::Semantic);
     mesh.set_artifact_policy_all(
-        FleetArtifactPolicy::new().require_authorized_boot().trust_authority(b"canonical".to_vec()),
+        FleetArtifactPolicy::new()
+            .require_authorized_boot()
+            .trust_authority(b"canonical".to_vec()),
     );
 
     let node = ids[4];

@@ -37,7 +37,10 @@ impl MemStore {
 
 impl Store for MemStore {
     fn save(&self, key: &str, bytes: &[u8]) -> anyhow::Result<()> {
-        self.inner.lock().unwrap().insert(key.to_string(), bytes.to_vec());
+        self.inner
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), bytes.to_vec());
         Ok(())
     }
     fn load(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {

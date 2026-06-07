@@ -11,9 +11,8 @@ use serde::Serialize;
 
 fn load_manifest(file: &std::path::Path) -> anyhow::Result<Manifest> {
     let text = std::fs::read_to_string(file)?;
-    let manifest = Manifest::from_yaml(&text).map_err(|e| {
-        anyhow::anyhow!("manifest parse error in {}: {}", file.display(), e)
-    })?;
+    let manifest = Manifest::from_yaml(&text)
+        .map_err(|e| anyhow::anyhow!("manifest parse error in {}: {}", file.display(), e))?;
 
     let issues = manifest.validate();
     if !issues.is_empty() {
@@ -50,11 +49,7 @@ pub fn apply_cmd(
     Ok(())
 }
 
-pub fn diff_cmd(
-    store: &Store,
-    file: &std::path::Path,
-    format: OutputFormat,
-) -> anyhow::Result<()> {
+pub fn diff_cmd(store: &Store, file: &std::path::Path, format: OutputFormat) -> anyhow::Result<()> {
     let manifest = load_manifest(file)?;
     let actions = tpm_core::service::diff_manifest(store, &manifest)?;
 
@@ -100,7 +95,10 @@ impl From<&ApplyReport> for ApplyOutput {
 impl TextRenderable for ApplyOutput {
     fn render_text(&self) -> String {
         let mut out = String::new();
-        out.push_str(&format!("apply complete (correlation_id: {})\n\n", self.correlation_id));
+        out.push_str(&format!(
+            "apply complete (correlation_id: {})\n\n",
+            self.correlation_id
+        ));
         if !self.created.is_empty() {
             out.push_str("created:\n");
             for c in &self.created {
@@ -154,10 +152,7 @@ struct ActionSummary {
 impl TextRenderable for DiffOutput {
     fn render_text(&self) -> String {
         if self.actions.is_empty() {
-            return format!(
-                "no drift (workspace matches manifest {})\n",
-                self.manifest
-            );
+            return format!("no drift (workspace matches manifest {})\n", self.manifest);
         }
         let mut out = String::new();
         out.push_str(&format!(

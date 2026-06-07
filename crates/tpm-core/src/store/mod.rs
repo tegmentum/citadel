@@ -268,10 +268,7 @@ impl Store {
         self.inner
             .list_audit_log(filter_object, filter_action, limit)
     }
-    pub fn insert_approval(
-        &self,
-        approval: &crate::model::ApprovalRequest,
-    ) -> anyhow::Result<()> {
+    pub fn insert_approval(&self, approval: &crate::model::ApprovalRequest) -> anyhow::Result<()> {
         self.inner.insert_approval(approval)
     }
     pub fn get_approval(
@@ -300,10 +297,7 @@ impl Store {
     pub fn get_identity(&self, name: &str) -> anyhow::Result<Option<Identity>> {
         self.inner.get_identity(name)
     }
-    pub fn get_identity_by_key(
-        &self,
-        key_object_id: &uuid::Uuid,
-    ) -> anyhow::Result<Vec<Identity>> {
+    pub fn get_identity_by_key(&self, key_object_id: &uuid::Uuid) -> anyhow::Result<Vec<Identity>> {
         self.inner.get_identity_by_key(key_object_id)
     }
     pub fn list_identities(&self) -> anyhow::Result<Vec<Identity>> {
@@ -325,7 +319,11 @@ impl Store {
         self.inner.delete_identity(name)
     }
 
-    pub fn set_checkpoint_counter(&self, checkpoint_hash: &str, counter: u64) -> anyhow::Result<()> {
+    pub fn set_checkpoint_counter(
+        &self,
+        checkpoint_hash: &str,
+        counter: u64,
+    ) -> anyhow::Result<()> {
         self.inner.set_checkpoint_counter(checkpoint_hash, counter)
     }
 
@@ -365,7 +363,8 @@ impl Store {
         from: u64,
         to: u64,
     ) -> anyhow::Result<Vec<SecureLogRow>> {
-        self.secure_log_store()?.secure_log_range(stream_id, from, to)
+        self.secure_log_store()?
+            .secure_log_range(stream_id, from, to)
     }
     #[cfg(feature = "sqlite")]
     pub fn secure_log_head(&self, stream_id: &str) -> anyhow::Result<Option<u64>> {
@@ -381,7 +380,8 @@ impl Store {
         row: &SecureLogSegmentRow,
         entries: &[(u64, u64)],
     ) -> anyhow::Result<u64> {
-        self.secure_log_store()?.secure_log_segment_insert(row, entries)
+        self.secure_log_store()?
+            .secure_log_segment_insert(row, entries)
     }
     #[cfg(feature = "sqlite")]
     pub fn secure_log_segment_get(
@@ -398,18 +398,14 @@ impl Store {
         self.secure_log_store()?.secure_log_segments_list(stream_id)
     }
     #[cfg(feature = "sqlite")]
-    pub fn secure_log_segment_last_seqno(
-        &self,
-        stream_id: &str,
-    ) -> anyhow::Result<Option<u64>> {
-        self.secure_log_store()?.secure_log_segment_last_seqno(stream_id)
+    pub fn secure_log_segment_last_seqno(&self, stream_id: &str) -> anyhow::Result<Option<u64>> {
+        self.secure_log_store()?
+            .secure_log_segment_last_seqno(stream_id)
     }
     #[cfg(feature = "sqlite")]
-    pub fn secure_log_segment_entry_seqnos(
-        &self,
-        segment_id: u64,
-    ) -> anyhow::Result<Vec<u64>> {
-        self.secure_log_store()?.secure_log_segment_entry_seqnos(segment_id)
+    pub fn secure_log_segment_entry_seqnos(&self, segment_id: u64) -> anyhow::Result<Vec<u64>> {
+        self.secure_log_store()?
+            .secure_log_segment_entry_seqnos(segment_id)
     }
     #[cfg(feature = "sqlite")]
     pub fn secure_log_segment_for_seqno(&self, seqno: u64) -> anyhow::Result<Option<u64>> {
@@ -422,8 +418,11 @@ impl Store {
         signature: &[u8],
         signer_identity: &str,
     ) -> anyhow::Result<()> {
-        self.secure_log_store()?
-            .secure_log_segment_set_signature(segment_id, signature, signer_identity)
+        self.secure_log_store()?.secure_log_segment_set_signature(
+            segment_id,
+            signature,
+            signer_identity,
+        )
     }
     #[cfg(feature = "sqlite")]
     pub fn witness_log_insert(&self, row: &WitnessLogRow) -> anyhow::Result<u64> {
@@ -456,10 +455,7 @@ impl Store {
         self.secure_log_store()?.secure_log_stream_upsert(row)
     }
     #[cfg(feature = "sqlite")]
-    pub fn secure_log_stream_get(
-        &self,
-        name: &str,
-    ) -> anyhow::Result<Option<SecureLogStreamRow>> {
+    pub fn secure_log_stream_get(&self, name: &str) -> anyhow::Result<Option<SecureLogStreamRow>> {
         self.secure_log_store()?.secure_log_stream_get(name)
     }
     #[cfg(feature = "sqlite")]
@@ -468,7 +464,8 @@ impl Store {
     }
     #[cfg(feature = "sqlite")]
     pub fn secure_log_stream_set_tier(&self, name: &str, tier: &str) -> anyhow::Result<()> {
-        self.secure_log_store()?.secure_log_stream_set_tier(name, tier)
+        self.secure_log_store()?
+            .secure_log_stream_set_tier(name, tier)
     }
     #[cfg(feature = "sqlite")]
     pub fn secure_log_stream_deprecate(
@@ -516,7 +513,9 @@ mod tests {
     #[test]
     fn open_memory_secure_log_round_trips() {
         let store = Store::open_memory().unwrap();
-        store.secure_log_stream_upsert(&stream_row("alpha")).unwrap();
+        store
+            .secure_log_stream_upsert(&stream_row("alpha"))
+            .unwrap();
         let got = store.secure_log_stream_get("alpha").unwrap();
         assert_eq!(got.map(|r| r.name), Some("alpha".to_string()));
     }
@@ -528,7 +527,8 @@ mod tests {
     fn open_memory_instances_are_isolated() {
         let a = Store::open_memory().unwrap();
         let b = Store::open_memory().unwrap();
-        a.secure_log_stream_upsert(&stream_row("only-in-a")).unwrap();
+        a.secure_log_stream_upsert(&stream_row("only-in-a"))
+            .unwrap();
         assert!(a.secure_log_stream_get("only-in-a").unwrap().is_some());
         assert!(
             b.secure_log_stream_get("only-in-a").unwrap().is_none(),

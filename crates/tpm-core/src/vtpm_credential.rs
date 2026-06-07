@@ -98,8 +98,8 @@ impl VtpmCredential {
     }
 
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let bytes = std::fs::read(path)
-            .map_err(|e| anyhow::anyhow!("read {}: {}", path.display(), e))?;
+        let bytes =
+            std::fs::read(path).map_err(|e| anyhow::anyhow!("read {}: {}", path.display(), e))?;
         let cred: VtpmCredential = serde_json::from_slice(&bytes)
             .map_err(|e| anyhow::anyhow!("parse {}: {}", path.display(), e))?;
         if cred.version != VTPM_CREDENTIAL_VERSION {
@@ -170,13 +170,8 @@ mod tests {
             "2026-04-23T00:00:00Z".to_string(),
             "vtpm-wasm".to_string(),
         );
-        let cred = VtpmCredential::new(
-            id,
-            "swtpm".to_string(),
-            vec![1, 2, 3, 4],
-            vec![5, 6, 7, 8],
-        )
-        .unwrap();
+        let cred = VtpmCredential::new(id, "swtpm".to_string(), vec![1, 2, 3, 4], vec![5, 6, 7, 8])
+            .unwrap();
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cred.json");
@@ -195,13 +190,7 @@ mod tests {
             "2026-04-23T00:00:00Z".to_string(),
             "vtpm-wasm".to_string(),
         );
-        let mut cred = VtpmCredential::new(
-            id,
-            "swtpm".to_string(),
-            vec![1],
-            vec![2],
-        )
-        .unwrap();
+        let mut cred = VtpmCredential::new(id, "swtpm".to_string(), vec![1], vec![2]).unwrap();
         cred.identity.instance_id = "different".to_string();
 
         let dir = tempfile::tempdir().unwrap();

@@ -12,5 +12,8 @@ fn mock_backend_yields_no_tls_identity_and_no_cert() {
     let mesh = MeshId::new("test");
     let (mut node, id) = build_node(&mesh, 1, "worker", NodeConfig::default(), &[]);
     let identity = mint_tls_identity(&mut node, &id.to_string());
-    assert!(identity.is_none(), "MockBackend cannot mint a real TLS identity → plain HTTP");
+    assert!(
+        identity.is_none(),
+        "MockBackend cannot mint a real TLS identity → plain HTTP"
+    );
 }

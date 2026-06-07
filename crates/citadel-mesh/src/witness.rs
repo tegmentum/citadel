@@ -68,7 +68,9 @@ pub fn is_witness(
     epoch: Epoch,
     k: usize,
 ) -> bool {
-    assign(subject, roster, epoch, k).witnesses.contains(&candidate)
+    assign(subject, roster, epoch, k)
+        .witnesses
+        .contains(&candidate)
 }
 
 #[cfg(test)]
@@ -132,7 +134,11 @@ mod tests {
         // HRW spreads work across the roster: almost every node witnesses
         // someone, and no node carries a wildly disproportionate share
         // (avg is k=5; allow up to ~2.5x before calling it a hot spot).
-        assert!(load.len() >= 27, "most nodes should witness: {} of 30", load.len());
+        assert!(
+            load.len() >= 27,
+            "most nodes should witness: {} of 30",
+            load.len()
+        );
         assert!(max <= 12, "no witness hot spot: max {max}");
     }
 

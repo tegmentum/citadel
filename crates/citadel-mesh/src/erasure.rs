@@ -41,7 +41,11 @@ impl ErasureScheme {
     }
 
     /// Split `payload` into [`Self::total`] fragments for `record_id`.
-    pub fn encode(&self, record_id: [u8; 32], payload: &[u8]) -> anyhow::Result<Vec<EvidenceFragment>> {
+    pub fn encode(
+        &self,
+        record_id: [u8; 32],
+        payload: &[u8],
+    ) -> anyhow::Result<Vec<EvidenceFragment>> {
         let shard_len = payload.len().div_ceil(self.data).max(1);
         // Pad to data * shard_len, split into data shards, then add zeroed
         // parity shards for Reed–Solomon to fill.
@@ -146,9 +150,7 @@ pub fn reconstruct(fragments: &[EvidenceFragment]) -> anyhow::Result<Vec<u8>> {
         }
     }
     if present < threshold {
-        anyhow::bail!(
-            "insufficient fragments: have {present} intact, need {threshold}"
-        );
+        anyhow::bail!("insufficient fragments: have {present} intact, need {threshold}");
     }
 
     let rs = ReedSolomon::new(threshold, parity)
@@ -196,8 +198,7 @@ mod tests {
         assert_eq!(reconstruct(&kept).unwrap(), payload);
 
         // Keep a different 7 (a mix of data and parity shards).
-        let mixed: Vec<EvidenceFragment> =
-            frags.iter().step_by(3).take(7).cloned().collect();
+        let mixed: Vec<EvidenceFragment> = frags.iter().step_by(3).take(7).cloned().collect();
         assert_eq!(mixed.len(), 7);
         assert_eq!(reconstruct(&mixed).unwrap(), payload);
     }

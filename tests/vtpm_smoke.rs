@@ -21,9 +21,8 @@ fn vtpm_component() -> Option<String> {
 }
 
 fn tpm_vtpm(store: &std::path::Path) -> Command {
-    let component = vtpm_component().expect(
-        "TPM_VTPM_COMPONENT not set — point it at tpm-ephemeral.component.wasm",
-    );
+    let component = vtpm_component()
+        .expect("TPM_VTPM_COMPONENT not set — point it at tpm-ephemeral.component.wasm");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_tpm"));
     cmd.env("TPM_STORE_PATH", store);
     cmd.env("TPM_VTPM_COMPONENT", &component);
@@ -43,7 +42,11 @@ fn run(cmd: &mut Command) -> (String, String, bool) {
 
 fn assert_ok(cmd: &mut Command) -> String {
     let (stdout, stderr, ok) = run(cmd);
-    assert!(ok, "command failed:\nstdout: {}\nstderr: {}", stdout, stderr);
+    assert!(
+        ok,
+        "command failed:\nstdout: {}\nstderr: {}",
+        stdout, stderr
+    );
     stdout
 }
 
@@ -103,9 +106,8 @@ fn vtpm_pcr_json() {
     let dir = tempfile::tempdir().unwrap();
     let store = dir.path().join("vtpm.db");
 
-    let out = assert_ok(
-        tpm_vtpm(&store).args(["pcr", "show", "--index", "0,7", "--format", "json"]),
-    );
+    let out =
+        assert_ok(tpm_vtpm(&store).args(["pcr", "show", "--index", "0,7", "--format", "json"]));
     let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(parsed["bank"], "sha256");
     assert!(parsed["values"].is_array());
@@ -168,9 +170,14 @@ fn vtpm_pcr_baseline() {
     assert_ok(tpm_vtpm(&store).args(["init"]));
 
     // Save baseline
-    let out = assert_ok(
-        tpm_vtpm(&store).args(["pcr", "baseline", "save", "fresh-boot", "--index", "0,7,11"]),
-    );
+    let out = assert_ok(tpm_vtpm(&store).args([
+        "pcr",
+        "baseline",
+        "save",
+        "fresh-boot",
+        "--index",
+        "0,7,11",
+    ]));
     assert!(out.contains("baseline saved"));
     assert!(out.contains("PCRs: 3"));
 
@@ -196,9 +203,7 @@ fn vtpm_full_workflow() {
     assert_ok(tpm_vtpm(&store).args(["policy", "create", "boot", "--pcr", "7"]));
 
     // Create key with policy
-    assert_ok(
-        tpm_vtpm(&store).args(["key", "create", "signing/release", "--policy", "boot"]),
-    );
+    assert_ok(tpm_vtpm(&store).args(["key", "create", "signing/release", "--policy", "boot"]));
 
     // Sign an artifact
     let artifact = dir.path().join("release.tar.gz");
@@ -210,9 +215,13 @@ fn vtpm_full_workflow() {
     );
 
     // Export public key
-    let out = assert_ok(
-        tpm_vtpm(&store).args(["key", "export-pub", "signing/release", "--export-for", "openssl"]),
-    );
+    let out = assert_ok(tpm_vtpm(&store).args([
+        "key",
+        "export-pub",
+        "signing/release",
+        "--export-for",
+        "openssl",
+    ]));
     assert!(out.contains("PUBLIC KEY"));
 
     // Object tree

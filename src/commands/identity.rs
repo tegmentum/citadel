@@ -35,14 +35,18 @@ pub fn init(
         if authorized_by.is_some() || pcr_bind.is_some() {
             anyhow::bail!("--authority cannot be combined with --authorized-by or --pcr-bind");
         }
-        return init_authority(store, backend, name, usage, algorithm, subject, key_path, format);
+        return init_authority(
+            store, backend, name, usage, algorithm, subject, key_path, format,
+        );
     }
 
     // PolicyAuthorize-bound identity: the key signs under any measured
     // state the authority approves (upgradable policy, no re-key).
     if let Some(auth_name) = authorized_by {
         let indices = pcr_bind.ok_or_else(|| {
-            anyhow::anyhow!("--authorized-by requires --pcr-bind to name the PCRs the approval covers")
+            anyhow::anyhow!(
+                "--authorized-by requires --pcr-bind to name the PCRs the approval covers"
+            )
         })?;
         return init_authorized(
             store, backend, name, usage, algorithm, subject, key_path, auth_name, indices, format,
@@ -52,7 +56,9 @@ pub fn init(
     // PCR-bound identities create a TPM-policy-bound key so the TPM
     // enforces the measured state at sign time (see `init_pcr_bound`).
     if let Some(indices) = pcr_bind {
-        return init_pcr_bound(store, backend, name, usage, algorithm, subject, key_path, indices, format);
+        return init_pcr_bound(
+            store, backend, name, usage, algorithm, subject, key_path, indices, format,
+        );
     }
 
     let usage_parsed: IdentityUsage = usage.parse().map_err(|e: String| anyhow::anyhow!(e))?;

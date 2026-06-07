@@ -17,34 +17,34 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::attest::{Attestor, ReferenceMeasurements, TrustAnchors};
 use crate::application::{AppAttestationResult, AppMeasurement, AppPolicy, AppVerdict};
-use crate::promotion::{PromotionProposal, PromotionVote};
-use crate::reference::{
-    AcceptedReferences, ArtifactIdentity, BootProfile, FleetArtifactPolicy, PcrClass,
-    ReferenceEntry, ReferenceManifest, ReferenceMatchPolicy, RetiredAction, Validity,
-};
+use crate::attest::{Attestor, ReferenceMeasurements, TrustAnchors};
 use crate::crypto::MeshKeypair;
 use crate::enrollment::{
     self, AdmissionReason, AdmissionVerdict, EnrollmentChallenge, EnrollmentClaim, EnrollmentVote,
 };
-use crate::evidence::{EvidenceChain, RecordType};
 use crate::erasure::{self, ErasureScheme, EvidenceFragment};
 use crate::evidence::{self, assign_holders, EvidenceReceipt};
+use crate::evidence::{EvidenceChain, RecordType};
 use crate::id::{Epoch, MeshId, NodeId};
 use crate::logship::{
     checkpoint_nonce, decode_records, encode_records, Checkpoint, DigestAdvertisement, EventLog,
     EventRecord, LogFragment, PlacementPolicy,
 };
 use crate::membership::Membership;
+use crate::promotion::{PromotionProposal, PromotionVote};
 use crate::quarantine::{Ballot, QuarantineProposal, QuarantineScope, QuarantineVote};
+use crate::reference::{
+    AcceptedReferences, ArtifactIdentity, BootProfile, FleetArtifactPolicy, PcrClass,
+    ReferenceEntry, ReferenceManifest, ReferenceMatchPolicy, RetiredAction, Validity,
+};
 use crate::state::{LivenessState, TrustState};
 use crate::store::Store;
-use serde::{Deserialize, Serialize};
 use crate::types::{
     AttestationChallenge, Endorsement, GossipEnvelope, GossipMessage, ReasonCode, Verdict,
 };
 use crate::witness;
+use serde::{Deserialize, Serialize};
 use tpm_core::backend::TpmBackend;
 use tpm_core::eventlog::BootEventLog;
 
@@ -579,7 +579,10 @@ impl Node {
         if bound {
             measurement.clone()
         } else {
-            AppMeasurement { pcr_bound: false, ..measurement.clone() }
+            AppMeasurement {
+                pcr_bound: false,
+                ..measurement.clone()
+            }
         }
     }
 
@@ -638,8 +641,8 @@ impl Node {
             .map(|((_, app), _)| app)
             .collect();
         let critical_failed = failed.iter().any(|a| self.app_policy.is_critical(a));
-        let threshold_crossed =
-            self.config.app_escalation_threshold > 0 && failed.len() >= self.config.app_escalation_threshold;
+        let threshold_crossed = self.config.app_escalation_threshold > 0
+            && failed.len() >= self.config.app_escalation_threshold;
         if critical_failed || threshold_crossed {
             self.app_escalated.insert(subject);
             self.membership.set_trust(&subject, TrustState::Suspicious);
@@ -717,8 +720,11 @@ impl Node {
                 .or_default()
                 .insert(lf.fragment.index, lf);
         }
-        self.adopted_manifests =
-            snap.adopted_manifests.into_iter().map(|m| (m.content_id(), m)).collect();
+        self.adopted_manifests = snap
+            .adopted_manifests
+            .into_iter()
+            .map(|m| (m.content_id(), m))
+            .collect();
         // Re-apply manifests to the accepted set (no re-audit; chain restored below).
         for m in self.adopted_manifests.values() {
             self.peer_reference.adopt_manifest(m);
@@ -735,10 +741,16 @@ impl Node {
             .into_iter()
             .map(|c| ((c.node_id, c.boot_id, c.window_id), c))
             .collect();
-        self.sealed_roots =
-            snap.sealed_roots.into_iter().map(|(n, b, w, r)| ((n, b, w), r)).collect();
-        self.app_scopes =
-            snap.app_scopes.into_iter().map(|(n, a, s)| ((n, a), s)).collect();
+        self.sealed_roots = snap
+            .sealed_roots
+            .into_iter()
+            .map(|(n, b, w, r)| ((n, b, w), r))
+            .collect();
+        self.app_scopes = snap
+            .app_scopes
+            .into_iter()
+            .map(|(n, a, s)| ((n, a), s))
+            .collect();
         self.app_escalated = snap.app_escalated.into_iter().collect();
         self.runtime_escalated = snap.runtime_escalated.into_iter().collect();
     }
@@ -787,12 +799,14 @@ impl Node {
     /// Enforcement hook: may new workloads of `app` be scheduled on `subject`?
     /// `false` once an app-scope at/above `BlockWorkloadScheduling` is enforced.
     pub fn app_workload_blocked(&self, subject: NodeId, app: &str) -> bool {
-        self.app_scope_of(subject, app).is_some_and(|s| s.blocks_workload_scheduling())
+        self.app_scope_of(subject, app)
+            .is_some_and(|s| s.blocks_workload_scheduling())
     }
 
     /// Enforcement hook: are `app`'s credentials on `subject` revoked?
     pub fn app_credentials_revoked(&self, subject: NodeId, app: &str) -> bool {
-        self.app_scope_of(subject, app).is_some_and(|s| s.revokes_credentials())
+        self.app_scope_of(subject, app)
+            .is_some_and(|s| s.revokes_credentials())
     }
 
     /// The accepted set used for a profile name (the named profile's, or the
@@ -818,7 +832,16 @@ impl Node {
         validity: Validity,
         tick: u64,
     ) -> PromotionProposal {
-        PromotionProposal::create(&self.keypair, self.id, profile, index, digest, artifact, validity, tick)
+        PromotionProposal::create(
+            &self.keypair,
+            self.id,
+            profile,
+            index,
+            digest,
+            artifact,
+            validity,
+            tick,
+        )
     }
 
     /// As an eligible peer: vote on a promotion. Approve only if it carries
@@ -826,7 +849,9 @@ impl Node {
     /// judge the artifact independently, no central "known good".
     pub fn vote_on_promotion(&self, proposal: &PromotionProposal, tick: u64) -> PromotionVote {
         let approve = match &proposal.artifact {
-            Some(a) => self.accepted_for_profile(&proposal.profile).permits_artifact(a),
+            Some(a) => self
+                .accepted_for_profile(&proposal.profile)
+                .permits_artifact(a),
             None => false, // cannot vouch for an unattributed state
         };
         PromotionVote::sign(&self.keypair, self.id, proposal.id, approve, tick)
@@ -835,8 +860,11 @@ impl Node {
     /// Adopt a quorum-promoted state into the target profile's accepted set and
     /// record it in the audit chain.
     pub fn adopt_promoted_state(&mut self, proposal: &PromotionProposal) {
-        let mut entry =
-            ReferenceEntry::new(proposal.index, proposal.digest.clone(), proposal.validity.clone());
+        let mut entry = ReferenceEntry::new(
+            proposal.index,
+            proposal.digest.clone(),
+            proposal.validity.clone(),
+        );
         if let Some(a) = &proposal.artifact {
             entry = entry.with_artifact(a.clone());
         }
@@ -922,7 +950,8 @@ impl Node {
         if self.config.reference_advertise_interval == 0 || self.adopted_manifests.is_empty() {
             return;
         }
-        if now.saturating_sub(self.last_reference_advert) < self.config.reference_advertise_interval {
+        if now.saturating_sub(self.last_reference_advert) < self.config.reference_advertise_interval
+        {
             return;
         }
         self.last_reference_advert = now;
@@ -1081,7 +1110,10 @@ impl Node {
 
     /// The LtHash root of every peer log this node currently replicates.
     pub fn replica_roots(&self) -> Vec<(NodeId, Vec<u8>)> {
-        self.replicas.iter().map(|(id, log)| (*id, log.root())).collect()
+        self.replicas
+            .iter()
+            .map(|(id, log)| (*id, log.root()))
+            .collect()
     }
 
     /// Periodically advertise this node's per-window log digests to peers.
@@ -1128,7 +1160,13 @@ impl Node {
         };
         let ev = self
             .attestor
-            .produce(&challenge, self.config.policy_revision, None, None, self.tick)
+            .produce(
+                &challenge,
+                self.config.policy_revision,
+                None,
+                None,
+                self.tick,
+            )
             .ok()?;
         Some(Checkpoint::sign(
             &self.keypair,
@@ -1212,7 +1250,12 @@ impl Node {
     }
 
     /// The signed checkpoint this node holds for a peer's sealed window, if any.
-    pub fn checkpoint_for(&self, node: NodeId, boot_id: u64, window_id: u64) -> Option<&Checkpoint> {
+    pub fn checkpoint_for(
+        &self,
+        node: NodeId,
+        boot_id: u64,
+        window_id: u64,
+    ) -> Option<&Checkpoint> {
         self.checkpoints.get(&(node, boot_id, window_id))
     }
 
@@ -1229,7 +1272,8 @@ impl Node {
             match self.sealed_roots.get(&key) {
                 Some(prev) if *prev != ad.root => {
                     // CHECKPOINT_EQUIVOCATION — distrust the forking node.
-                    self.membership.set_trust(&ad.node_id, TrustState::Suspicious);
+                    self.membership
+                        .set_trust(&ad.node_id, TrustState::Suspicious);
                 }
                 None => {
                     self.sealed_roots.insert(key, ad.root.clone());
@@ -1248,14 +1292,28 @@ impl Node {
         if replica.window_root(ad.window_id) != ad.root {
             let lo = ad.window_id * self.config.log_window_size;
             let hi = lo + self.config.log_window_size;
-            self.emit(sender, GossipMessage::LogRangeQuery { boot_id: ad.boot_id, lo, hi });
+            self.emit(
+                sender,
+                GossipMessage::LogRangeQuery {
+                    boot_id: ad.boot_id,
+                    lo,
+                    hi,
+                },
+            );
         }
     }
 
     /// Continue the binary search for `sender`'s log: compare the advertiser's
     /// root over `[lo, hi)` to our replica's; descend only if they differ,
     /// pulling records once the range is small (design log-shipping §12).
-    fn on_log_range_root(&mut self, sender: NodeId, boot_id: u64, lo: u64, hi: u64, remote_root: Vec<u8>) {
+    fn on_log_range_root(
+        &mut self,
+        sender: NodeId,
+        boot_id: u64,
+        lo: u64,
+        hi: u64,
+        remote_root: Vec<u8>,
+    ) {
         let replica = self
             .replicas
             .entry(sender)
@@ -1267,8 +1325,22 @@ impl Node {
             self.emit(sender, GossipMessage::LogPull { boot_id, lo, hi });
         } else {
             let mid = lo + (hi - lo) / 2;
-            self.emit(sender, GossipMessage::LogRangeQuery { boot_id, lo, hi: mid });
-            self.emit(sender, GossipMessage::LogRangeQuery { boot_id, lo: mid, hi });
+            self.emit(
+                sender,
+                GossipMessage::LogRangeQuery {
+                    boot_id,
+                    lo,
+                    hi: mid,
+                },
+            );
+            self.emit(
+                sender,
+                GossipMessage::LogRangeQuery {
+                    boot_id,
+                    lo: mid,
+                    hi,
+                },
+            );
         }
     }
 
@@ -1281,7 +1353,11 @@ impl Node {
 
     /// The erasure scheme this node uses for durable window evidence.
     fn evidence_scheme(&self) -> Option<ErasureScheme> {
-        ErasureScheme::new(self.config.evidence_data_shards, self.config.evidence_parity_shards).ok()
+        ErasureScheme::new(
+            self.config.evidence_data_shards,
+            self.config.evidence_parity_shards,
+        )
+        .ok()
     }
 
     /// The placement policy applied to *newly* sealed windows (from config).
@@ -1348,7 +1424,10 @@ impl Node {
             };
             if holder == self.id {
                 let index = lf.fragment.index;
-                self.held_fragments.entry(record_id).or_default().insert(index, lf);
+                self.held_fragments
+                    .entry(record_id)
+                    .or_default()
+                    .insert(index, lf);
                 self_acked.insert(index);
             } else {
                 self.emit(holder, GossipMessage::LogFragmentStore(Box::new(lf)));
@@ -1462,16 +1541,17 @@ impl Node {
             .values()
             .filter(|w| w.migrating.is_some())
             .count();
-        let budget = self.config.evidence_migration_rate.saturating_sub(in_flight);
+        let budget = self
+            .config
+            .evidence_migration_rate
+            .saturating_sub(in_flight);
         if budget == 0 {
             return;
         }
         let to_start: Vec<(u64, u64, [u8; 32])> = self
             .shipped_windows
             .iter()
-            .filter(|(_, w)| {
-                w.migrating.is_none() && (w.policy != target || w.scheme != scheme)
-            })
+            .filter(|(_, w)| w.migrating.is_none() && (w.policy != target || w.scheme != scheme))
             .map(|(k, w)| (k.0, k.1, w.record_id))
             .take(budget)
             .collect();
@@ -1485,8 +1565,14 @@ impl Node {
                 continue;
             }
             // Re-ship to the new holders (does not touch the committed copy).
-            let self_acked =
-                self.scatter(record_id, boot_id, window_id, target, &new_holders, fragments);
+            let self_acked = self.scatter(
+                record_id,
+                boot_id,
+                window_id,
+                target,
+                &new_holders,
+                fragments,
+            );
             if let Some(sw) = self.shipped_windows.get_mut(&(boot_id, window_id)) {
                 sw.migrating = Some(Migration {
                     to: target,
@@ -1535,7 +1621,10 @@ impl Node {
         let receipt = EvidenceReceipt::sign(&self.keypair, self.id, &lf.fragment, self.tick);
         let record_id = lf.fragment.record_id;
         let index = lf.fragment.index;
-        self.held_fragments.entry(record_id).or_default().insert(index, lf);
+        self.held_fragments
+            .entry(record_id)
+            .or_default()
+            .insert(index, lf);
         self.emit(sender, GossipMessage::LogFragmentAck(Box::new(receipt)));
     }
 
@@ -1656,19 +1745,23 @@ impl Node {
     /// The self-describing placement of a sealed window this node shipped, if
     /// any — the handle a recoverer/auditor needs to find its holders.
     pub fn window_placement(&self, boot_id: u64, window_id: u64) -> Option<WindowPlacement> {
-        self.shipped_windows.get(&(boot_id, window_id)).map(|w| WindowPlacement {
-            record_id: w.record_id,
-            subject: self.id,
-            boot_id,
-            window_id,
-            policy: w.policy,
-            holder_count: w.scheme.total(),
-        })
+        self.shipped_windows
+            .get(&(boot_id, window_id))
+            .map(|w| WindowPlacement {
+                record_id: w.record_id,
+                subject: self.id,
+                boot_id,
+                window_id,
+                policy: w.policy,
+                holder_count: w.scheme.total(),
+            })
     }
 
     /// The record id of a sealed window this node erasure-shipped, if any.
     pub fn shipped_record_id(&self, boot_id: u64, window_id: u64) -> Option<[u8; 32]> {
-        self.shipped_windows.get(&(boot_id, window_id)).map(|w| w.record_id)
+        self.shipped_windows
+            .get(&(boot_id, window_id))
+            .map(|w| w.record_id)
     }
 
     /// A shipped window's durability: acknowledged shards / reconstruction
@@ -1689,7 +1782,10 @@ impl Node {
 
     /// Number of distinct shards this node stores for `record_id` (as a holder).
     pub fn held_fragment_count(&self, record_id: [u8; 32]) -> usize {
-        self.held_fragments.get(&record_id).map(|m| m.len()).unwrap_or(0)
+        self.held_fragments
+            .get(&record_id)
+            .map(|m| m.len())
+            .unwrap_or(0)
     }
 
     /// Whether this node has reconstructed `record_id` from holders.
@@ -1869,7 +1965,9 @@ impl Node {
         let mut refute = false;
         for u in &env.piggyback {
             if u.node_id == self.id {
-                if !matches!(u.liveness, LivenessState::Alive) && u.incarnation >= self.membership.my_incarnation() {
+                if !matches!(u.liveness, LivenessState::Alive)
+                    && u.incarnation >= self.membership.my_incarnation()
+                {
                     refute = true;
                 }
                 continue;
@@ -1917,10 +2015,23 @@ impl Node {
                 // Answer with our own log's root over the queried range.
                 if boot_id == self.config.boot_id {
                     let root = self.own_log.range_root(lo, hi);
-                    self.emit(env.sender, GossipMessage::LogRangeRoot { boot_id, lo, hi, root });
+                    self.emit(
+                        env.sender,
+                        GossipMessage::LogRangeRoot {
+                            boot_id,
+                            lo,
+                            hi,
+                            root,
+                        },
+                    );
                 }
             }
-            GossipMessage::LogRangeRoot { boot_id, lo, hi, root } => {
+            GossipMessage::LogRangeRoot {
+                boot_id,
+                lo,
+                hi,
+                root,
+            } => {
                 self.on_log_range_root(env.sender, boot_id, lo, hi, root);
             }
             GossipMessage::LogPull { boot_id, lo, hi } => {
@@ -2025,10 +2136,13 @@ impl Node {
         if ch.subject != self.id || now > ch.expires_at_tick {
             return;
         }
-        if let Ok(ev) =
-            self.attestor
-                .produce(&ch, self.config.policy_revision, None, self.endorsement.clone(), now)
-        {
+        if let Ok(ev) = self.attestor.produce(
+            &ch,
+            self.config.policy_revision,
+            None,
+            self.endorsement.clone(),
+            now,
+        ) {
             self.emit(ch.challenger, GossipMessage::AttestEvidence(Box::new(ev)));
         }
     }
@@ -2057,7 +2171,8 @@ impl Node {
         let verdict = result.result;
         // Our own direct observation — provisional until (and unless) the
         // assigned-witness quorum decides otherwise in `aggregate_trust`.
-        self.membership.set_trust(&ev.subject, verdict_to_trust(verdict));
+        self.membership
+            .set_trust(&ev.subject, verdict_to_trust(verdict));
         self.record_report(ev.subject, self.id, verdict);
         self.aggregate_trust(ev.subject);
         // Gossip the signed verdict so every node aggregates the same
@@ -2152,8 +2267,14 @@ impl Node {
         if reported == 0 || reported < ws.quorum_threshold {
             return;
         }
-        let fails = relevant.iter().filter(|v| matches!(v, Verdict::Fail)).count();
-        let passes = relevant.iter().filter(|v| matches!(v, Verdict::Pass)).count();
+        let fails = relevant
+            .iter()
+            .filter(|v| matches!(v, Verdict::Fail))
+            .count();
+        let passes = relevant
+            .iter()
+            .filter(|v| matches!(v, Verdict::Pass))
+            .count();
         // Is the subject still serving its probation window?
         let on_probation = matches!(
             self.membership.get(&subject).map(|m| m.trust),
@@ -2246,18 +2367,19 @@ impl Node {
             policy_revision: challenge.policy_revision,
             expires_at_tick: self.tick + 5,
         };
-        let evidence =
-            self.attestor
-                .produce(
-                    &ach,
-                    self.config.policy_revision,
-                    Some(agent_version.to_string()),
-                    self.endorsement.clone(),
-                    self.tick,
-                )?;
+        let evidence = self.attestor.produce(
+            &ach,
+            self.config.policy_revision,
+            Some(agent_version.to_string()),
+            self.endorsement.clone(),
+            self.tick,
+        )?;
         // Present our TLS cert (if advertised) in the signed claim, so admitting
         // nodes learn it on the bootstrap channel before mTLS comes up (E2).
-        let tls_cert = self.membership.get(&self.id).and_then(|m| m.tls_cert.clone());
+        let tls_cert = self
+            .membership
+            .get(&self.id)
+            .and_then(|m| m.tls_cert.clone());
         Ok(EnrollmentClaim::create(
             &self.keypair,
             challenge.mesh_id.clone(),
@@ -2286,7 +2408,14 @@ impl Node {
         } else {
             AdmissionVerdict::Reject
         };
-        EnrollmentVote::sign(&self.keypair, self.id, claim.candidate, verdict, reason, tick)
+        EnrollmentVote::sign(
+            &self.keypair,
+            self.id,
+            claim.candidate,
+            verdict,
+            reason,
+            tick,
+        )
     }
 
     fn assess_claim(
@@ -2303,8 +2432,11 @@ impl Node {
         }
         // Duplicate/cloned identity: the candidate's fingerprint must not
         // already belong to a known member.
-        let existing: Vec<[u8; 32]> =
-            self.membership.iter().map(|m| m.public_key.fingerprint()).collect();
+        let existing: Vec<[u8; 32]> = self
+            .membership
+            .iter()
+            .map(|m| m.public_key.fingerprint())
+            .collect();
         if enrollment::is_duplicate_identity(&claim.ak_fingerprint, &existing) {
             return AdmissionReason::DuplicateIdentity;
         }
@@ -2352,7 +2484,8 @@ impl Node {
         if let Some(cert) = tls_cert {
             self.membership.learn_cert(&node_id, cert);
         }
-        self.membership.set_trust(&node_id, TrustState::Probationary);
+        self.membership
+            .set_trust(&node_id, TrustState::Probationary);
         self.probation_start.insert(node_id, tick);
     }
 
@@ -2374,7 +2507,15 @@ impl Node {
         } else {
             Vec::new()
         };
-        QuarantineProposal::create(&self.keypair, self.id, subject, reasons, scope, tick + 10, tick)
+        QuarantineProposal::create(
+            &self.keypair,
+            self.id,
+            subject,
+            reasons,
+            scope,
+            tick + 10,
+            tick,
+        )
     }
 
     /// Vote on a quarantine proposal: approve if this node independently sees
@@ -2409,7 +2550,8 @@ impl Node {
     pub fn lift_quarantine(&mut self, subject: NodeId, tick: u64) {
         self.quarantine.remove(&subject);
         if self.membership.get(&subject).is_some() {
-            self.membership.set_trust(&subject, TrustState::Probationary);
+            self.membership
+                .set_trust(&subject, TrustState::Probationary);
             self.probation_start.insert(subject, tick);
         }
     }

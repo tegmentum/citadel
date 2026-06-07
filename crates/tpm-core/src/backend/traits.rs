@@ -218,7 +218,13 @@ pub trait TpmBackend: Send + Sync {
     /// `event_type` so the event carries digest-bound, classifiable content
     /// (e.g. an `EV_IPL` kernel command line). The default just extends and
     /// drops the data (real backends read a genuine platform log instead).
-    fn measure_event(&self, bank: &str, index: u32, event_type: u32, data: &[u8]) -> anyhow::Result<()> {
+    fn measure_event(
+        &self,
+        bank: &str,
+        index: u32,
+        event_type: u32,
+        data: &[u8],
+    ) -> anyhow::Result<()> {
         let _ = event_type;
         let digest = hash_for_bank(bank, data)?;
         self.pcr_extend(bank, index, &digest)

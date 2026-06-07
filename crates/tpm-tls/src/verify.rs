@@ -32,7 +32,10 @@ pub struct PinnedServerAuth {
 
 impl PinnedServerAuth {
     pub fn new(pinned: Vec<CertificateDer<'static>>) -> Self {
-        Self { pinned, algs: provider_algs() }
+        Self {
+            pinned,
+            algs: provider_algs(),
+        }
     }
 }
 
@@ -48,7 +51,9 @@ impl ServerCertVerifier for PinnedServerAuth {
         if is_pinned(&self.pinned, end_entity) {
             Ok(ServerCertVerified::assertion())
         } else {
-            Err(Error::General("server certificate is not a pinned mesh peer".into()))
+            Err(Error::General(
+                "server certificate is not a pinned mesh peer".into(),
+            ))
         }
     }
 
@@ -85,7 +90,10 @@ pub struct PinnedClientAuth {
 
 impl PinnedClientAuth {
     pub fn new(pinned: Vec<CertificateDer<'static>>) -> Self {
-        Self { pinned, algs: provider_algs() }
+        Self {
+            pinned,
+            algs: provider_algs(),
+        }
     }
 }
 
@@ -103,7 +111,9 @@ impl ClientCertVerifier for PinnedClientAuth {
         if is_pinned(&self.pinned, end_entity) {
             Ok(ClientCertVerified::assertion())
         } else {
-            Err(Error::General("client certificate is not a pinned mesh peer".into()))
+            Err(Error::General(
+                "client certificate is not a pinned mesh peer".into(),
+            ))
         }
     }
 

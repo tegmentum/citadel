@@ -42,7 +42,9 @@ fn seal_three_windows(mesh: &mut Mesh, origin: NodeId) {
 }
 
 fn placement(mesh: &Mesh, origin: NodeId, window: u64) -> WindowPlacement {
-    mesh.node(origin).window_placement(1, window).expect("window shipped")
+    mesh.node(origin)
+        .window_placement(1, window)
+        .expect("window shipped")
 }
 
 fn offbox_count(mesh: &Mesh, origin: NodeId) -> usize {
@@ -59,23 +61,36 @@ fn flipping_the_policy_leaves_old_windows_reconstructable() {
 
     // All three windows were placed under the original FullRoster policy.
     for w in 0..3 {
-        assert_eq!(placement(&mesh, origin, w).policy, PlacementPolicy::FullRoster);
+        assert_eq!(
+            placement(&mesh, origin, w).policy,
+            PlacementPolicy::FullRoster
+        );
     }
 
     // Flip the target policy to OffBox but with migration DISABLED (rate 0):
     // existing windows keep their recorded FullRoster placement.
     mesh.set_evidence_placement_all(true, 2, 0);
     mesh.run(5);
-    assert_eq!(offbox_count(&mesh, origin), 0, "no migration → policies unchanged");
+    assert_eq!(
+        offbox_count(&mesh, origin),
+        0,
+        "no migration → policies unchanged"
+    );
 
     // A window's self-describing handle still points at its FullRoster holders
     // even though the mesh's *current* policy is now OffBox — and those two
     // holder sets genuinely differ (so guessing from current config would miss).
     let p = placement(&mesh, origin, 1);
     let full_holders = mesh.node(origin).fragment_holders(&p);
-    let offbox_view = WindowPlacement { policy: PlacementPolicy::OffBox, ..p };
+    let offbox_view = WindowPlacement {
+        policy: PlacementPolicy::OffBox,
+        ..p
+    };
     let offbox_holders = mesh.node(origin).fragment_holders(&offbox_view);
-    assert_ne!(full_holders, offbox_holders, "the two policies pick different holders");
+    assert_ne!(
+        full_holders, offbox_holders,
+        "the two policies pick different holders"
+    );
 
     // Reconstruct the old window via its recorded placement: kill two of its
     // (FullRoster) holders, a third survivor rebuilds it.
@@ -117,7 +132,10 @@ fn migration_slowly_moves_windows_to_the_new_policy() {
     for w in 0..3 {
         let p = placement(&mesh, origin, w);
         let holders = mesh.node(origin).fragment_holders(&p);
-        assert!(!holders.contains(&origin), "subject excluded from window {w}");
+        assert!(
+            !holders.contains(&origin),
+            "subject excluded from window {w}"
+        );
         assert_eq!(
             mesh.node(origin).held_fragment_count(p.record_id),
             0,
@@ -166,7 +184,11 @@ fn offbox_paired_with_a_parity_bump_raises_fault_tolerance() {
         assert_eq!(p.policy, PlacementPolicy::OffBox);
         assert_eq!(p.holder_count, 7, "data 3 + parity 4");
         let holders = mesh.node(origin).fragment_holders(&p);
-        assert_eq!(holders.len(), 7, "7 distinct holders among the 7 non-subject peers");
+        assert_eq!(
+            holders.len(),
+            7,
+            "7 distinct holders among the 7 non-subject peers"
+        );
         assert!(!holders.contains(&origin));
     }
 
@@ -202,7 +224,10 @@ fn migration_never_drops_a_window_below_threshold() {
         let holders = mesh.node(origin).fragment_holders(&p);
         // A holder that is not the origin acts as recoverer; it should always
         // be able to gather a threshold of shards.
-        let recoverer = *holders.iter().find(|h| **h != origin).unwrap_or(&holders[0]);
+        let recoverer = *holders
+            .iter()
+            .find(|h| **h != origin)
+            .unwrap_or(&holders[0]);
         mesh.node_mut(recoverer).request_reconstruction(&p);
         mesh.run(3);
         assert!(

@@ -93,7 +93,12 @@ fn evidence_survives_losing_parity_holders_and_rebuilds_over_the_network() {
     // A recoverer that is a holder (so it has one shard already), and two
     // *other* holders to destroy — losing `parity` = 2 of the 5 shards.
     let recoverer = holders[0];
-    let to_kill: Vec<NodeId> = holders.iter().copied().filter(|h| *h != recoverer).take(2).collect();
+    let to_kill: Vec<NodeId> = holders
+        .iter()
+        .copied()
+        .filter(|h| *h != recoverer)
+        .take(2)
+        .collect();
     assert_eq!(to_kill.len(), 2);
     for &dead in &to_kill {
         mesh.kill(dead);
@@ -133,7 +138,10 @@ fn losing_more_than_parity_holders_makes_a_window_unrecoverable() {
 
     let holders = mesh.node(origin).fragment_holders(&placement);
     // The non-holder is a clean recoverer (holds no shard of its own).
-    let recoverer = *ids.iter().find(|id| !holders.contains(id)).expect("one non-holder");
+    let recoverer = *ids
+        .iter()
+        .find(|id| !holders.contains(id))
+        .expect("one non-holder");
     // Destroy 3 of 5 holders — only 2 shards remain, below the threshold of 3.
     for &dead in holders.iter().take(3) {
         mesh.kill(dead);

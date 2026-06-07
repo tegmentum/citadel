@@ -53,8 +53,16 @@ fn a_failed_node_is_detected_suspect_then_faulty() {
     mesh.run(20);
 
     // Both surviving peers independently converge on C being faulty.
-    assert_eq!(mesh.liveness_of(a, c), Some(LivenessState::Faulty), "A detects C faulty");
-    assert_eq!(mesh.liveness_of(b, c), Some(LivenessState::Faulty), "B detects C faulty");
+    assert_eq!(
+        mesh.liveness_of(a, c),
+        Some(LivenessState::Faulty),
+        "A detects C faulty"
+    );
+    assert_eq!(
+        mesh.liveness_of(b, c),
+        Some(LivenessState::Faulty),
+        "B detects C faulty"
+    );
 
     // A and B still see each other alive — a partition is not a compromise.
     assert_eq!(mesh.liveness_of(a, b), Some(LivenessState::Alive));
@@ -77,8 +85,16 @@ fn a_restarted_node_refutes_suspicion_with_higher_incarnation() {
     mesh.revive(c);
     mesh.run(20);
 
-    assert_eq!(mesh.liveness_of(a, c), Some(LivenessState::Alive), "A re-admits C as alive");
-    assert_eq!(mesh.liveness_of(b, c), Some(LivenessState::Alive), "B re-admits C as alive");
+    assert_eq!(
+        mesh.liveness_of(a, c),
+        Some(LivenessState::Alive),
+        "A re-admits C as alive"
+    );
+    assert_eq!(
+        mesh.liveness_of(b, c),
+        Some(LivenessState::Alive),
+        "B re-admits C as alive"
+    );
     assert!(
         mesh.node(c).membership().my_incarnation() >= 1,
         "C bumped its incarnation to refute"
@@ -107,7 +123,11 @@ fn mock_attestation_challenge_response_drives_trust() {
     // A challenges B; B answers with a healthy quote → Trusted.
     mesh.node_mut(a).challenge_peer(b);
     mesh.run(5);
-    assert_eq!(mesh.trust_of(a, b), Some(TrustState::Trusted), "healthy B is trusted");
+    assert_eq!(
+        mesh.trust_of(a, b),
+        Some(TrustState::Trusted),
+        "healthy B is trusted"
+    );
 
     // B's measured state diverges (a stand-in for compromise): its next
     // quote no longer matches the verifier's reference PCRs.
@@ -137,7 +157,10 @@ fn dashboard_fleet_view_reflects_states() {
     let view = mesh.fleet_view(a);
     assert_eq!(view.total, 3);
     assert_eq!(view.alive, 3);
-    assert!(view.trusted >= 2, "self and attested B are trusted: {view:?}");
+    assert!(
+        view.trusted >= 2,
+        "self and attested B are trusted: {view:?}"
+    );
 
     // The per-node rows enumerate the whole mesh.
     let rows = mesh.rows_as_seen_by(a);

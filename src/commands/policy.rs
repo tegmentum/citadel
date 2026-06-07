@@ -42,11 +42,7 @@ pub fn create(
     };
 
     store.insert_policy(&policy)?;
-    store.log_action(
-        "policy.create",
-        None,
-        &serde_json::json!({"name": name}),
-    )?;
+    store.log_action("policy.create", None, &serde_json::json!({"name": name}))?;
 
     let result = PolicyCreated {
         name: policy.name,
@@ -89,7 +85,15 @@ pub fn list(store: &Store, format: OutputFormat) -> anyhow::Result<()> {
                     .iter()
                     .map(|r| match r {
                         PolicyRule::PcrMatch { bank, indices } => {
-                            format!("pcr {}:{}", bank, indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","))
+                            format!(
+                                "pcr {}:{}",
+                                bank,
+                                indices
+                                    .iter()
+                                    .map(|i| i.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            )
                         }
                         PolicyRule::Password => "password".to_string(),
                     })
@@ -149,7 +153,11 @@ pub fn show(store: &Store, name: &str, format: OutputFormat) -> anyhow::Result<(
                     description: format!(
                         "PCR bank {} indices {}",
                         bank,
-                        indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
+                        indices
+                            .iter()
+                            .map(|i| i.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ),
                 },
                 PolicyRule::Password => PolicyRuleDetail {
@@ -270,11 +278,7 @@ impl TextRenderable for PolicyExplanation {
 
 // -- policy compile --
 
-pub fn compile(
-    store: &Store,
-    file: &std::path::Path,
-    format: OutputFormat,
-) -> anyhow::Result<()> {
+pub fn compile(store: &Store, file: &std::path::Path, format: OutputFormat) -> anyhow::Result<()> {
     let text = std::fs::read_to_string(file)?;
     let parsed = tpm_core::policy::from_any_yaml(&text)?;
     let def = match parsed {
@@ -390,32 +394,38 @@ pub fn test_policy(
 
     for rule in &policy.rules {
         match rule {
-            PolicyRule::PcrMatch { bank, indices } => {
-                match backend.pcr_read(bank, indices) {
-                    Ok(values) => {
-                        results.push(TestResult {
-                            rule: format!(
-                                "pcr {}:{}",
-                                bank,
-                                indices
-                                    .iter()
-                                    .map(|i| i.to_string())
-                                    .collect::<Vec<_>>()
-                                    .join(",")
-                            ),
-                            satisfied: true,
-                            detail: format!("read {} PCR values successfully", values.len()),
-                        });
-                    }
-                    Err(e) => {
-                        results.push(TestResult {
-                            rule: format!("pcr {}:{}", bank, indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",")),
-                            satisfied: false,
-                            detail: format!("failed to read PCRs: {}", e),
-                        });
-                    }
+            PolicyRule::PcrMatch { bank, indices } => match backend.pcr_read(bank, indices) {
+                Ok(values) => {
+                    results.push(TestResult {
+                        rule: format!(
+                            "pcr {}:{}",
+                            bank,
+                            indices
+                                .iter()
+                                .map(|i| i.to_string())
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        ),
+                        satisfied: true,
+                        detail: format!("read {} PCR values successfully", values.len()),
+                    });
                 }
-            }
+                Err(e) => {
+                    results.push(TestResult {
+                        rule: format!(
+                            "pcr {}:{}",
+                            bank,
+                            indices
+                                .iter()
+                                .map(|i| i.to_string())
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        ),
+                        satisfied: false,
+                        detail: format!("failed to read PCRs: {}", e),
+                    });
+                }
+            },
             PolicyRule::Password => {
                 results.push(TestResult {
                     rule: "password".to_string(),
@@ -639,7 +649,12 @@ impl TextRenderable for ApproveOutput {
     fn render_text(&self) -> String {
         format!(
             "approved {} PCR {:?}\n  policy:    {}\n  authority: {}\n  logged:    {} (seqno {})",
-            self.bank, self.indices, self.approved_policy, self.authority, "policy.approve", self.seqno
+            self.bank,
+            self.indices,
+            self.approved_policy,
+            self.authority,
+            "policy.approve",
+            self.seqno
         )
     }
 }

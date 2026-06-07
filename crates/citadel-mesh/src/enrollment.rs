@@ -305,16 +305,34 @@ mod tests {
     }
 
     fn approve(witness: u8, candidate: u8) -> EnrollmentVote {
-        EnrollmentVote::sign(&kp(witness), nid(witness), nid(candidate), AdmissionVerdict::Approve, AdmissionReason::Ok, 1)
+        EnrollmentVote::sign(
+            &kp(witness),
+            nid(witness),
+            nid(candidate),
+            AdmissionVerdict::Approve,
+            AdmissionReason::Ok,
+            1,
+        )
     }
     fn reject(witness: u8, candidate: u8, reason: AdmissionReason) -> EnrollmentVote {
-        EnrollmentVote::sign(&kp(witness), nid(witness), nid(candidate), AdmissionVerdict::Reject, reason, 1)
+        EnrollmentVote::sign(
+            &kp(witness),
+            nid(witness),
+            nid(candidate),
+            AdmissionVerdict::Reject,
+            reason,
+            1,
+        )
     }
 
     #[test]
     fn quorum_admits_only_with_enough_eligible_approvals() {
         let eligible: HashSet<NodeId> = [nid(1), nid(2), nid(3)].into_iter().collect();
-        let votes = vec![approve(1, 9), approve(2, 9), reject(3, 9, AdmissionReason::Ok)];
+        let votes = vec![
+            approve(1, 9),
+            approve(2, 9),
+            reject(3, 9, AdmissionReason::Ok),
+        ];
         let outcome = decide_admission(&votes, &eligible, 2);
         assert!(outcome.admitted);
         assert_eq!(outcome.approvals, 2);
@@ -326,9 +344,16 @@ mod tests {
         // Only nodes 1 and 2 are eligible (trusted); node 3 is probationary.
         let eligible: HashSet<NodeId> = [nid(1), nid(2)].into_iter().collect();
         // Node 3 tries to push the candidate over the line.
-        let votes = vec![approve(1, 9), reject(2, 9, AdmissionReason::AttestationFailed), approve(3, 9)];
+        let votes = vec![
+            approve(1, 9),
+            reject(2, 9, AdmissionReason::AttestationFailed),
+            approve(3, 9),
+        ];
         let outcome = decide_admission(&votes, &eligible, 2);
-        assert!(!outcome.admitted, "the probationary node's vote must not count");
+        assert!(
+            !outcome.admitted,
+            "the probationary node's vote must not count"
+        );
         assert_eq!(outcome.approvals, 1);
     }
 

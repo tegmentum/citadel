@@ -125,24 +125,38 @@ impl AgentHandle {
 
     /// Install the authorities this node trusts to sign reference manifests.
     pub async fn set_reference_authorities(&self, authorities: TrustAnchors) {
-        let _ = self.cmd.send(Cmd::SetReferenceAuthorities(Box::new(authorities))).await;
+        let _ = self
+            .cmd
+            .send(Cmd::SetReferenceAuthorities(Box::new(authorities)))
+            .await;
     }
 
     /// Adopt a signed reference manifest locally (no gossip) — for seeding one
     /// node so anti-entropy spreads it to the rest.
     pub async fn apply_reference_manifest(&self, manifest: ReferenceManifest) {
-        let _ = self.cmd.send(Cmd::ApplyReferenceManifest(Box::new(manifest))).await;
+        let _ = self
+            .cmd
+            .send(Cmd::ApplyReferenceManifest(Box::new(manifest)))
+            .await;
     }
 
     /// Adopt a signed reference manifest and gossip it to peers.
     pub async fn broadcast_reference_manifest(&self, manifest: ReferenceManifest) {
-        let _ = self.cmd.send(Cmd::BroadcastReferenceManifest(Box::new(manifest))).await;
+        let _ = self
+            .cmd
+            .send(Cmd::BroadcastReferenceManifest(Box::new(manifest)))
+            .await;
     }
 
     /// Whether this node has adopted the manifest with content id `id`.
     pub async fn has_reference_manifest(&self, id: [u8; 32]) -> bool {
         let (tx, rx) = oneshot::channel();
-        if self.cmd.send(Cmd::HasReferenceManifest(id, tx)).await.is_ok() {
+        if self
+            .cmd
+            .send(Cmd::HasReferenceManifest(id, tx))
+            .await
+            .is_ok()
+        {
             rx.await.unwrap_or(false)
         } else {
             false
@@ -288,7 +302,10 @@ impl ChannelSwitchboard {
 
     /// Register a spawned agent so peers can reach it.
     pub fn register(&self, handle: &AgentHandle) {
-        self.inner.lock().unwrap().insert(handle.id(), handle.sender());
+        self.inner
+            .lock()
+            .unwrap()
+            .insert(handle.id(), handle.sender());
     }
 }
 
@@ -322,7 +339,14 @@ pub fn build_node(
     config: NodeConfig,
     peers: &[(NodeId, citadel_mesh::crypto::MeshPublicKey)],
 ) -> (Node, NodeId) {
-    build_node_with_backend(mesh_id, seed, role, config, peers, Box::new(MockBackend::new()))
+    build_node_with_backend(
+        mesh_id,
+        seed,
+        role,
+        config,
+        peers,
+        Box::new(MockBackend::new()),
+    )
 }
 
 /// Like [`build_node`] but the caller chooses the TPM backend — the binary
@@ -338,7 +362,12 @@ pub fn build_node_with_backend(
 ) -> (Node, NodeId) {
     let keypair = MeshKeypair::from_seed([seed; 32]);
     let pubkey = keypair.public();
-    let id = NodeId::derive(mesh_id, Epoch(config.mesh_epoch), &pubkey.fingerprint(), &[seed]);
+    let id = NodeId::derive(
+        mesh_id,
+        Epoch(config.mesh_epoch),
+        &pubkey.fingerprint(),
+        &[seed],
+    );
     let membership = Membership::new(id, pubkey, role, 0);
     let attestor = Attestor::new(backend).expect("attestor");
     let mut node = Node::new(mesh_id.clone(), id, keypair, membership, attestor, config);
@@ -364,7 +393,9 @@ pub fn build_node_with_backend(
 pub fn mint_tls_identity(node: &mut Node, common_name: &str) -> Option<tpm_tls::TpmTlsIdentity> {
     use tpm_core::model::{Algorithm, ObjectPath};
     let backend = node.attestor().backend_arc();
-    let handle = backend.create_key(Algorithm::EccP256, &ObjectPath::new("tls/agent").ok()?).ok()?;
+    let handle = backend
+        .create_key(Algorithm::EccP256, &ObjectPath::new("tls/agent").ok()?)
+        .ok()?;
     let identity = tpm_tls::TpmTlsIdentity::new(backend, handle, common_name).ok()?;
     node.set_tls_cert(identity.certificate().as_ref().to_vec());
     Some(identity)

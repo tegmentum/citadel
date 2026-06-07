@@ -7,7 +7,9 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use citadel_agent::{build_node, peer_id, peer_public_key, spawn_node, AgentHandle, ChannelSwitchboard};
+use citadel_agent::{
+    build_node, peer_id, peer_public_key, spawn_node, AgentHandle, ChannelSwitchboard,
+};
 use citadel_mesh::id::MeshId;
 use citadel_mesh::node::NodeConfig;
 use citadel_mesh::NodeId;
@@ -81,7 +83,10 @@ async fn agents_form_a_mesh_and_detect_failure_over_the_transport() {
         rows.len() == 3 && rows.iter().filter(|r| r.liveness == "alive").count() == 3
     })
     .await;
-    assert!(converged, "the three agents should converge on a live membership");
+    assert!(
+        converged,
+        "the three agents should converge on a live membership"
+    );
 
     // Stop the third agent: it no longer gossips or responds.
     let dead = handles[2].id();
@@ -94,7 +99,10 @@ async fn agents_form_a_mesh_and_detect_failure_over_the_transport() {
             .any(|r| r.node_id == dead.to_hex() && r.liveness == "faulty")
     })
     .await;
-    assert!(detected, "survivors should detect the stopped agent as faulty");
+    assert!(
+        detected,
+        "survivors should detect the stopped agent as faulty"
+    );
 
     // And they still see each other alive (a partition is not a compromise).
     let still_alive = wait_until(&survivors, Duration::from_secs(2), |h, rows| {

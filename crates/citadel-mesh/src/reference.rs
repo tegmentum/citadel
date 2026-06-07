@@ -56,7 +56,10 @@ impl Validity {
 
     /// Effective from a policy-revision generation onward.
     pub fn from_revision(rev: u64) -> Self {
-        Validity { from_revision: Some(rev), ..Validity::default() }
+        Validity {
+            from_revision: Some(rev),
+            ..Validity::default()
+        }
     }
 
     /// Resolve this window against the current `(tick, revision)`.
@@ -77,9 +80,10 @@ impl Validity {
 
 /// How a verifier treats a quote that matches only a **retired** source — i.e.
 /// a node on a previously-good but now-withdrawn state (unpatched).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum RetiredAction {
     /// Retired == untrusted (forces patching hard). The safe default.
+    #[default]
     Fail,
     /// Degraded but tolerated.
     Warn,
@@ -92,12 +96,6 @@ pub enum RetiredAction {
     },
 }
 
-impl Default for RetiredAction {
-    fn default() -> Self {
-        RetiredAction::Fail
-    }
-}
-
 impl RetiredAction {
     /// `true` if a source retired with `validity` should still be tolerated
     /// (Warn) rather than failed, at the current `(tick, revision)`.
@@ -105,7 +103,10 @@ impl RetiredAction {
         match self {
             RetiredAction::Fail => false,
             RetiredAction::Warn => true,
-            RetiredAction::GraceThenFail { grace_revisions, grace_ticks } => {
+            RetiredAction::GraceThenFail {
+                grace_revisions,
+                grace_ticks,
+            } => {
                 let rev_ok = match (validity.until_revision, grace_revisions) {
                     (Some(until), Some(grace)) => now_revision < until.saturating_add(*grace),
                     (Some(_), None) => false, // retired by revision, no grace
@@ -182,7 +183,10 @@ pub struct ArtifactIdentity {
 /// `min_version` baseline.
 fn parse_kernel_version(text: &str) -> Option<Vec<u64>> {
     let idx = text.find("vmlinuz-")? + "vmlinuz-".len();
-    let token: String = text[idx..].chars().take_while(|c| !c.is_whitespace()).collect();
+    let token: String = text[idx..]
+        .chars()
+        .take_while(|c| !c.is_whitespace())
+        .collect();
     let mut v = Vec::new();
     for part in token.split(['.', '-']) {
         match part.parse::<u64>() {
@@ -210,7 +214,11 @@ fn booted_cmdline(text: &str) -> Option<&str> {
             return Some(rest);
         }
     }
-    if t.contains("root=") && !t.contains('\n') && !t.contains("menuentry") && !t.contains("grub_cmd") {
+    if t.contains("root=")
+        && !t.contains('\n')
+        && !t.contains("menuentry")
+        && !t.contains("grub_cmd")
+    {
         return Some(t);
     }
     None
@@ -228,7 +236,11 @@ pub fn extract_kernel_artifact(
 ) -> Option<ArtifactIdentity> {
     let cmdline = extract_kernel_cmdline(log, bank)?;
     let version = parse_kernel_version(&cmdline)?;
-    Some(ArtifactIdentity { component: "kernel".into(), version, ..Default::default() })
+    Some(ArtifactIdentity {
+        component: "kernel".into(),
+        version,
+        ..Default::default()
+    })
 }
 
 /// The booted kernel command line recovered from the (digest-bound) event log,
@@ -289,8 +301,15 @@ impl FleetArtifactPolicy {
     }
 
     /// Restrict `component` to an approved `channel` (repeatable to allow more).
-    pub fn allow_channel(mut self, component: impl Into<String>, channel: impl Into<String>) -> Self {
-        self.approved_channels.entry(component.into()).or_default().insert(channel.into());
+    pub fn allow_channel(
+        mut self,
+        component: impl Into<String>,
+        channel: impl Into<String>,
+    ) -> Self {
+        self.approved_channels
+            .entry(component.into())
+            .or_default()
+            .insert(channel.into());
         self
     }
 
@@ -327,8 +346,13 @@ impl FleetArtifactPolicy {
 
     /// Does `cmdline` satisfy the require/deny policy?
     pub fn cmdline_permits(&self, cmdline: &str) -> bool {
-        self.cmdline_require.iter().all(|t| cmdline.contains(t.as_str()))
-            && !self.cmdline_deny.iter().any(|t| cmdline.contains(t.as_str()))
+        self.cmdline_require
+            .iter()
+            .all(|t| cmdline.contains(t.as_str()))
+            && !self
+                .cmdline_deny
+                .iter()
+                .any(|t| cmdline.contains(t.as_str()))
     }
 
     /// Trust a Secure Boot authority (a `db` entry — the cert/blob that may
@@ -424,7 +448,9 @@ impl FleetArtifactPolicy {
     /// Whether the artifact is below its component's version baseline — a *soft*
     /// signal (running but stale) the app path treats as "deprecated".
     pub fn below_baseline(&self, a: &ArtifactIdentity) -> bool {
-        self.min_version.get(&a.component).is_some_and(|min| a.version < *min)
+        self.min_version
+            .get(&a.component)
+            .is_some_and(|min| a.version < *min)
     }
 
     /// Whether the artifact is denied **by version or build alone** (denylisted
@@ -432,7 +458,10 @@ impl FleetArtifactPolicy {
     /// identities (A3), whose channel/publisher aren't knowable from the log, so
     /// channel gating must not apply.
     pub fn version_denied(&self, a: &ArtifactIdentity) -> bool {
-        if self.denied_versions.contains(&(a.component.clone(), a.version.clone())) {
+        if self
+            .denied_versions
+            .contains(&(a.component.clone(), a.version.clone()))
+        {
             return true;
         }
         if let Some(build) = &a.build_id {
@@ -451,7 +480,10 @@ impl FleetArtifactPolicy {
                 return true;
             }
         }
-        if self.denied_versions.contains(&(a.component.clone(), a.version.clone())) {
+        if self
+            .denied_versions
+            .contains(&(a.component.clone(), a.version.clone()))
+        {
             return true;
         }
         if let Some(build) = &a.build_id {
@@ -511,7 +543,12 @@ pub struct ReferenceEntry {
 impl ReferenceEntry {
     /// A bare digest entry (no artifact provenance; Layer-1 behaviour).
     pub fn new(index: u32, digest: Vec<u8>, validity: Validity) -> Self {
-        ReferenceEntry { index, digest, validity, artifact: None }
+        ReferenceEntry {
+            index,
+            digest,
+            validity,
+            artifact: None,
+        }
     }
 
     /// Attach artifact provenance (so fleet policy gates this entry).
@@ -577,7 +614,14 @@ impl ReferenceManifest {
         let issuer = authority.public();
         let signature =
             authority.sign(&Self::signing_bytes(&profile, &entries, &profiles, &issuer));
-        ReferenceManifest { profile, entries, profiles, issuer, chain, signature }
+        ReferenceManifest {
+            profile,
+            entries,
+            profiles,
+            issuer,
+            chain,
+            signature,
+        }
     }
 
     /// Content id of the manifest — `BLAKE3` over its fields and signature.
@@ -654,10 +698,12 @@ impl ReferenceProfile {
     /// quote actually provides must match; indices the quote omits can't be
     /// checked and are ignored.
     fn satisfied_by(&self, quoted: &BTreeMap<u32, &[u8]>) -> bool {
-        self.pcrs.iter().all(|(index, digest)| match quoted.get(index) {
-            Some(q) => *q == digest.as_slice(),
-            None => true,
-        })
+        self.pcrs
+            .iter()
+            .all(|(index, digest)| match quoted.get(index) {
+                Some(q) => *q == digest.as_slice(),
+                None => true,
+            })
     }
 }
 
@@ -825,10 +871,11 @@ impl AcceptedReferences {
             // Secure Boot authority (db/dbx) on a measured authority event:
             // the publisher that authorized a loaded image must be trusted and
             // not revoked — accepting the image by provenance, not by digest.
-            if event.tcg_type() == Some(ev::EFI_VARIABLE_AUTHORITY) && event.data_is_measured(bank) {
-                if !self.artifact_policy.authority_permits(&event.data) {
-                    return ReferenceOutcome::Denied;
-                }
+            if event.tcg_type() == Some(ev::EFI_VARIABLE_AUTHORITY)
+                && event.data_is_measured(bank)
+                && !self.artifact_policy.authority_permits(&event.data)
+            {
+                return ReferenceOutcome::Denied;
             }
             // Per-event-digest artifact policy.
             if let Some(d) = event.measured_digest(bank) {
@@ -882,7 +929,10 @@ impl AcceptedReferences {
 
     /// The appraisal class of a PCR index.
     pub fn class_of(&self, index: u32) -> PcrClass {
-        self.pcr_classes.get(&index).copied().unwrap_or(self.default_class)
+        self.pcr_classes
+            .get(&index)
+            .copied()
+            .unwrap_or(self.default_class)
     }
 
     /// Classify one quoted `(index, digest)` against the accepted sources.
@@ -907,7 +957,10 @@ impl AcceptedReferences {
                         if e.digest == digest {
                             // An active digest match counts only if its artifact
                             // (if any) is permitted by current fleet policy.
-                            if e.artifact.as_ref().is_none_or(|a| self.artifact_policy.permits(a)) {
+                            if e.artifact
+                                .as_ref()
+                                .is_none_or(|a| self.artifact_policy.permits(a))
+                            {
                                 return IndexClass::Active;
                             }
                             denied = true; // matched a now-forbidden artifact
@@ -963,7 +1016,10 @@ impl AcceptedReferences {
         policy: ReferenceMatchPolicy,
         retired_action: RetiredAction,
     ) -> ReferenceOutcome {
-        let q: BTreeMap<u32, &[u8]> = quoted.iter().map(|p| (p.index, p.digest.as_slice())).collect();
+        let q: BTreeMap<u32, &[u8]> = quoted
+            .iter()
+            .map(|p| (p.index, p.digest.as_slice()))
+            .collect();
 
         let mut any_uncovered = false;
         let mut any_denied = false;
@@ -1012,7 +1068,11 @@ mod tests {
     use super::*;
 
     fn pcr(index: u32, digest: &[u8]) -> PcrValue {
-        PcrValue { bank: "sha256".into(), index, digest: digest.to_vec() }
+        PcrValue {
+            bank: "sha256".into(),
+            index,
+            digest: digest.to_vec(),
+        }
     }
 
     fn refs() -> AcceptedReferences {
@@ -1026,7 +1086,13 @@ mod tests {
         r.accept_entry(7, b"sb1".to_vec(), Validity::always());
         let q = [pcr(0, b"fw1"), pcr(7, b"sb1")];
         assert_eq!(
-            r.appraise(&q, 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            r.appraise(
+                &q,
+                0,
+                0,
+                ReferenceMatchPolicy::Flexible,
+                RetiredAction::Fail
+            ),
             ReferenceOutcome::Accepted
         );
     }
@@ -1037,7 +1103,13 @@ mod tests {
         r.accept_entry(0, b"fw1".to_vec(), Validity::always());
         let q = [pcr(0, b"tampered")];
         assert_eq!(
-            r.appraise(&q, 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            r.appraise(
+                &q,
+                0,
+                0,
+                ReferenceMatchPolicy::Flexible,
+                RetiredAction::Fail
+            ),
             ReferenceOutcome::Unknown
         );
     }
@@ -1047,7 +1119,13 @@ mod tests {
         let r = refs(); // no sources at all
         let q = [pcr(0, b"fw1")];
         assert_eq!(
-            r.appraise(&q, 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            r.appraise(
+                &q,
+                0,
+                0,
+                ReferenceMatchPolicy::Flexible,
+                RetiredAction::Fail
+            ),
             ReferenceOutcome::Incomplete
         );
     }
@@ -1060,7 +1138,13 @@ mod tests {
         r.accept_entry(4, b"k2".to_vec(), Validity::always());
         for d in [b"k1".as_slice(), b"k2".as_slice()] {
             assert_eq!(
-                r.appraise(&[pcr(4, d)], 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+                r.appraise(
+                    &[pcr(4, d)],
+                    0,
+                    0,
+                    ReferenceMatchPolicy::Flexible,
+                    RetiredAction::Fail
+                ),
                 ReferenceOutcome::Accepted
             );
         }
@@ -1070,20 +1154,42 @@ mod tests {
     fn retired_match_obeys_the_action() {
         let mut r = refs();
         // k1 retired at revision 5; k2 always active.
-        r.accept_entry(4, b"k1".to_vec(), Validity { until_revision: Some(5), ..Validity::default() });
+        r.accept_entry(
+            4,
+            b"k1".to_vec(),
+            Validity {
+                until_revision: Some(5),
+                ..Validity::default()
+            },
+        );
         let q = [pcr(4, b"k1")];
 
         // now at revision 10 → k1 is retired.
         assert_eq!(
-            r.appraise(&q, 0, 10, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            r.appraise(
+                &q,
+                0,
+                10,
+                ReferenceMatchPolicy::Flexible,
+                RetiredAction::Fail
+            ),
             ReferenceOutcome::Retired { fail: true }
         );
         assert_eq!(
-            r.appraise(&q, 0, 10, ReferenceMatchPolicy::Flexible, RetiredAction::Warn),
+            r.appraise(
+                &q,
+                0,
+                10,
+                ReferenceMatchPolicy::Flexible,
+                RetiredAction::Warn
+            ),
             ReferenceOutcome::Retired { fail: false }
         );
         // grace of 10 revisions past until(5) → still within at rev 10.
-        let grace = RetiredAction::GraceThenFail { grace_revisions: Some(10), grace_ticks: None };
+        let grace = RetiredAction::GraceThenFail {
+            grace_revisions: Some(10),
+            grace_ticks: None,
+        };
         assert_eq!(
             r.appraise(&q, 0, 10, ReferenceMatchPolicy::Flexible, grace),
             ReferenceOutcome::Retired { fail: false }
@@ -1095,7 +1201,13 @@ mod tests {
         );
         // before retirement (rev 3) → still active.
         assert_eq!(
-            r.appraise(&q, 0, 3, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            r.appraise(
+                &q,
+                0,
+                3,
+                ReferenceMatchPolicy::Flexible,
+                RetiredAction::Fail
+            ),
             ReferenceOutcome::Accepted
         );
     }
@@ -1108,12 +1220,24 @@ mod tests {
         let q = [pcr(4, b"k2")];
         // before it's effective → uncovered → Incomplete (no active opinion).
         assert_eq!(
-            r.appraise(&q, 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            r.appraise(
+                &q,
+                0,
+                0,
+                ReferenceMatchPolicy::Flexible,
+                RetiredAction::Fail
+            ),
             ReferenceOutcome::Incomplete
         );
         // once effective → accepted.
         assert_eq!(
-            r.appraise(&q, 0, 5, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            r.appraise(
+                &q,
+                0,
+                5,
+                ReferenceMatchPolicy::Flexible,
+                RetiredAction::Fail
+            ),
             ReferenceOutcome::Accepted
         );
     }
@@ -1129,7 +1253,13 @@ mod tests {
         r.accept_entry(4, b"k2".to_vec(), Validity::always());
         let q = [pcr(0, b"fw2"), pcr(4, b"k1")]; // new firmware, old kernel
         assert_eq!(
-            r.appraise(&q, 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            r.appraise(
+                &q,
+                0,
+                0,
+                ReferenceMatchPolicy::Flexible,
+                RetiredAction::Fail
+            ),
             ReferenceOutcome::Accepted
         );
     }
@@ -1150,13 +1280,25 @@ mod tests {
         // A matched pair is accepted.
         let good = [pcr(4, b"k2"), pcr(8, b"i2")];
         assert_eq!(
-            r.appraise(&good, 0, 0, ReferenceMatchPolicy::CoupledOnly, RetiredAction::Fail),
+            r.appraise(
+                &good,
+                0,
+                0,
+                ReferenceMatchPolicy::CoupledOnly,
+                RetiredAction::Fail
+            ),
             ReferenceOutcome::Accepted
         );
         // A mix-and-match (k2 + i1) satisfies no profile → covered but wrong.
         let mixed = [pcr(4, b"k2"), pcr(8, b"i1")];
         assert_eq!(
-            r.appraise(&mixed, 0, 0, ReferenceMatchPolicy::CoupledOnly, RetiredAction::Fail),
+            r.appraise(
+                &mixed,
+                0,
+                0,
+                ReferenceMatchPolicy::CoupledOnly,
+                RetiredAction::Fail
+            ),
             ReferenceOutcome::Unknown
         );
     }
@@ -1168,12 +1310,24 @@ mod tests {
         let q = [pcr(4, b"k1")];
         // Flexible: standalone counts → accepted.
         assert_eq!(
-            r.appraise(&q, 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            r.appraise(
+                &q,
+                0,
+                0,
+                ReferenceMatchPolicy::Flexible,
+                RetiredAction::Fail
+            ),
             ReferenceOutcome::Accepted
         );
         // CoupledOnly: no profile covers PCR 4 → uncovered → Incomplete.
         assert_eq!(
-            r.appraise(&q, 0, 0, ReferenceMatchPolicy::CoupledOnly, RetiredAction::Fail),
+            r.appraise(
+                &q,
+                0,
+                0,
+                ReferenceMatchPolicy::CoupledOnly,
+                RetiredAction::Fail
+            ),
             ReferenceOutcome::Incomplete
         );
     }
@@ -1187,7 +1341,13 @@ mod tests {
         // A wrong value on a volatile index does not fail.
         let q = [pcr(0, b"anything")];
         assert_eq!(
-            r.appraise(&q, 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            r.appraise(
+                &q,
+                0,
+                0,
+                ReferenceMatchPolicy::Flexible,
+                RetiredAction::Fail
+            ),
             ReferenceOutcome::Accepted
         );
     }
@@ -1200,7 +1360,13 @@ mod tests {
         r.set_pcr_class(4, PcrClass::Semantic);
         let q = [pcr(4, b"some-new-kernel")];
         assert_eq!(
-            r.appraise(&q, 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            r.appraise(
+                &q,
+                0,
+                0,
+                ReferenceMatchPolicy::Flexible,
+                RetiredAction::Fail
+            ),
             ReferenceOutcome::Accepted
         );
     }
@@ -1213,13 +1379,25 @@ mod tests {
         // Strict PCR 0 wrong → Unknown regardless of the volatile PCR 8.
         let bad = [pcr(0, b"tampered"), pcr(8, b"whatever")];
         assert_eq!(
-            r.appraise(&bad, 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            r.appraise(
+                &bad,
+                0,
+                0,
+                ReferenceMatchPolicy::Flexible,
+                RetiredAction::Fail
+            ),
             ReferenceOutcome::Unknown
         );
         // Strict PCR 0 right, volatile PCR 8 ignored → Accepted.
         let good = [pcr(0, b"fw1"), pcr(8, b"whatever")];
         assert_eq!(
-            r.appraise(&good, 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            r.appraise(
+                &good,
+                0,
+                0,
+                ReferenceMatchPolicy::Flexible,
+                RetiredAction::Fail
+            ),
             ReferenceOutcome::Accepted
         );
     }
@@ -1232,7 +1410,13 @@ mod tests {
         r.accept_entry(0, b"fw1".to_vec(), Validity::always());
         assert_eq!(r.class_of(0), PcrClass::Strict);
         assert_eq!(
-            r.appraise(&[pcr(0, b"x")], 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            r.appraise(
+                &[pcr(0, b"x")],
+                0,
+                0,
+                ReferenceMatchPolicy::Flexible,
+                RetiredAction::Fail
+            ),
             ReferenceOutcome::Unknown
         );
     }
@@ -1266,7 +1450,9 @@ mod tests {
         let chained = ReferenceManifest::issue_chained(&publisher, "", entries, vec![], vec![cert]);
         assert!(chained.issuer_chains_to_anchor(|k| *k == root.public()));
         // A broken chain (root not anchored) does not validate.
-        assert!(!chained.issuer_chains_to_anchor(|k| *k == MeshKeypair::from_seed([9u8; 32]).public()));
+        assert!(
+            !chained.issuer_chains_to_anchor(|k| *k == MeshKeypair::from_seed([9u8; 32]).public())
+        );
     }
 
     #[test]
@@ -1282,7 +1468,13 @@ mod tests {
         r.adopt_manifest(&m);
         r.adopt_manifest(&m); // idempotent
         assert_eq!(
-            r.appraise(&[pcr(0, b"fw2")], 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            r.appraise(
+                &[pcr(0, b"fw2")],
+                0,
+                0,
+                ReferenceMatchPolicy::Flexible,
+                RetiredAction::Fail
+            ),
             ReferenceOutcome::Accepted
         );
     }
@@ -1306,7 +1498,7 @@ mod tests {
 
         assert!(policy.permits(&kernel_artifact(vec![6, 8, 0])));
         assert!(policy.permits(&kernel_artifact(vec![6, 9, 1]))); // newer ok
-        // wrong channel
+                                                                  // wrong channel
         let mut edge = kernel_artifact(vec![6, 8, 0]);
         edge.channel = "edge".into();
         assert!(!policy.permits(&edge));
@@ -1315,7 +1507,10 @@ mod tests {
         // explicitly denied version
         assert!(!policy.permits(&kernel_artifact(vec![6, 7, 0])));
         // an unconstrained component is permitted
-        let fw = ArtifactIdentity { component: "firmware".into(), ..kernel_artifact(vec![1]) };
+        let fw = ArtifactIdentity {
+            component: "firmware".into(),
+            ..kernel_artifact(vec![1])
+        };
         assert!(policy.permits(&fw));
     }
 
@@ -1332,14 +1527,26 @@ mod tests {
 
         // No artifact policy → permitted → Accepted.
         assert_eq!(
-            r.appraise(&q, 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            r.appraise(
+                &q,
+                0,
+                0,
+                ReferenceMatchPolicy::Flexible,
+                RetiredAction::Fail
+            ),
             ReferenceOutcome::Accepted
         );
 
         // Revoke 6.8.0 → the running node is now Denied.
         r.set_artifact_policy(FleetArtifactPolicy::new().deny_version("kernel", vec![6, 8, 0]));
         assert_eq!(
-            r.appraise(&q, 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            r.appraise(
+                &q,
+                0,
+                0,
+                ReferenceMatchPolicy::Flexible,
+                RetiredAction::Fail
+            ),
             ReferenceOutcome::Denied
         );
     }
@@ -1353,7 +1560,13 @@ mod tests {
         );
         r.set_artifact_policy(FleetArtifactPolicy::new().min_version("kernel", vec![6, 8, 0]));
         assert_eq!(
-            r.appraise(&[pcr(4, b"old")], 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            r.appraise(
+                &[pcr(4, b"old")],
+                0,
+                0,
+                ReferenceMatchPolicy::Flexible,
+                RetiredAction::Fail
+            ),
             ReferenceOutcome::Denied
         );
     }
@@ -1377,7 +1590,10 @@ mod tests {
         tpm_core::eventlog::MeasurementEvent {
             pcr,
             event_type: tpm_core::eventlog::EventType::Unknown(tpm_core::eventlog::ev::IPL),
-            digests: vec![("sha256".into(), hash_for_bank("sha256", line.as_bytes()).unwrap())],
+            digests: vec![(
+                "sha256".into(),
+                hash_for_bank("sha256", line.as_bytes()).unwrap(),
+            )],
             data: line.into_bytes(),
         }
     }
@@ -1390,11 +1606,17 @@ mod tests {
         let semantic: std::collections::BTreeSet<u32> = [8].into_iter().collect();
 
         let good = tpm_core::eventlog::BootEventLog::new(vec![ipl_cmdline_event(8, "ro quiet")]);
-        assert_eq!(r.appraise_eventlog(&good, "sha256", &semantic), ReferenceOutcome::Accepted);
+        assert_eq!(
+            r.appraise_eventlog(&good, "sha256", &semantic),
+            ReferenceOutcome::Accepted
+        );
 
         let bad =
             tpm_core::eventlog::BootEventLog::new(vec![ipl_cmdline_event(8, "ro init=/bin/sh")]);
-        assert_eq!(r.appraise_eventlog(&bad, "sha256", &semantic), ReferenceOutcome::Denied);
+        assert_eq!(
+            r.appraise_eventlog(&bad, "sha256", &semantic),
+            ReferenceOutcome::Denied
+        );
     }
 
     #[test]
@@ -1421,11 +1643,17 @@ mod tests {
 
         // Permitted under a baseline of 6.8.0.
         r.set_artifact_policy(FleetArtifactPolicy::new().min_version("kernel", vec![6, 8, 0]));
-        assert_eq!(r.appraise_eventlog(&log, "sha256", &semantic), ReferenceOutcome::Accepted);
+        assert_eq!(
+            r.appraise_eventlog(&log, "sha256", &semantic),
+            ReferenceOutcome::Accepted
+        );
 
         // Revoke that version → the event-measured kernel is denied.
         r.set_artifact_policy(FleetArtifactPolicy::new().deny_version("kernel", vec![6, 8, 0]));
-        assert_eq!(r.appraise_eventlog(&log, "sha256", &semantic), ReferenceOutcome::Denied);
+        assert_eq!(
+            r.appraise_eventlog(&log, "sha256", &semantic),
+            ReferenceOutcome::Denied
+        );
     }
 
     #[test]
@@ -1485,7 +1713,10 @@ mod tests {
             image_event(4, b"some-never-seen-kernel"),
             authority_event(4, b"canonical"),
         ]);
-        assert_eq!(r.appraise_eventlog(&log, "sha256", &semantic), ReferenceOutcome::Accepted);
+        assert_eq!(
+            r.appraise_eventlog(&log, "sha256", &semantic),
+            ReferenceOutcome::Accepted
+        );
 
         // Revoke that authority (dbx) → the very same image is now denied.
         r.set_artifact_policy(
@@ -1494,7 +1725,10 @@ mod tests {
                 .trust_authority(b"canonical".to_vec())
                 .revoke_authority(b"canonical".to_vec()),
         );
-        assert_eq!(r.appraise_eventlog(&log, "sha256", &semantic), ReferenceOutcome::Denied);
+        assert_eq!(
+            r.appraise_eventlog(&log, "sha256", &semantic),
+            ReferenceOutcome::Denied
+        );
     }
 
     #[test]
@@ -1511,7 +1745,10 @@ mod tests {
             image_event(4, b"rootkit"),
             authority_event(4, b"attacker-ca"),
         ]);
-        assert_eq!(r.appraise_eventlog(&log, "sha256", &semantic), ReferenceOutcome::Denied);
+        assert_eq!(
+            r.appraise_eventlog(&log, "sha256", &semantic),
+            ReferenceOutcome::Denied
+        );
     }
 
     #[test]
@@ -1521,7 +1758,13 @@ mod tests {
         r.accept_entry(0, b"fw1".to_vec(), Validity::always());
         r.set_artifact_policy(FleetArtifactPolicy::new().deny_version("kernel", vec![6, 8, 0]));
         assert_eq!(
-            r.appraise(&[pcr(0, b"fw1")], 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
+            r.appraise(
+                &[pcr(0, b"fw1")],
+                0,
+                0,
+                ReferenceMatchPolicy::Flexible,
+                RetiredAction::Fail
+            ),
             ReferenceOutcome::Accepted
         );
     }
@@ -1529,14 +1772,33 @@ mod tests {
     #[test]
     fn validity_by_tick_clock() {
         let mut r = refs();
-        r.accept_entry(0, b"fw1".to_vec(), Validity { until_tick: Some(100), ..Validity::default() });
+        r.accept_entry(
+            0,
+            b"fw1".to_vec(),
+            Validity {
+                until_tick: Some(100),
+                ..Validity::default()
+            },
+        );
         let q = [pcr(0, b"fw1")];
         assert_eq!(
-            r.appraise(&q, 50, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Warn),
+            r.appraise(
+                &q,
+                50,
+                0,
+                ReferenceMatchPolicy::Flexible,
+                RetiredAction::Warn
+            ),
             ReferenceOutcome::Accepted
         );
         assert_eq!(
-            r.appraise(&q, 150, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Warn),
+            r.appraise(
+                &q,
+                150,
+                0,
+                ReferenceMatchPolicy::Flexible,
+                RetiredAction::Warn
+            ),
             ReferenceOutcome::Retired { fail: false }
         );
     }

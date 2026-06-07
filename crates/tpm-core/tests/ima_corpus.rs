@@ -30,8 +30,14 @@ fn corpus_ima_lists_fully_parse() {
         let text = std::fs::read_to_string(&path).unwrap();
 
         let (log, skipped) = ImaLog::parse_ascii(&text);
-        assert_eq!(skipped, 0, "{name}: parser skipped {skipped} unrecognized IMA line(s)");
-        assert!(!log.entries.is_empty(), "{name}: no IMA entries parsed (expected boot_aggregate at least)");
+        assert_eq!(
+            skipped, 0,
+            "{name}: parser skipped {skipped} unrecognized IMA line(s)"
+        );
+        assert!(
+            !log.entries.is_empty(),
+            "{name}: no IMA entries parsed (expected boot_aggregate at least)"
+        );
         // The list conventionally opens with the boot_aggregate over PCRs 0–9.
         assert!(
             log.entries.iter().any(|e| e.path == "boot_aggregate"),
@@ -42,6 +48,9 @@ fn corpus_ima_lists_fully_parse() {
     }
 
     if samples == 0 {
-        eprintln!("no IMA fixtures in {} yet — see docs/a1-capture-handoff.md", dir.display());
+        eprintln!(
+            "no IMA fixtures in {} yet — see docs/a1-capture-handoff.md",
+            dir.display()
+        );
     }
 }

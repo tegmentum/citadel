@@ -84,7 +84,15 @@ impl PromotionProposal {
         timestamp_tick: u64,
     ) -> Self {
         let profile = profile.into();
-        let id = Self::content_id(&proposer, &profile, index, &digest, &artifact, &validity, timestamp_tick);
+        let id = Self::content_id(
+            &proposer,
+            &profile,
+            index,
+            &digest,
+            &artifact,
+            &validity,
+            timestamp_tick,
+        );
         let signature = kp.sign(&id);
         PromotionProposal {
             id,
@@ -125,17 +133,40 @@ pub struct PromotionVote {
 
 impl PromotionVote {
     fn signing_bytes(proposal_id: &[u8; 32], voter: &NodeId, approve: bool, tick: u64) -> Vec<u8> {
-        serde_json::to_vec(&("promotion-vote", proposal_id, voter, approve, tick)).expect("serializable")
+        serde_json::to_vec(&("promotion-vote", proposal_id, voter, approve, tick))
+            .expect("serializable")
     }
 
-    pub fn sign(kp: &MeshKeypair, voter: NodeId, proposal_id: [u8; 32], approve: bool, timestamp_tick: u64) -> Self {
-        let signature = kp.sign(&Self::signing_bytes(&proposal_id, &voter, approve, timestamp_tick));
-        PromotionVote { proposal_id, voter, approve, timestamp_tick, signature }
+    pub fn sign(
+        kp: &MeshKeypair,
+        voter: NodeId,
+        proposal_id: [u8; 32],
+        approve: bool,
+        timestamp_tick: u64,
+    ) -> Self {
+        let signature = kp.sign(&Self::signing_bytes(
+            &proposal_id,
+            &voter,
+            approve,
+            timestamp_tick,
+        ));
+        PromotionVote {
+            proposal_id,
+            voter,
+            approve,
+            timestamp_tick,
+            signature,
+        }
     }
 
     pub fn verify(&self, voter_pub: &MeshPublicKey) -> bool {
         voter_pub.verify(
-            &Self::signing_bytes(&self.proposal_id, &self.voter, self.approve, self.timestamp_tick),
+            &Self::signing_bytes(
+                &self.proposal_id,
+                &self.voter,
+                self.approve,
+                self.timestamp_tick,
+            ),
             &self.signature,
         )
     }
@@ -162,7 +193,8 @@ pub fn decide_promotion(
     let mut rejections = 0usize;
     let mut counted: HashSet<NodeId> = HashSet::new();
     for v in votes {
-        if v.proposal_id != proposal.id || !eligible.contains(&v.voter) || !counted.insert(v.voter) {
+        if v.proposal_id != proposal.id || !eligible.contains(&v.voter) || !counted.insert(v.voter)
+        {
             continue;
         }
         if v.approve {
@@ -191,7 +223,16 @@ mod tests {
     }
 
     fn proposal() -> PromotionProposal {
-        PromotionProposal::create(&kp(1), nid(1), "prod", 4, b"k2".to_vec(), None, Validity::always(), 1)
+        PromotionProposal::create(
+            &kp(1),
+            nid(1),
+            "prod",
+            4,
+            b"k2".to_vec(),
+            None,
+            Validity::always(),
+            1,
+        )
     }
 
     fn vote(voter: u8, p: &PromotionProposal, approve: bool) -> PromotionVote {

@@ -23,14 +23,21 @@ fn identity(seed: &str, cn: &str) -> Option<TpmTlsIdentity> {
     let _ = std::fs::remove_file(&state);
     let backend = VtpmBackend::open(std::path::Path::new(&component), Some(&state)).unwrap();
     let handle = backend
-        .create_key(Algorithm::EccP256, &ObjectPath::new(&format!("tls/{seed}")).unwrap())
+        .create_key(
+            Algorithm::EccP256,
+            &ObjectPath::new(&format!("tls/{seed}")).unwrap(),
+        )
         .unwrap();
     let backend: Arc<dyn TpmBackend> = Arc::new(backend);
     Some(TpmTlsIdentity::new(backend, handle, cn).expect("mint TPM TLS identity"))
 }
 
 fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -48,7 +55,10 @@ async fn gossip_flows_over_mutual_tls_and_unpinned_is_refused() {
     // Server: present server_id, accept only the pinned client.
     let port = free_port();
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    let app = Router::new().route("/v1/gossip", post(|| async { axum::http::StatusCode::ACCEPTED }));
+    let app = Router::new().route(
+        "/v1/gossip",
+        post(|| async { axum::http::StatusCode::ACCEPTED }),
+    );
     tokio::spawn(async move {
         let _ = serve_mtls(app, addr, &server_id, vec![client_cert]).await;
     });

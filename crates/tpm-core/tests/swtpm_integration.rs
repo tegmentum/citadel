@@ -136,8 +136,7 @@ fn swtpm_tcp_pcr_read() {
 
     assert!(wait_for_port(server_port, Duration::from_secs(3)));
 
-    let backend =
-        HardwareBackend::new_swtpm_tcp("localhost", server_port).unwrap();
+    let backend = HardwareBackend::new_swtpm_tcp("localhost", server_port).unwrap();
 
     let pcrs = backend
         .pcr_read("sha256", &[0, 7])

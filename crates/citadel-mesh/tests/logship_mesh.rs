@@ -21,7 +21,9 @@ fn log_cfg() -> NodeConfig {
 
 fn mesh_of(n: u8) -> (Mesh, Vec<NodeId>) {
     let mut mesh = Mesh::new("prod-east-1");
-    let ids: Vec<NodeId> = (1..=n).map(|s| mesh.add_node(s, "worker", log_cfg())).collect();
+    let ids: Vec<NodeId> = (1..=n)
+        .map(|s| mesh.add_node(s, "worker", log_cfg()))
+        .collect();
     mesh.wire_full_membership();
     (mesh, ids)
 }
@@ -80,20 +82,24 @@ fn incremental_divergence_transfers_only_the_diff_not_the_whole_window() {
         log_advertise_interval: 2,
         ..NodeConfig::default()
     };
-    let ids: Vec<NodeId> = (1..=3).map(|s| mesh.add_node(s, "worker", cfg.clone())).collect();
+    let ids: Vec<NodeId> = (1..=3)
+        .map(|s| mesh.add_node(s, "worker", cfg.clone()))
+        .collect();
     mesh.wire_full_membership();
     let origin = ids[0];
 
     // First sync: 40 events in window 0; replicas catch up.
     for i in 0..40u64 {
-        mesh.node_mut(origin).append_event(payload_hash(format!("e-{i}").as_bytes()));
+        mesh.node_mut(origin)
+            .append_event(payload_hash(format!("e-{i}").as_bytes()));
     }
     mesh.run(20);
     let baseline_served = mesh.node(origin).log_records_served();
 
     // Ten more events land in the *same* window.
     for i in 40..50u64 {
-        mesh.node_mut(origin).append_event(payload_hash(format!("e-{i}").as_bytes()));
+        mesh.node_mut(origin)
+            .append_event(payload_hash(format!("e-{i}").as_bytes()));
     }
     mesh.run(20);
 

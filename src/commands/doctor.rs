@@ -38,7 +38,11 @@ impl TextRenderable for DoctorReport {
         out.push('\n');
         out.push_str(&format!(
             "Overall: {}\n",
-            if self.healthy { "healthy" } else { "issues found" }
+            if self.healthy {
+                "healthy"
+            } else {
+                "issues found"
+            }
         ));
         out
     }

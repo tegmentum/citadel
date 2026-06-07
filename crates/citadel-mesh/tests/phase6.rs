@@ -19,7 +19,9 @@ fn founded_mesh(n: u8) -> (Mesh, Vec<NodeId>) {
         probation_period: 6,
         ..NodeConfig::default()
     };
-    let ids: Vec<NodeId> = (1..=n).map(|s| mesh.add_node(s, "worker", cfg.clone())).collect();
+    let ids: Vec<NodeId> = (1..=n)
+        .map(|s| mesh.add_node(s, "worker", cfg.clone()))
+        .collect();
     mesh.wire_full_membership();
     mesh.run(12);
     (mesh, ids)
@@ -42,10 +44,20 @@ fn suspicious_node_is_restricted_from_voting_by_quorum() {
     make_suspicious(&mut mesh, victim);
     assert_eq!(mesh.trust_of(ids[0], victim), Some(TrustState::Suspicious));
 
-    let decision = mesh.propose_quarantine(ids[0], victim, QuarantineScope::RestrictMeshVoting, false);
-    assert!(decision.enacted, "quorum should restrict a suspicious node: {decision:?}");
-    assert_eq!(mesh.quarantine_of(victim), Some(QuarantineScope::RestrictMeshVoting));
-    assert!(!mesh.is_eligible_voter(victim), "a restricted node cannot vote");
+    let decision =
+        mesh.propose_quarantine(ids[0], victim, QuarantineScope::RestrictMeshVoting, false);
+    assert!(
+        decision.enacted,
+        "quorum should restrict a suspicious node: {decision:?}"
+    );
+    assert_eq!(
+        mesh.quarantine_of(victim),
+        Some(QuarantineScope::RestrictMeshVoting)
+    );
+    assert!(
+        !mesh.is_eligible_voter(victim),
+        "a restricted node cannot vote"
+    );
 }
 
 #[test]
@@ -55,15 +67,26 @@ fn stronger_isolation_requires_higher_quorum_and_an_operator() {
     make_suspicious(&mut mesh, victim);
 
     // Witness votes alone cannot fully isolate — it needs an operator.
-    let without_operator = mesh.propose_quarantine(ids[0], victim, QuarantineScope::FullIsolation, false);
+    let without_operator =
+        mesh.propose_quarantine(ids[0], victim, QuarantineScope::FullIsolation, false);
     assert!(!without_operator.enacted);
     assert!(without_operator.operator_required);
-    assert_ne!(mesh.quarantine_of(victim), Some(QuarantineScope::FullIsolation));
+    assert_ne!(
+        mesh.quarantine_of(victim),
+        Some(QuarantineScope::FullIsolation)
+    );
 
     // With the operator's sign-off, the same quorum enacts it.
-    let with_operator = mesh.propose_quarantine(ids[0], victim, QuarantineScope::FullIsolation, true);
-    assert!(with_operator.enacted, "operator + quorum isolates: {with_operator:?}");
-    assert_eq!(mesh.quarantine_of(victim), Some(QuarantineScope::FullIsolation));
+    let with_operator =
+        mesh.propose_quarantine(ids[0], victim, QuarantineScope::FullIsolation, true);
+    assert!(
+        with_operator.enacted,
+        "operator + quorum isolates: {with_operator:?}"
+    );
+    assert_eq!(
+        mesh.quarantine_of(victim),
+        Some(QuarantineScope::FullIsolation)
+    );
     assert_eq!(mesh.trust_of(ids[0], victim), Some(TrustState::Isolated));
 }
 
@@ -85,7 +108,10 @@ fn isolated_node_rejoins_to_probation_after_fresh_attestation() {
     // After remediation (clean reimage), it re-attests and a quorum votes it
     // back — to probation, not straight to trusted.
     mesh.remediate(victim);
-    assert!(mesh.rejoin(victim), "a remediated node rejoins on fresh attestation");
+    assert!(
+        mesh.rejoin(victim),
+        "a remediated node rejoins on fresh attestation"
+    );
     assert_eq!(
         mesh.trust_of(ids[0], victim),
         Some(TrustState::Probationary),

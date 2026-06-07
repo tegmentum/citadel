@@ -108,4 +108,3 @@ CREATE TABLE checkpoint_counters (
     counter         INTEGER NOT NULL
 );
 "#;
-

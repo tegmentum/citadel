@@ -139,7 +139,11 @@ impl<'a> TpmCheckpointSigner<'a> {
         let indices = p
             .get("indices")
             .and_then(|i| i.as_array())
-            .map(|a| a.iter().filter_map(|v| v.as_u64().map(|n| n as u32)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_u64().map(|n| n as u32))
+                    .collect()
+            })
             .unwrap_or_default();
         Ok(Some((bank, indices)))
     }
@@ -178,7 +182,11 @@ impl<'a> TpmCheckpointSigner<'a> {
         let indices = p
             .get("indices")
             .and_then(|i| i.as_array())
-            .map(|a| a.iter().filter_map(|v| v.as_u64().map(|n| n as u32)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_u64().map(|n| n as u32))
+                    .collect()
+            })
             .unwrap_or_default();
         Ok(Some(AuthorizedBinding {
             authority,
@@ -204,6 +212,9 @@ impl<'a> TpmCheckpointSigner<'a> {
     /// This is the *detection* half of the threat model: an unapproved state
     /// change is exactly the one with no valid, witnessed approval here, so
     /// signing for it is refused.
+    // Returns `(approved_policy, policy_ref)` on a match — a local helper tuple
+    // that doesn't merit a named type.
+    #[allow(clippy::type_complexity)]
     fn find_logged_approval(
         &self,
         approved_policy: &[u8],
@@ -234,7 +245,7 @@ impl<'a> TpmCheckpointSigner<'a> {
             let sig = payload
                 .get("signature")
                 .and_then(|v| v.as_str())
-                .and_then(|s| decode_hex(s))
+                .and_then(decode_hex)
                 .ok_or_else(|| {
                     SignerError::Storage("logged approval has malformed signature".into())
                 })?;
@@ -291,24 +302,19 @@ impl<'a> TpmCheckpointSigner<'a> {
             .into_iter()
             .find(|i| i.id == ident_uuid)
             .ok_or_else(|| {
-                SignerError::UnknownIdentity(format!(
-                    "no identity with id {}",
-                    signer_identity
-                ))
+                SignerError::UnknownIdentity(format!("no identity with id {}", signer_identity))
             })?;
         let key = self
             .store
             .get_object_by_id(&identity.key_object_id)
             .map_err(|e| SignerError::Storage(e.to_string()))?
             .ok_or_else(|| {
-                SignerError::Storage(format!(
-                    "identity {} references missing key",
-                    identity.name
-                ))
+                SignerError::Storage(format!("identity {} references missing key", identity.name))
             })?;
-        let handle_blob = key.handle_blob.clone().ok_or_else(|| {
-            SignerError::Storage("signer key has no handle blob".into())
-        })?;
+        let handle_blob = key
+            .handle_blob
+            .clone()
+            .ok_or_else(|| SignerError::Storage("signer key has no handle blob".into()))?;
         Ok(KeyHandle {
             id: handle_blob,
             path: key.path.to_string(),
@@ -445,7 +451,7 @@ fn hex_str(bytes: &[u8]) -> String {
 /// Decode a lowercase/uppercase hex string into bytes; `None` on any
 /// non-hex character or odd length.
 fn decode_hex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     (0..s.len())
@@ -502,7 +508,9 @@ mod tests {
         backend.pcr_extend("sha256", 0, &[0x99u8; 32]).unwrap();
         let signer = TpmCheckpointSigner::new(&backend, &store);
         // No guard => proceeds to identity lookup (fails there, not on a gate).
-        let err = signer.sign_checkpoint("no-such-identity", b"root").unwrap_err();
+        let err = signer
+            .sign_checkpoint("no-such-identity", b"root")
+            .unwrap_err();
         assert!(!err.to_string().contains("measured-state gate"));
     }
 }

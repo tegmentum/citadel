@@ -9,7 +9,7 @@ use citadel_mesh::enrollment::AdmissionReason;
 use citadel_mesh::harness::Mesh;
 use citadel_mesh::node::NodeConfig;
 use citadel_mesh::state::TrustState;
-use citadel_mesh::types::{EndorserCert, Endorsement};
+use citadel_mesh::types::{Endorsement, EndorserCert};
 use citadel_mesh::NodeId;
 
 fn endorser() -> MeshKeypair {
@@ -94,9 +94,14 @@ fn enrollment_refuses_an_unendorsed_candidate() {
 
     // A candidate with no endorsement is refused (its witnesses require one).
     let (outcome, candidate) = mesh.enroll(50, "worker");
-    assert!(!outcome.admitted, "an unendorsed candidate must not be admitted");
     assert!(
-        outcome.reject_reasons.contains(&AdmissionReason::AkUntrusted),
+        !outcome.admitted,
+        "an unendorsed candidate must not be admitted"
+    );
+    assert!(
+        outcome
+            .reject_reasons
+            .contains(&AdmissionReason::AkUntrusted),
         "reasons: {:?}",
         outcome.reject_reasons
     );

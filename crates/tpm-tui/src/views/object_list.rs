@@ -40,9 +40,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             .enumerate()
             .map(|(i, obj)| {
                 let style = if i == app.selected_index {
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Cyan)
+                    Style::default().fg(Color::Black).bg(Color::Cyan)
                 } else {
                     Style::default()
                 };

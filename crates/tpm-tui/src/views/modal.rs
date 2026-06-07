@@ -51,9 +51,7 @@ pub fn render(frame: &mut Frame, app: &App) {
                     Span::raw("  delete "),
                     Span::styled(
                         path.as_str(),
-                        Style::default()
-                            .fg(Color::Red)
-                            .add_modifier(Modifier::BOLD),
+                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
                     ),
                     Span::raw("?"),
                 ]),

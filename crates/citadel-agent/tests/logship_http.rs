@@ -49,7 +49,11 @@ async fn a_log_replicates_to_peers_over_http() {
             .map(|p| (peer_id(&mesh_id, EPOCH, *p), urls[p].clone()))
             .collect();
         let (node, _id) = build_node(&mesh_id, s, "worker", cfg.clone(), &roster);
-        let handle = spawn_node(node, Arc::new(HttpTransport::new(url_map)), Duration::from_millis(40));
+        let handle = spawn_node(
+            node,
+            Arc::new(HttpTransport::new(url_map)),
+            Duration::from_millis(40),
+        );
         let app = router(handle.clone());
         tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
@@ -84,5 +88,8 @@ async fn a_log_replicates_to_peers_over_http() {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert!(replicated, "peers should replicate the origin's log over HTTP");
+    assert!(
+        replicated,
+        "peers should replicate the origin's log over HTTP"
+    );
 }

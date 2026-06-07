@@ -79,11 +79,19 @@ fn signing_approval_provenance(
         .and_then(|a| a.as_str())
         .unwrap_or("?")
         .to_string();
-    let bank = p.get("bank").and_then(|b| b.as_str()).unwrap_or("sha256").to_string();
+    let bank = p
+        .get("bank")
+        .and_then(|b| b.as_str())
+        .unwrap_or("sha256")
+        .to_string();
     let indices: Vec<u32> = p
         .get("indices")
         .and_then(|i| i.as_array())
-        .map(|a| a.iter().filter_map(|v| v.as_u64().map(|n| n as u32)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_u64().map(|n| n as u32))
+                .collect()
+        })
         .unwrap_or_default();
 
     // Does the live measured state have a witnessed approval?
@@ -229,10 +237,7 @@ pub fn quote(
     }
 
     let ak_handle = tpm_core::backend::KeyHandle {
-        id: ak_obj
-            .handle_blob
-            .clone()
-            .unwrap_or_default(),
+        id: ak_obj.handle_blob.clone().unwrap_or_default(),
         path: ak_name.to_string(),
     };
 
@@ -332,7 +337,7 @@ struct QuoteResult {
 impl TextRenderable for QuoteResult {
     fn render_text(&self) -> String {
         let mut out = String::new();
-        out.push_str(&format!("quote generated\n"));
+        out.push_str("quote generated\n");
         out.push_str(&format!("  ak:          {}\n", self.ak));
         out.push_str(&format!("  PCR bank:    {}\n", self.pcr_bank));
         out.push_str(&format!("  PCRs:        {}\n", self.pcr_count));
@@ -371,8 +376,7 @@ pub fn verify(
         None => quote_data.nonce.clone(),
     };
 
-    let verification =
-        backend.verify_quote(&quote_data, &quote_data.ak_public, &nonce_bytes)?;
+    let verification = backend.verify_quote(&quote_data, &quote_data.ak_public, &nonce_bytes)?;
 
     // If a measurement checkpoint was bundled, verify its signature
     // chain against the local secure log: this confirms the measurement
@@ -500,22 +504,26 @@ impl TextRenderable for VerifyResult {
         ));
         for pcr in &self.pcr_results {
             let status = if pcr.matches { "ok" } else { "MISMATCH" };
-            out.push_str(&format!(
-                "  PCR {}:{}  {}\n",
-                pcr.bank, pcr.index, status
-            ));
+            out.push_str(&format!("  PCR {}:{}  {}\n", pcr.bank, pcr.index, status));
         }
         if let Some(m) = &self.measurement {
             out.push_str("\n  measurement checkpoint:\n");
             out.push_str(&format!("    stream:    {}\n", m.stream));
-            out.push_str(&format!("    segment:   {} {}\n", m.segment_id, m.seq_range));
+            out.push_str(&format!(
+                "    segment:   {} {}\n",
+                m.segment_id, m.seq_range
+            ));
             out.push_str(&format!("    root:      {}\n", m.merkle_root));
             if let Some(id) = &m.signer_identity {
                 out.push_str(&format!("    signer:    {}\n", id));
             }
             out.push_str(&format!(
                 "    checkpoint signature: {}\n",
-                if m.checkpoint_chain_ok { "VERIFIED" } else { "FAILED" }
+                if m.checkpoint_chain_ok {
+                    "VERIFIED"
+                } else {
+                    "FAILED"
+                }
             ));
             if let Some(e) = &m.error {
                 out.push_str(&format!("    error:     {}\n", e));
@@ -529,7 +537,10 @@ impl TextRenderable for VerifyResult {
                 out.push_str(&format!(
                     "    agent:     Citadel {} [{}] — {}\n",
                     a.version.as_deref().unwrap_or("?"),
-                    a.digest.as_deref().map(|d| &d[..d.len().min(16)]).unwrap_or("?"),
+                    a.digest
+                        .as_deref()
+                        .map(|d| &d[..d.len().min(16)])
+                        .unwrap_or("?"),
                     prov,
                 ));
             }
@@ -547,11 +558,7 @@ impl TextRenderable for VerifyResult {
         }
         out.push_str(&format!(
             "\n  result: {}\n",
-            if self.verified {
-                "VERIFIED"
-            } else {
-                "FAILED"
-            }
+            if self.verified { "VERIFIED" } else { "FAILED" }
         ));
         out
     }

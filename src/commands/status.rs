@@ -43,7 +43,10 @@ impl TextRenderable for StatusReport {
         out.push_str("TPM Status\n");
         out.push_str(&format!("  backend:      {}\n", self.backend.backend_type));
         out.push_str(&format!("  manufacturer: {}\n", self.backend.manufacturer));
-        out.push_str(&format!("  firmware:     {}\n", self.backend.firmware_version));
+        out.push_str(&format!(
+            "  firmware:     {}\n",
+            self.backend.firmware_version
+        ));
         out.push_str(&format!(
             "  available:    {}\n",
             if self.backend.available { "yes" } else { "no" }
@@ -56,13 +59,13 @@ impl TextRenderable for StatusReport {
         out.push_str(&format!("  policies: {}\n", self.workspace.policy_count));
         out.push_str(&format!(
             "  profile:  {}\n",
-            self.workspace
-                .active_profile
-                .as_deref()
-                .unwrap_or("(none)")
+            self.workspace.active_profile.as_deref().unwrap_or("(none)")
         ));
         out.push('\n');
-        out.push_str(&format!("Health: {} ({}/100)\n", self.health.posture, self.health.score));
+        out.push_str(&format!(
+            "Health: {} ({}/100)\n",
+            self.health.posture, self.health.score
+        ));
         if !self.health.issues.is_empty() {
             for issue in &self.health.issues {
                 out.push_str(&format!("  - {}\n", issue));
@@ -152,19 +155,11 @@ pub fn compute_health(
     // Check for objects with dangling policy references
     let dangling = objects
         .iter()
-        .filter(|o| {
-            o.policy_id.is_some()
-                && !policies
-                    .iter()
-                    .any(|p| Some(p.id) == o.policy_id)
-        })
+        .filter(|o| o.policy_id.is_some() && !policies.iter().any(|p| Some(p.id) == o.policy_id))
         .count();
     if dangling > 0 {
         score -= 10;
-        issues.push(format!(
-            "{} object(s) reference deleted policies",
-            dangling
-        ));
+        issues.push(format!("{} object(s) reference deleted policies", dangling));
     }
 
     let score = score.max(0) as u8;

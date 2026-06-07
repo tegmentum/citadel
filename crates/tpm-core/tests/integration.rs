@@ -115,9 +115,7 @@ fn seal_with_policy_digest() {
     let (_store, backend) = setup();
 
     let policy_digest = vec![0xAB; 32];
-    let sealed = backend
-        .seal(b"secret", Some(&policy_digest))
-        .unwrap();
+    let sealed = backend.seal(b"secret", Some(&policy_digest)).unwrap();
     assert_eq!(sealed.policy_digest, Some(policy_digest));
 
     let recovered = backend.unseal(&sealed).unwrap();
@@ -131,7 +129,9 @@ fn nv_lifecycle() {
     let (store, backend) = setup();
 
     backend.nv_define(0x01000001, 64).unwrap();
-    store.insert_nv_index("config/test", 0x01000001, 64).unwrap();
+    store
+        .insert_nv_index("config/test", 0x01000001, 64)
+        .unwrap();
 
     // Write via store
     store.nv_write_data("config/test", b"hello nv").unwrap();
@@ -191,9 +191,7 @@ fn attestation_quote_verify_roundtrip() {
     let ak = backend.create_ak(Algorithm::EccP256).unwrap();
     let nonce = b"challenge-12345";
 
-    let quote = backend
-        .quote(&ak, nonce, "sha256", &[0, 7, 11])
-        .unwrap();
+    let quote = backend.quote(&ak, nonce, "sha256", &[0, 7, 11]).unwrap();
 
     assert_eq!(quote.nonce, nonce.as_slice());
     assert_eq!(quote.pcr_values.len(), 3);
@@ -234,15 +232,13 @@ fn pcr_baseline_save_and_diff() {
     let (store, backend) = setup();
 
     let values = backend.pcr_read("sha256", &[0, 7]).unwrap();
-    let values_json = serde_json::json!(
-        values
-            .iter()
-            .map(|v| serde_json::json!({
-                "index": v.index,
-                "digest": v.digest.iter().map(|b| format!("{:02x}", b)).collect::<String>(),
-            }))
-            .collect::<Vec<_>>()
-    );
+    let values_json = serde_json::json!(values
+        .iter()
+        .map(|v| serde_json::json!({
+            "index": v.index,
+            "digest": v.digest.iter().map(|b| format!("{:02x}", b)).collect::<String>(),
+        }))
+        .collect::<Vec<_>>());
 
     store
         .save_pcr_baseline("test-baseline", "sha256", &values_json)
@@ -305,7 +301,9 @@ requires:
     let issues = def.validate();
     assert!(issues.len() >= 2);
     assert!(issues.iter().any(|i| i.message.contains("out of range")));
-    assert!(issues.iter().any(|i| i.message.contains("unknown PCR bank")));
+    assert!(issues
+        .iter()
+        .any(|i| i.message.contains("unknown PCR bank")));
 }
 
 // === Profile Tests ===
@@ -365,9 +363,7 @@ fn audit_log_filtering() {
     assert_eq!(key_entries.len(), 3);
 
     // Filter by object
-    let obj_entries = store
-        .list_audit_log(Some("signing/a"), None, 100)
-        .unwrap();
+    let obj_entries = store.list_audit_log(Some("signing/a"), None, 100).unwrap();
     assert_eq!(obj_entries.len(), 2);
 
     // Limit

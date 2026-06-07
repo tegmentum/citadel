@@ -158,7 +158,14 @@ impl QuarantineProposal {
         expires_at_tick: u64,
         timestamp_tick: u64,
     ) -> Self {
-        let id = Self::content_id(&subject, &proposer, &reason_codes, scope, expires_at_tick, timestamp_tick);
+        let id = Self::content_id(
+            &subject,
+            &proposer,
+            &reason_codes,
+            scope,
+            expires_at_tick,
+            timestamp_tick,
+        );
         let signature = kp.sign(&id);
         QuarantineProposal {
             id,
@@ -205,11 +212,23 @@ pub struct QuarantineVote {
 
 impl QuarantineVote {
     fn signing_bytes(proposal_id: &[u8; 32], voter: &NodeId, ballot: Ballot, tick: u64) -> Vec<u8> {
-        serde_json::to_vec(&("quarantine-vote", proposal_id, voter, ballot, tick)).expect("serializable")
+        serde_json::to_vec(&("quarantine-vote", proposal_id, voter, ballot, tick))
+            .expect("serializable")
     }
 
-    pub fn sign(kp: &MeshKeypair, voter: NodeId, proposal_id: [u8; 32], ballot: Ballot, timestamp_tick: u64) -> Self {
-        let signature = kp.sign(&Self::signing_bytes(&proposal_id, &voter, ballot, timestamp_tick));
+    pub fn sign(
+        kp: &MeshKeypair,
+        voter: NodeId,
+        proposal_id: [u8; 32],
+        ballot: Ballot,
+        timestamp_tick: u64,
+    ) -> Self {
+        let signature = kp.sign(&Self::signing_bytes(
+            &proposal_id,
+            &voter,
+            ballot,
+            timestamp_tick,
+        ));
         QuarantineVote {
             proposal_id,
             voter,
@@ -221,7 +240,12 @@ impl QuarantineVote {
 
     pub fn verify(&self, voter_pub: &MeshPublicKey) -> bool {
         voter_pub.verify(
-            &Self::signing_bytes(&self.proposal_id, &self.voter, self.ballot, self.timestamp_tick),
+            &Self::signing_bytes(
+                &self.proposal_id,
+                &self.voter,
+                self.ballot,
+                self.timestamp_tick,
+            ),
             &self.signature,
         )
     }
@@ -252,9 +276,7 @@ pub fn decide_quarantine(
     let mut counted: HashSet<NodeId> = HashSet::new();
     let mut approvals = 0usize;
     for v in votes {
-        if v.proposal_id != proposal.id
-            || !eligible.contains(&v.voter)
-            || !counted.insert(v.voter)
+        if v.proposal_id != proposal.id || !eligible.contains(&v.voter) || !counted.insert(v.voter)
         {
             continue;
         }
@@ -286,7 +308,15 @@ mod tests {
     }
 
     fn proposal(scope: QuarantineScope) -> QuarantineProposal {
-        QuarantineProposal::create(&kp(1), nid(1), nid(9), vec![ReasonCode::PcrMismatch], scope, 100, 1)
+        QuarantineProposal::create(
+            &kp(1),
+            nid(1),
+            nid(9),
+            vec![ReasonCode::PcrMismatch],
+            scope,
+            100,
+            1,
+        )
     }
 
     fn vote(witness: u8, p: &QuarantineProposal, ballot: Ballot) -> QuarantineVote {

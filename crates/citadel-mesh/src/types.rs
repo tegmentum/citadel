@@ -59,7 +59,8 @@ impl GossipEnvelope {
 
     /// Verify the signature against the enclosed `sender_public_key`.
     pub fn verify_signature(&self) -> bool {
-        self.sender_public_key.verify(&self.signing_payload(), &self.signature)
+        self.sender_public_key
+            .verify(&self.signing_payload(), &self.signature)
     }
 }
 
@@ -88,7 +89,12 @@ pub enum GossipMessage {
     /// binary-search the divergent sub-range.
     LogRangeQuery { boot_id: u64, lo: u64, hi: u64 },
     /// The advertiser's LtHash root over a queried sub-range.
-    LogRangeRoot { boot_id: u64, lo: u64, hi: u64, root: Vec<u8> },
+    LogRangeRoot {
+        boot_id: u64,
+        lo: u64,
+        hi: u64,
+        root: Vec<u8>,
+    },
     /// A replica requests the advertiser's own-log records in `[lo, hi)` (a
     /// leaf of the binary search).
     LogPull { boot_id: u64, lo: u64, hi: u64 },
@@ -196,8 +202,7 @@ pub struct Endorsement {
 
 impl Endorsement {
     fn signing_bytes(subject: &NodeId, ak_public: &[u8], endorser: &MeshPublicKey) -> Vec<u8> {
-        serde_json::to_vec(&("ak-endorsement", subject, ak_public, endorser))
-            .expect("serializable")
+        serde_json::to_vec(&("ak-endorsement", subject, ak_public, endorser)).expect("serializable")
     }
 
     /// As an endorser, sign an endorsement of `subject`'s `ak_public`.
@@ -287,8 +292,10 @@ impl EndorserCert {
 
     /// Whether the issuer's signature over the endorser key is valid.
     pub fn verify(&self) -> bool {
-        self.issuer
-            .verify(&Self::signing_bytes(&self.endorser, &self.issuer), &self.signature)
+        self.issuer.verify(
+            &Self::signing_bytes(&self.endorser, &self.issuer),
+            &self.signature,
+        )
     }
 }
 
@@ -390,7 +397,10 @@ mod tests {
             signature: Signature::zero(),
         };
         env.signature = attacker.sign(&env.signing_payload());
-        assert!(!env.verify_signature(), "victim key can't verify attacker's signature");
+        assert!(
+            !env.verify_signature(),
+            "victim key can't verify attacker's signature"
+        );
     }
 
     #[test]

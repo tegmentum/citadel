@@ -17,7 +17,9 @@ fn mesh_of(n: u8) -> (Mesh, Vec<NodeId>) {
         pcr_selection: vec![0, 7, 10],
         ..NodeConfig::default()
     };
-    let ids: Vec<NodeId> = (1..=n).map(|s| mesh.add_node(s, "worker", cfg.clone())).collect();
+    let ids: Vec<NodeId> = (1..=n)
+        .map(|s| mesh.add_node(s, "worker", cfg.clone()))
+        .collect();
     mesh.wire_full_membership();
     (mesh, ids)
 }
@@ -39,7 +41,11 @@ fn ingesting_an_ima_log_preserves_it_in_the_lthash_pipeline() {
     assert_eq!(ingested, 3, "all three IMA entries are ingested");
     assert!(violations.is_empty(), "no policy set → nothing flagged");
     // The runtime measurements are now in the durable, reconcilable log.
-    assert_ne!(mesh.node(node).own_log_root(), root_before, "the LtHash root advanced");
+    assert_ne!(
+        mesh.node(node).own_log_root(),
+        root_before,
+        "the LtHash root advanced"
+    );
 }
 
 #[test]
@@ -47,7 +53,8 @@ fn ingest_appraises_against_the_runtime_policy() {
     let (mut mesh, ids) = mesh_of(2);
     let node = ids[0];
     // Denylist the bash hash from the IMA list above.
-    mesh.node_mut(node).set_runtime_policy(RuntimePolicy::new().deny("sha256", vec![0x11; 32]));
+    mesh.node_mut(node)
+        .set_runtime_policy(RuntimePolicy::new().deny("sha256", vec![0x11; 32]));
 
     let (violations, _) = mesh.node_mut(node).ingest_own_ima(IMA);
     assert_eq!(violations.len(), 1);

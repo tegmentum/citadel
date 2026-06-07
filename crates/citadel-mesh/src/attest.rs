@@ -114,7 +114,10 @@ impl Attestor {
         let ak = backend.create_ak(Algorithm::EccP256)?;
         // Store as Arc so the same TPM device can also back a TLS identity
         // (E2) — opening a second backend would be a *different* TPM.
-        Ok(Attestor { backend: std::sync::Arc::from(backend), ak })
+        Ok(Attestor {
+            backend: std::sync::Arc::from(backend),
+            ak,
+        })
     }
 
     /// Borrow the backend (e.g. to extend a PCR in tests, simulating a
@@ -138,7 +141,11 @@ impl Attestor {
     /// Capture this node's *current* measured state as a reference (e.g. to
     /// publish a known-good golden from a trusted node, or as a node's own
     /// expected baseline).
-    pub fn reference_over(&self, bank: &str, indices: &[u32]) -> anyhow::Result<ReferenceMeasurements> {
+    pub fn reference_over(
+        &self,
+        bank: &str,
+        indices: &[u32],
+    ) -> anyhow::Result<ReferenceMeasurements> {
         let values = self.backend.pcr_read(bank, indices)?;
         Ok(ReferenceMeasurements::from_pcr_values(&values))
     }
@@ -223,10 +230,11 @@ impl Attestor {
         // 1) Signature + nonce: is this a genuine, fresh quote under its AK?
         //    (We use only these fields; PCR comparison is done against the
         //    reference below, not against the verifier's own state.)
-        match self
-            .backend
-            .verify_quote(&evidence.quote, &evidence.quote.ak_public, &challenge.nonce)
-        {
+        match self.backend.verify_quote(
+            &evidence.quote,
+            &evidence.quote.ak_public,
+            &challenge.nonce,
+        ) {
             Ok(v) => {
                 if !v.signature_valid {
                     reasons.push(ReasonCode::QuoteSignatureInvalid);
@@ -376,7 +384,16 @@ mod tests {
 
         let ch = challenge(nid(1), 5);
         let ev = attester.produce(&ch, 5, None, None, 1).unwrap();
-        let res = verifier.verify(&ch, &ev, &reference, &TrustAnchors::new(), nid(2), 2, ReferenceMatchPolicy::Flexible, RetiredAction::Fail);
+        let res = verifier.verify(
+            &ch,
+            &ev,
+            &reference,
+            &TrustAnchors::new(),
+            nid(2),
+            2,
+            ReferenceMatchPolicy::Flexible,
+            RetiredAction::Fail,
+        );
         assert_eq!(res.result, Verdict::Pass, "reasons: {:?}", res.reason_codes);
     }
 
@@ -389,11 +406,23 @@ mod tests {
 
         // The attester's measured state now diverges from the golden — it
         // matches no accepted source.
-        attester.backend().pcr_extend("sha256", 0, &[0xAA; 32]).unwrap();
+        attester
+            .backend()
+            .pcr_extend("sha256", 0, &[0xAA; 32])
+            .unwrap();
 
         let ch = challenge(nid(1), 5);
         let ev = attester.produce(&ch, 5, None, None, 1).unwrap();
-        let res = verifier.verify(&ch, &ev, &reference, &TrustAnchors::new(), nid(2), 2, ReferenceMatchPolicy::Flexible, RetiredAction::Fail);
+        let res = verifier.verify(
+            &ch,
+            &ev,
+            &reference,
+            &TrustAnchors::new(),
+            nid(2),
+            2,
+            ReferenceMatchPolicy::Flexible,
+            RetiredAction::Fail,
+        );
         assert_eq!(res.result, Verdict::Fail);
         assert!(res.reason_codes.contains(&ReasonCode::ReferenceUnknown));
     }
@@ -406,7 +435,16 @@ mod tests {
         let ch = challenge(nid(1), 5);
         let ev = attester.produce(&ch, 5, None, None, 1).unwrap();
         // No accepted sources to compare against → cannot assert good.
-        let res = verifier.verify(&ch, &ev, &AcceptedReferences::new("sha256"), &TrustAnchors::new(), nid(2), 2, ReferenceMatchPolicy::Flexible, RetiredAction::Fail);
+        let res = verifier.verify(
+            &ch,
+            &ev,
+            &AcceptedReferences::new("sha256"),
+            &TrustAnchors::new(),
+            nid(2),
+            2,
+            ReferenceMatchPolicy::Flexible,
+            RetiredAction::Fail,
+        );
         assert_eq!(res.result, Verdict::Inconclusive);
     }
 
@@ -420,7 +458,16 @@ mod tests {
         let mut ev = attester.produce(&ch, 5, None, None, 1).unwrap();
         // Evidence carries a different nonce than the challenge wanted.
         ev.challenge_nonce = vec![9, 9, 9];
-        let res = verifier.verify(&ch, &ev, &reference, &TrustAnchors::new(), nid(2), 2, ReferenceMatchPolicy::Flexible, RetiredAction::Fail);
+        let res = verifier.verify(
+            &ch,
+            &ev,
+            &reference,
+            &TrustAnchors::new(),
+            nid(2),
+            2,
+            ReferenceMatchPolicy::Flexible,
+            RetiredAction::Fail,
+        );
         assert_eq!(res.result, Verdict::Fail);
         assert!(res.reason_codes.contains(&ReasonCode::NonceMismatch));
     }
@@ -434,7 +481,16 @@ mod tests {
         let ch = challenge(nid(1), 10);
         // Attester is on an older policy revision than the challenge wants.
         let ev = attester.produce(&ch, 8, None, None, 1).unwrap();
-        let res = verifier.verify(&ch, &ev, &reference, &TrustAnchors::new(), nid(2), 2, ReferenceMatchPolicy::Flexible, RetiredAction::Fail);
+        let res = verifier.verify(
+            &ch,
+            &ev,
+            &reference,
+            &TrustAnchors::new(),
+            nid(2),
+            2,
+            ReferenceMatchPolicy::Flexible,
+            RetiredAction::Fail,
+        );
         assert_eq!(res.result, Verdict::Warn);
         assert!(res.reason_codes.contains(&ReasonCode::PolicyRevisionStale));
     }
@@ -452,12 +508,37 @@ mod tests {
 
         // Endorsed (over the attester's actual AK) → trusted.
         let endorsement = Endorsement::issue(&endorser, nid(1), attester.ak_public());
-        let ev = attester.produce(&ch, 5, None, Some(endorsement), 1).unwrap();
-        assert_eq!(verifier.verify(&ch, &ev, &reference, &anchors, nid(2), 2, ReferenceMatchPolicy::Flexible, RetiredAction::Fail).result, Verdict::Pass);
+        let ev = attester
+            .produce(&ch, 5, None, Some(endorsement), 1)
+            .unwrap();
+        assert_eq!(
+            verifier
+                .verify(
+                    &ch,
+                    &ev,
+                    &reference,
+                    &anchors,
+                    nid(2),
+                    2,
+                    ReferenceMatchPolicy::Flexible,
+                    RetiredAction::Fail
+                )
+                .result,
+            Verdict::Pass
+        );
 
         // Unendorsed against an anchored verifier → AK_UNTRUSTED / Fail.
         let bare = attester.produce(&ch, 5, None, None, 1).unwrap();
-        let res = verifier.verify(&ch, &bare, &reference, &anchors, nid(2), 2, ReferenceMatchPolicy::Flexible, RetiredAction::Fail);
+        let res = verifier.verify(
+            &ch,
+            &bare,
+            &reference,
+            &anchors,
+            nid(2),
+            2,
+            ReferenceMatchPolicy::Flexible,
+            RetiredAction::Fail,
+        );
         assert_eq!(res.result, Verdict::Fail);
         assert!(res.reason_codes.contains(&ReasonCode::AkUntrusted));
     }
@@ -473,8 +554,19 @@ mod tests {
         let ch = challenge(nid(1), 5);
 
         let endorsement = Endorsement::issue(&rogue, nid(1), attester.ak_public());
-        let ev = attester.produce(&ch, 5, None, Some(endorsement), 1).unwrap();
-        let res = verifier.verify(&ch, &ev, &reference, &anchors, nid(2), 2, ReferenceMatchPolicy::Flexible, RetiredAction::Fail);
+        let ev = attester
+            .produce(&ch, 5, None, Some(endorsement), 1)
+            .unwrap();
+        let res = verifier.verify(
+            &ch,
+            &ev,
+            &reference,
+            &anchors,
+            nid(2),
+            2,
+            ReferenceMatchPolicy::Flexible,
+            RetiredAction::Fail,
+        );
         assert_eq!(res.result, Verdict::Fail);
         assert!(res.reason_codes.contains(&ReasonCode::AkUntrusted));
     }
@@ -491,8 +583,19 @@ mod tests {
         // A validly-signed endorsement, but for a different AK.
         let endorsement = Endorsement::issue(&endorser, nid(1), vec![9, 9, 9, 9]);
         assert!(endorsement.verify_signature());
-        let ev = attester.produce(&ch, 5, None, Some(endorsement), 1).unwrap();
-        let res = verifier.verify(&ch, &ev, &reference, &anchors, nid(2), 2, ReferenceMatchPolicy::Flexible, RetiredAction::Fail);
+        let ev = attester
+            .produce(&ch, 5, None, Some(endorsement), 1)
+            .unwrap();
+        let res = verifier.verify(
+            &ch,
+            &ev,
+            &reference,
+            &anchors,
+            nid(2),
+            2,
+            ReferenceMatchPolicy::Flexible,
+            RetiredAction::Fail,
+        );
         assert_eq!(res.result, Verdict::Fail);
         assert!(res.reason_codes.contains(&ReasonCode::AkUntrusted));
     }
@@ -509,20 +612,47 @@ mod tests {
         // The mock attaches a log that replays to its quote → integrity holds.
         let ev = attester.produce(&ch, 5, None, None, 1).unwrap();
         assert!(ev.event_log.is_some(), "mock backend supplies an event log");
-        let res = verifier.verify(&ch, &ev, &accepted, &TrustAnchors::new(), nid(2), 2, ReferenceMatchPolicy::Flexible, RetiredAction::Fail);
+        let res = verifier.verify(
+            &ch,
+            &ev,
+            &accepted,
+            &TrustAnchors::new(),
+            nid(2),
+            2,
+            ReferenceMatchPolicy::Flexible,
+            RetiredAction::Fail,
+        );
         assert_eq!(res.result, Verdict::Pass, "reasons {:?}", res.reason_codes);
 
         // No log when a semantic index is present → EVENT_LOG_MISSING / Fail.
         let mut no_log = ev.clone();
         no_log.event_log = None;
-        let res = verifier.verify(&ch, &no_log, &accepted, &TrustAnchors::new(), nid(2), 2, ReferenceMatchPolicy::Flexible, RetiredAction::Fail);
+        let res = verifier.verify(
+            &ch,
+            &no_log,
+            &accepted,
+            &TrustAnchors::new(),
+            nid(2),
+            2,
+            ReferenceMatchPolicy::Flexible,
+            RetiredAction::Fail,
+        );
         assert_eq!(res.result, Verdict::Fail);
         assert!(res.reason_codes.contains(&ReasonCode::EventLogMissing));
 
         // A log that does not replay to the quote → EVENT_LOG_INCONSISTENT / Fail.
         let mut bad = ev.clone();
         bad.event_log = Some(vec![0xDE, 0xAD, 0xBE, 0xEF]);
-        let res = verifier.verify(&ch, &bad, &accepted, &TrustAnchors::new(), nid(2), 2, ReferenceMatchPolicy::Flexible, RetiredAction::Fail);
+        let res = verifier.verify(
+            &ch,
+            &bad,
+            &accepted,
+            &TrustAnchors::new(),
+            nid(2),
+            2,
+            ReferenceMatchPolicy::Flexible,
+            RetiredAction::Fail,
+        );
         assert_eq!(res.result, Verdict::Fail);
         assert!(res.reason_codes.contains(&ReasonCode::EventLogInconsistent));
     }
@@ -536,7 +666,16 @@ mod tests {
         let ch = challenge(nid(1), 5);
         let mut ev = attester.produce(&ch, 5, None, None, 1).unwrap();
         ev.event_log = None; // no log at all
-        let res = verifier.verify(&ch, &ev, &accepted, &TrustAnchors::new(), nid(2), 2, ReferenceMatchPolicy::Flexible, RetiredAction::Fail);
+        let res = verifier.verify(
+            &ch,
+            &ev,
+            &accepted,
+            &TrustAnchors::new(),
+            nid(2),
+            2,
+            ReferenceMatchPolicy::Flexible,
+            RetiredAction::Fail,
+        );
         assert_eq!(res.result, Verdict::Pass, "reasons {:?}", res.reason_codes);
     }
 
@@ -549,7 +688,18 @@ mod tests {
         // Empty anchors → a bare (unendorsed) quote still passes.
         let bare = attester.produce(&ch, 5, None, None, 1).unwrap();
         assert_eq!(
-            verifier.verify(&ch, &bare, &reference, &TrustAnchors::new(), nid(2), 2, ReferenceMatchPolicy::Flexible, RetiredAction::Fail).result,
+            verifier
+                .verify(
+                    &ch,
+                    &bare,
+                    &reference,
+                    &TrustAnchors::new(),
+                    nid(2),
+                    2,
+                    ReferenceMatchPolicy::Flexible,
+                    RetiredAction::Fail
+                )
+                .result,
             Verdict::Pass
         );
     }

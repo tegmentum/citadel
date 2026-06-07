@@ -31,17 +31,15 @@ impl TpmError {
 
 impl std::fmt::Display for TpmError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "[{}] {}",
-            self.diagnostic.code, self.diagnostic.message
-        )
+        write!(f, "[{}] {}", self.diagnostic.code, self.diagnostic.message)
     }
 }
 
 impl std::error::Error for TpmError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.source.as_ref().map(|e| e.as_ref() as &(dyn std::error::Error + 'static))
+        self.source
+            .as_ref()
+            .map(|e| e.as_ref() as &(dyn std::error::Error + 'static))
     }
 }
 
@@ -56,7 +54,7 @@ impl TpmError {
                     path
                 ))
                 .with_suggestion("run `tpm object list` to see all objects")
-                .with_suggestion(format!("run `tpm key list` to see available keys"))
+                .with_suggestion("run `tpm key list` to see available keys".to_string())
                 .with_context("path", path),
         )
     }
@@ -84,14 +82,11 @@ impl TpmError {
 
     pub fn invalid_path(path: &str, reason: &str) -> Self {
         Self::new(
-            Diagnostic::error(
-                DiagCode::E0003,
-                format!("invalid object path: {}", path),
-            )
-            .with_cause(reason.to_string())
-            .with_suggestion("paths must be alphanumeric segments separated by '/'")
-            .with_suggestion("example: signing/release, secret/db/prod")
-            .with_context("path", path),
+            Diagnostic::error(DiagCode::E0003, format!("invalid object path: {}", path))
+                .with_cause(reason.to_string())
+                .with_suggestion("paths must be alphanumeric segments separated by '/'")
+                .with_suggestion("example: signing/release, secret/db/prod")
+                .with_context("path", path),
         )
     }
 

@@ -26,10 +26,9 @@ pub fn create(
     if plan_mode {
         // Validate the inputs enough to show a meaningful plan without
         // performing any store writes.
-        let _ = ObjectPath::new(path_str).map_err(|e| {
+        let _ = ObjectPath::new(path_str).inspect_err(|e| {
             let err = TpmError::invalid_path(path_str, &e.to_string());
             err.emit();
-            e
         })?;
         let _algorithm: Algorithm = algorithm_str
             .parse()
@@ -59,12 +58,11 @@ pub fn create(
             policy_name,
         },
     )
-    .map_err(|e| {
+    .inspect_err(|e| {
         // Best-effort: if it's a TpmError, emit the structured diagnostic.
         if let Some(tpm_err) = e.downcast_ref::<TpmError>() {
             tpm_err.emit();
         }
-        e
     })?;
 
     let summary = KeyCreated {
@@ -99,7 +97,12 @@ pub fn list(store: &Store, format: OutputFormat) -> anyhow::Result<()> {
     let objects = store.list_objects()?;
     let keys: Vec<_> = objects
         .into_iter()
-        .filter(|o| matches!(o.kind, ObjectKind::SigningKey | ObjectKind::StorageKey | ObjectKind::AttestationKey))
+        .filter(|o| {
+            matches!(
+                o.kind,
+                ObjectKind::SigningKey | ObjectKind::StorageKey | ObjectKind::AttestationKey
+            )
+        })
         .collect();
 
     let listing = KeyListing {
@@ -161,10 +164,9 @@ impl TextRenderable for KeyListing {
 // -- key show --
 
 pub fn show(store: &Store, path_str: &str, format: OutputFormat) -> anyhow::Result<()> {
-    let path = ObjectPath::new(path_str).map_err(|e| {
+    let path = ObjectPath::new(path_str).inspect_err(|e| {
         let err = TpmError::invalid_path(path_str, &e.to_string());
         err.emit();
-        e
     })?;
 
     let obj = store.get_object(&path)?.ok_or_else(|| {

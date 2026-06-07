@@ -81,7 +81,8 @@ fn corpus_logs_parse_and_replay_to_their_quotes() {
                 panic!("{name}: log measures PCR {idx} but the quote sidecar has no value for it")
             });
             assert_eq!(
-                got, want,
+                got,
+                want,
                 "{name}: PCR {idx} replay mismatch\n  got  {}\n  want {}",
                 hex(got),
                 hex(want)

@@ -196,12 +196,9 @@ impl DiagCode {
     pub fn default_severity(&self) -> super::Severity {
         match self {
             Self::E9001 => super::Severity::Error,
-            Self::E0700
-            | Self::E0701
-            | Self::E0503
-            | Self::E0402
-            | Self::E0801
-            | Self::E0804 => super::Severity::Warning,
+            Self::E0700 | Self::E0701 | Self::E0503 | Self::E0402 | Self::E0801 | Self::E0804 => {
+                super::Severity::Warning
+            }
             _ => super::Severity::Error,
         }
     }

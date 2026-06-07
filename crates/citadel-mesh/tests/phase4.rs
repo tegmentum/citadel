@@ -28,7 +28,11 @@ fn scatter(
     roster: &[NodeId],
 ) -> HashMap<NodeId, EvidenceFragment> {
     let holders = evidence::assign_holders(record_id, roster, fragments.len());
-    assert_eq!(holders.len(), fragments.len(), "a distinct holder per fragment");
+    assert_eq!(
+        holders.len(),
+        fragments.len(),
+        "a distinct holder per fragment"
+    );
     holders.into_iter().zip(fragments.iter().cloned()).collect()
 }
 

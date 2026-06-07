@@ -38,9 +38,10 @@ impl std::fmt::Display for ApprovalStatus {
 
 /// Operations that require approval.
 pub fn requires_approval(operation: &str, constraints: &ProfileConstraints) -> bool {
-    constraints.require_approval.iter().any(|pattern| {
-        operation.starts_with(pattern) || pattern == "*"
-    })
+    constraints
+        .require_approval
+        .iter()
+        .any(|pattern| operation.starts_with(pattern) || pattern == "*")
 }
 
 /// Constraints applied by a profile.

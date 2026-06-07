@@ -39,9 +39,7 @@ pub fn diff(store: &Store, manifest: &Manifest) -> anyhow::Result<Vec<PlannedAct
             None => actions.push(PlannedAction {
                 action: "create profile".to_string(),
                 target: Some(mp.name.clone()),
-                details: vec![
-                    ("algorithm".to_string(), mp.default_algorithm.to_string()),
-                ],
+                details: vec![("algorithm".to_string(), mp.default_algorithm.to_string())],
                 risk: Risk::Low,
                 reversible: true,
             }),
@@ -106,7 +104,10 @@ pub fn diff(store: &Store, manifest: &Manifest) -> anyhow::Result<Vec<PlannedAct
                 target: Some(mk.path.clone()),
                 details: vec![
                     ("algorithm".to_string(), mk.algorithm.clone()),
-                    ("policy".to_string(), mk.policy.clone().unwrap_or_else(|| "(none)".to_string())),
+                    (
+                        "policy".to_string(),
+                        mk.policy.clone().unwrap_or_else(|| "(none)".to_string()),
+                    ),
                 ],
                 risk: Risk::Low,
                 reversible: true,
@@ -114,7 +115,8 @@ pub fn diff(store: &Store, manifest: &Manifest) -> anyhow::Result<Vec<PlannedAct
             Some(obj) => {
                 if obj.algorithm != desired_alg {
                     actions.push(PlannedAction {
-                        action: "key algorithm drift (warn only; use --force to rotate)".to_string(),
+                        action: "key algorithm drift (warn only; use --force to rotate)"
+                            .to_string(),
                         target: Some(mk.path.clone()),
                         details: vec![(
                             "algorithm".to_string(),
@@ -161,10 +163,8 @@ pub fn diff(store: &Store, manifest: &Manifest) -> anyhow::Result<Vec<PlannedAct
                 reversible: true,
             }),
             Some(ident) => {
-                let desired_usage: IdentityUsage = mi
-                    .usage
-                    .parse()
-                    .map_err(|e: String| anyhow::anyhow!(e))?;
+                let desired_usage: IdentityUsage =
+                    mi.usage.parse().map_err(|e: String| anyhow::anyhow!(e))?;
                 if ident.usage != desired_usage {
                     actions.push(PlannedAction {
                         action: "update identity usage".to_string(),
@@ -345,10 +345,8 @@ pub fn apply(
     // Identities: look up backing key object by path and insert
     for mi in &manifest.spec.identities {
         let existing = store.get_identity(&mi.name)?;
-        let desired_usage: IdentityUsage = mi
-            .usage
-            .parse()
-            .map_err(|e: String| anyhow::anyhow!(e))?;
+        let desired_usage: IdentityUsage =
+            mi.usage.parse().map_err(|e: String| anyhow::anyhow!(e))?;
 
         match existing {
             None => {
@@ -422,10 +420,7 @@ mod tests {
     #[test]
     fn diff_empty_manifest_is_noop() {
         let store = empty_store();
-        let m = Manifest::from_yaml(
-            "apiVersion: tpm/v1\nkind: Workspace\nspec: {}\n",
-        )
-        .unwrap();
+        let m = Manifest::from_yaml("apiVersion: tpm/v1\nkind: Workspace\nspec: {}\n").unwrap();
         let actions = diff(&store, &m).unwrap();
         assert!(actions.is_empty());
     }
@@ -502,7 +497,13 @@ spec:
     - path: signing/r
       algorithm: ecc-p256
 "#;
-        apply(&store, &backend, &Manifest::from_yaml(yaml_v1).unwrap(), false).unwrap();
+        apply(
+            &store,
+            &backend,
+            &Manifest::from_yaml(yaml_v1).unwrap(),
+            false,
+        )
+        .unwrap();
 
         // Now try to change to rsa2048 without force
         let yaml_v2 = r#"
@@ -536,7 +537,13 @@ spec:
     - path: signing/r
       algorithm: ecc-p256
 "#;
-        apply(&store, &backend, &Manifest::from_yaml(yaml_v1).unwrap(), false).unwrap();
+        apply(
+            &store,
+            &backend,
+            &Manifest::from_yaml(yaml_v1).unwrap(),
+            false,
+        )
+        .unwrap();
 
         let yaml_v2 = r#"
 apiVersion: tpm/v1

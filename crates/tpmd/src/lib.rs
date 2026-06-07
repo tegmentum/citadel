@@ -64,15 +64,18 @@ pub fn build_router(state: Arc<Mutex<AppState>>) -> Router {
         .route("/v1/identities", get(handle_list_identities))
         .route("/v1/identities", post(handle_create_identity))
         .route("/v1/identities/{name}", get(handle_get_identity))
-        .route(
-            "/v1/identities/{name}/rotate",
-            post(handle_rotate_identity),
-        )
+        .route("/v1/identities/{name}/rotate", post(handle_rotate_identity))
         .route("/v1/apply", post(handle_apply))
         .route("/v1/graph", get(handle_graph))
         .route("/v1/audit/witness", post(handle_audit_witness))
-        .route("/v1/audit/witness/{stream_id}", get(handle_audit_witness_get))
-        .route("/v1/audit/witness/{stream_id}/list", get(handle_audit_witness_list))
+        .route(
+            "/v1/audit/witness/{stream_id}",
+            get(handle_audit_witness_get),
+        )
+        .route(
+            "/v1/audit/witness/{stream_id}/list",
+            get(handle_audit_witness_list),
+        )
         .layer(axum::middleware::from_fn(check_api_key))
         .with_state(state)
 }
@@ -150,18 +153,22 @@ pub async fn run() -> anyhow::Result<()> {
             let config =
                 tls::server_config_from_identity(&store, tls_backend, &identity_name, &cert_pem)?;
             let addr: std::net::SocketAddr = listen.parse()?;
-            axum_server::bind_rustls(addr, axum_server::tls_rustls::RustlsConfig::from_config(config))
-                .serve(app.into_make_service())
-                .await?;
+            axum_server::bind_rustls(
+                addr,
+                axum_server::tls_rustls::RustlsConfig::from_config(config),
+            )
+            .serve(app.into_make_service())
+            .await?;
         }
         (None, Some(cert_path), Some(key_path)) => {
-            tracing::info!("TLS enabled: cert={}, key={} (on-disk key)", cert_path, key_path);
+            tracing::info!(
+                "TLS enabled: cert={}, key={} (on-disk key)",
+                cert_path,
+                key_path
+            );
 
-            let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
-                &cert_path,
-                &key_path,
-            )
-            .await?;
+            let config =
+                axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert_path, &key_path).await?;
 
             if let Ok(ca_path) = std::env::var("TPMD_TLS_CA") {
                 tracing::info!("mTLS enabled: ca={}", ca_path);
@@ -206,7 +213,9 @@ fn backend_for(kind: &str, store_path: &std::path::Path) -> anyhow::Result<Arc<d
 #[cfg(feature = "vtpm")]
 fn build_vtpm_backend(store_path: &std::path::Path) -> anyhow::Result<Arc<dyn TpmBackend>> {
     let component = std::env::var("TPM_VTPM_COMPONENT").map_err(|_| {
-        anyhow::anyhow!("TPMD_BACKEND=vtpm requires TPM_VTPM_COMPONENT (path to the vTPM component)")
+        anyhow::anyhow!(
+            "TPMD_BACKEND=vtpm requires TPM_VTPM_COMPONENT (path to the vTPM component)"
+        )
     })?;
     let state = std::env::var("TPMD_VTPM_STATE")
         .map(std::path::PathBuf::from)
@@ -480,8 +489,7 @@ async fn handle_sign(
     Json(req): Json<SignRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let state = state.lock().await;
-    let obj_path =
-        ObjectPath::new(&path).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let obj_path = ObjectPath::new(&path).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 
     let obj = state
         .store
@@ -533,8 +541,7 @@ async fn handle_delete_key(
     axum::extract::Path(path): axum::extract::Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let state = state.lock().await;
-    let obj_path =
-        ObjectPath::new(&path).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let obj_path = ObjectPath::new(&path).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 
     if !state
         .store
@@ -903,9 +910,8 @@ async fn handle_rotate_identity(
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let state = state.lock().await;
-    let ident =
-        tpm_core::service::rotate_identity(&state.store, state.backend.as_ref(), &name)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let ident = tpm_core::service::rotate_identity(&state.store, state.backend.as_ref(), &name)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(serde_json::json!({
         "name": ident.name,
         "new_key_object_id": ident.key_object_id.to_string(),
@@ -1031,8 +1037,7 @@ async fn handle_audit_witness(
                 ),
             ));
         }
-        if prev.segment_id == req.segment_id
-            && prev.checkpoint_hash_hex != req.checkpoint_hash_hex
+        if prev.segment_id == req.segment_id && prev.checkpoint_hash_hex != req.checkpoint_hash_hex
         {
             return Err((
                 StatusCode::CONFLICT,
@@ -1047,8 +1052,7 @@ async fn handle_audit_witness(
         }
         // Idempotent republish: same segment_id AND same hash — no
         // new row needed, just report acceptance.
-        if prev.segment_id == req.segment_id
-            && prev.checkpoint_hash_hex == req.checkpoint_hash_hex
+        if prev.segment_id == req.segment_id && prev.checkpoint_hash_hex == req.checkpoint_hash_hex
         {
             return Ok(Json(serde_json::json!({
                 "stream_id": req.stream_id,

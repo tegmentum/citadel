@@ -46,7 +46,12 @@ impl TextRenderable for ObjectListing {
         if self.objects.is_empty() {
             return "No objects in workspace.\n".to_string();
         }
-        let max_path = self.objects.iter().map(|o| o.path.len()).max().unwrap_or(10);
+        let max_path = self
+            .objects
+            .iter()
+            .map(|o| o.path.len())
+            .max()
+            .unwrap_or(10);
         let max_kind = self
             .objects
             .iter()
@@ -491,11 +496,7 @@ pub fn retire(store: &Store, path_str: &str) -> anyhow::Result<()> {
         anyhow::bail!("object not found: {}", path_str);
     }
     store.set_object_state(&path, "retired")?;
-    store.log_action(
-        "object.retire",
-        Some(path_str),
-        &serde_json::json!({}),
-    )?;
+    store.log_action("object.retire", Some(path_str), &serde_json::json!({}))?;
     println!("object retired: {}", path_str);
     Ok(())
 }
@@ -508,11 +509,7 @@ pub fn activate(store: &Store, path_str: &str) -> anyhow::Result<()> {
         anyhow::bail!("object not found: {}", path_str);
     }
     store.set_object_state(&path, "active")?;
-    store.log_action(
-        "object.activate",
-        Some(path_str),
-        &serde_json::json!({}),
-    )?;
+    store.log_action("object.activate", Some(path_str), &serde_json::json!({}))?;
     println!("object activated: {}", path_str);
     Ok(())
 }

@@ -323,12 +323,21 @@ pub struct Reconciliation {
 /// sub-ranges whose LtHash roots differ (design §12).
 pub fn reconcile(local: &EventLog, remote: &EventLog) -> Reconciliation {
     let mut out = Reconciliation::default();
-    let hi = local.max_sequence().max(remote.max_sequence()).saturating_add(1);
+    let hi = local
+        .max_sequence()
+        .max(remote.max_sequence())
+        .saturating_add(1);
     reconcile_range(local, remote, 0, hi, &mut out);
     out
 }
 
-fn reconcile_range(local: &EventLog, remote: &EventLog, lo: u64, hi: u64, out: &mut Reconciliation) {
+fn reconcile_range(
+    local: &EventLog,
+    remote: &EventLog,
+    lo: u64,
+    hi: u64,
+    out: &mut Reconciliation,
+) {
     out.root_comparisons += 1;
     if local.range_root(lo, hi) == remote.range_root(lo, hi) {
         return; // this range already agrees — prune
@@ -397,7 +406,9 @@ mod tests {
         use tpm_core::backend::{MockBackend, TpmBackend};
         let kp = MeshKeypair::from_seed([7u8; 32]);
         let backend = MockBackend::new();
-        let ak = backend.create_ak(tpm_core::model::Algorithm::EccP256).unwrap();
+        let ak = backend
+            .create_ak(tpm_core::model::Algorithm::EccP256)
+            .unwrap();
         let root = vec![1u8, 2, 3, 4];
         let nonce = checkpoint_nonce(1, 0, &root);
         let quote = backend.quote(&ak, &nonce, "sha256", &[0, 7]).unwrap();
@@ -462,7 +473,11 @@ mod tests {
             "binary search is sub-linear: {} comparisons",
             result.root_comparisons
         );
-        assert!(result.records_fetched < 30, "few records fetched: {}", result.records_fetched);
+        assert!(
+            result.records_fetched < 30,
+            "few records fetched: {}",
+            result.records_fetched
+        );
 
         // Applying the diff makes the logs identical.
         for r in result.to_pull {
@@ -521,7 +536,9 @@ mod tests {
 
         let equivocations = detect_equivocation(&ads);
         assert!(
-            equivocations.iter().any(|e| e.node_id == nid(1) && e.window_id == 0),
+            equivocations
+                .iter()
+                .any(|e| e.node_id == nid(1) && e.window_id == 0),
             "node 1 forked window 0: {equivocations:?}"
         );
         assert!(

@@ -56,10 +56,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(status_block, chunks[0]);
 
     // Workspace summary
-    let profile_display = app
-        .active_profile
-        .as_deref()
-        .unwrap_or("(none)");
+    let profile_display = app.active_profile.as_deref().unwrap_or("(none)");
 
     let health_color = match app.health_posture.as_str() {
         "healthy" => Color::Green,

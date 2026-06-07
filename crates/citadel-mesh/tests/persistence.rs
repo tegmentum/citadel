@@ -14,7 +14,11 @@ use citadel_mesh::store::{FileStore, MemStore};
 use citadel_mesh::{MeshKeypair, NodeId};
 
 fn cfg() -> NodeConfig {
-    NodeConfig { witness_count: 0, log_window_size: 8, ..NodeConfig::default() }
+    NodeConfig {
+        witness_count: 0,
+        log_window_size: 8,
+        ..NodeConfig::default()
+    }
 }
 
 fn one_node(seed: u8) -> (Mesh, NodeId) {
@@ -33,7 +37,11 @@ fn own_log_manifest_and_appraisals_survive_a_restart() {
     let manifest = ReferenceManifest::issue(
         &authority,
         "prod",
-        vec![ReferenceEntry::new(0, b"kernel-v2".to_vec(), Validity::always())],
+        vec![ReferenceEntry::new(
+            0,
+            b"kernel-v2".to_vec(),
+            Validity::always(),
+        )],
         vec![],
     );
     let manifest_id = manifest.content_id();
@@ -82,15 +90,24 @@ fn own_log_manifest_and_appraisals_survive_a_restart() {
     {
         let node2 = mesh2.node_mut(id2);
         assert_ne!(node2.own_log_root(), own_root, "fresh node starts empty");
-        assert!(node2.hydrate(&store).unwrap(), "snapshot present for this id");
+        assert!(
+            node2.hydrate(&store).unwrap(),
+            "snapshot present for this id"
+        );
     }
 
     let node2 = mesh2.node(id2);
     assert_eq!(node2.own_log_root(), own_root, "own log restored");
     assert_eq!(node2.reference_audit_len(), 1, "reference audit restored");
-    assert!(node2.has_reference_manifest(manifest_id), "adopted manifest restored");
+    assert!(
+        node2.has_reference_manifest(manifest_id),
+        "adopted manifest restored"
+    );
     assert!(node2.app_audit_len() >= 1, "app audit restored");
-    assert!(node2.app_result_for(id2, "billing").is_some(), "app appraisal restored");
+    assert!(
+        node2.app_result_for(id2, "billing").is_some(),
+        "app appraisal restored"
+    );
 }
 
 #[test]
@@ -111,20 +128,37 @@ fn a_replicated_peer_log_survives_a_restart() {
     let b = mesh.add_node(2, "worker", rep_cfg);
     mesh.wire_full_membership();
     for i in 0..16u64 {
-        mesh.node_mut(a).append_event(payload_hash(format!("a-{i}").as_bytes()));
+        mesh.node_mut(a)
+            .append_event(payload_hash(format!("a-{i}").as_bytes()));
     }
     mesh.run(20);
 
     let a_root = mesh.node(a).own_log_root();
-    assert_eq!(mesh.node(b).replica_root(a), Some(a_root.clone()), "B replicated A");
+    assert_eq!(
+        mesh.node(b).replica_root(a),
+        Some(a_root.clone()),
+        "B replicated A"
+    );
     mesh.node(b).persist(&store).unwrap();
 
     // Fresh B (same seed → same id) hydrates the replica.
     let mut mesh2 = Mesh::new("prod-east-1");
-    let b2 = mesh2.add_node(2, "worker", NodeConfig { witness_count: 0, log_window_size: 8, ..NodeConfig::default() });
+    let b2 = mesh2.add_node(
+        2,
+        "worker",
+        NodeConfig {
+            witness_count: 0,
+            log_window_size: 8,
+            ..NodeConfig::default()
+        },
+    );
     assert_eq!(b2, b, "same seed yields the same identity");
     assert!(mesh2.node_mut(b2).hydrate(&store).unwrap());
-    assert_eq!(mesh2.node(b2).replica_root(a), Some(a_root), "replica restored");
+    assert_eq!(
+        mesh2.node(b2).replica_root(a),
+        Some(a_root),
+        "replica restored"
+    );
 }
 
 #[test]
@@ -139,7 +173,8 @@ fn snapshot_restore_roundtrips_in_memory() {
     let store = MemStore::new();
     let (mut mesh, id) = one_node(3);
     for i in 0..16u64 {
-        mesh.node_mut(id).append_event(payload_hash(format!("x-{i}").as_bytes()));
+        mesh.node_mut(id)
+            .append_event(payload_hash(format!("x-{i}").as_bytes()));
     }
     mesh.node(id).persist(&store).unwrap();
     let root = mesh.node(id).own_log_root();

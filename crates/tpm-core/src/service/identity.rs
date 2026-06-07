@@ -100,9 +100,7 @@ pub fn rotate_identity(
         .list_objects()?
         .into_iter()
         .find(|o| o.id == identity.key_object_id)
-        .ok_or_else(|| {
-            TpmError::identity_missing_key(name, &identity.key_object_id.to_string())
-        })?;
+        .ok_or_else(|| TpmError::identity_missing_key(name, &identity.key_object_id.to_string()))?;
 
     // Derive a new key path; append a timestamped rotation suffix.
     let ts = Utc::now().format("%Y%m%d%H%M%S");
@@ -213,7 +211,10 @@ mod tests {
         let ident = init_identity(&store, &backend, spec("release")).unwrap();
         assert_eq!(ident.name, "release");
         assert_eq!(ident.usage, IdentityUsage::CodeSigning);
-        assert!(store.get_object(&ObjectPath::new("signing/release").unwrap()).unwrap().is_some());
+        assert!(store
+            .get_object(&ObjectPath::new("signing/release").unwrap())
+            .unwrap()
+            .is_some());
         assert!(store.get_identity("release").unwrap().is_some());
     }
 

@@ -39,7 +39,11 @@ async fn spawn_fleet(mesh_id: &MeshId, seeds: &[u8], cfg: NodeConfig) -> HashMap
             .map(|p| (peer_id(mesh_id, EPOCH, *p), urls[p].clone()))
             .collect();
         let (node, _id) = build_node(mesh_id, s, "worker", cfg.clone(), &roster);
-        let handle = spawn_node(node, Arc::new(HttpTransport::new(url_map)), Duration::from_millis(40));
+        let handle = spawn_node(
+            node,
+            Arc::new(HttpTransport::new(url_map)),
+            Duration::from_millis(40),
+        );
         let app = router(handle.clone());
         tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
@@ -53,7 +57,11 @@ fn a_manifest(authority: &MeshKeypair) -> ReferenceManifest {
     ReferenceManifest::issue(
         authority,
         "prod",
-        vec![ReferenceEntry::new(0, b"new-kernel-state".to_vec(), Validity::always())],
+        vec![ReferenceEntry::new(
+            0,
+            b"new-kernel-state".to_vec(),
+            Validity::always(),
+        )],
         vec![],
     )
 }
@@ -90,7 +98,9 @@ async fn a_signed_manifest_gossips_to_the_fleet_over_http() {
 
     let authority = MeshKeypair::from_seed([200u8; 32]);
     for s in &seeds {
-        handles[s].set_reference_authorities(TrustAnchors::with(authority.public())).await;
+        handles[s]
+            .set_reference_authorities(TrustAnchors::with(authority.public()))
+            .await;
     }
     let manifest = a_manifest(&authority);
     let id = manifest.content_id();
@@ -118,7 +128,9 @@ async fn anti_entropy_spreads_a_seeded_manifest_over_http() {
 
     let authority = MeshKeypair::from_seed([200u8; 32]);
     for s in &seeds {
-        handles[s].set_reference_authorities(TrustAnchors::with(authority.public())).await;
+        handles[s]
+            .set_reference_authorities(TrustAnchors::with(authority.public()))
+            .await;
     }
     let manifest = a_manifest(&authority);
     let id = manifest.content_id();

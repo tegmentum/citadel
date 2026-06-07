@@ -1,0 +1,6 @@
+# Local CI via nektos/act (until the repo is public on GitHub).
+# A medium image with common build tooling preinstalled, so steps that expect
+# a real ubuntu-latest runner work. Run:  act           (push event)
+#                                          act -j build-test
+-P ubuntu-latest=catthehacker/ubuntu:act-latest
+--container-architecture linux/amd64

@@ -76,7 +76,8 @@ fn a_forked_window_yields_an_attributable_equivocation_proof() {
 
     // The node rewrites a sealed event — forking its own history. Its next
     // checkpoint carries a different (still validly-signed, quote-bound) root.
-    mesh.node_mut(forker).rewrite_event(3, payload_hash(b"forged"));
+    mesh.node_mut(forker)
+        .rewrite_event(3, payload_hash(b"forged"));
     mesh.run(20);
 
     for &peer in &ids {
@@ -90,7 +91,10 @@ fn a_forked_window_yields_an_attributable_equivocation_proof() {
             // ...and holds non-repudiable proof: two conflicting checkpoints,
             // both signed by the forker, both with quotes bound to their roots.
             let proofs = mesh.node(peer).equivocation_proofs();
-            assert!(!proofs.is_empty(), "{peer} should hold an equivocation proof");
+            assert!(
+                !proofs.is_empty(),
+                "{peer} should hold an equivocation proof"
+            );
             let (a, b) = &proofs[0];
             assert_eq!(a.node_id, forker);
             assert_eq!(b.node_id, forker);

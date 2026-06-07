@@ -56,10 +56,7 @@ fn classify_pcr(index: u32) -> (FragilityRating, &'static str) {
             FragilityRating::Medium,
             "option ROMs (changes if add-in cards change)",
         ),
-        3 => (
-            FragilityRating::Medium,
-            "option ROM configuration",
-        ),
+        3 => (FragilityRating::Medium, "option ROM configuration"),
         4 => (
             FragilityRating::High,
             "MBR / boot manager code (changes on bootloader updates)",
@@ -80,10 +77,7 @@ fn classify_pcr(index: u32) -> (FragilityRating, &'static str) {
             FragilityRating::High,
             "GRUB / bootloader config (changes on kernel upgrades)",
         ),
-        9 => (
-            FragilityRating::High,
-            "GRUB modules / kernel command line",
-        ),
+        9 => (FragilityRating::High, "GRUB modules / kernel command line"),
         10 => (
             FragilityRating::High,
             "IMA measurements (high churn under normal use)",
@@ -92,22 +86,13 @@ fn classify_pcr(index: u32) -> (FragilityRating, &'static str) {
             FragilityRating::High,
             "OS kernel / systemd (changes on kernel updates)",
         ),
-        12 => (
-            FragilityRating::Medium,
-            "boot authorities",
-        ),
-        13 => (
-            FragilityRating::Medium,
-            "platform boot data",
-        ),
+        12 => (FragilityRating::Medium, "boot authorities"),
+        13 => (FragilityRating::Medium, "platform boot data"),
         14 => (
             FragilityRating::Medium,
             "MOK / shim (changes if MOK list updates)",
         ),
-        15 => (
-            FragilityRating::Medium,
-            "platform measurement authority",
-        ),
+        15 => (FragilityRating::Medium, "platform measurement authority"),
         16 => (
             FragilityRating::Low,
             "debug PCR (application-controlled, low volatility)",
@@ -120,10 +105,7 @@ fn classify_pcr(index: u32) -> (FragilityRating, &'static str) {
             FragilityRating::Low,
             "application PCR (explicitly controlled by operator)",
         ),
-        _ => (
-            FragilityRating::Medium,
-            "unknown PCR index",
-        ),
+        _ => (FragilityRating::Medium, "unknown PCR index"),
     }
 }
 
@@ -164,9 +146,7 @@ pub fn rate_policy(policy: &Policy) -> FragilityReport {
 
     let mut notes = Vec::new();
     if policy.rules.is_empty() {
-        notes.push(
-            "policy has no requirements — satisfied unconditionally".to_string(),
-        );
+        notes.push("policy has no requirements — satisfied unconditionally".to_string());
     }
     if has_auth_value {
         notes.push("policy also requires an auth value (password)".to_string());

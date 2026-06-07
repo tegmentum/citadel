@@ -126,7 +126,9 @@ pub fn server_config_from_identity(
         .ok_or_else(|| anyhow::anyhow!("TLS identity not found: {identity_name}"))?;
     let key_obj = store
         .get_object_by_id(&identity.key_object_id)?
-        .ok_or_else(|| anyhow::anyhow!("TLS identity '{identity_name}' references a missing key"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("TLS identity '{identity_name}' references a missing key")
+        })?;
     let handle_blob = key_obj
         .handle_blob
         .clone()
@@ -158,9 +160,9 @@ pub fn server_config_from_identity(
 fn scheme_for(alg: Algorithm) -> anyhow::Result<SignatureScheme> {
     match alg {
         Algorithm::EccP256 => Ok(SignatureScheme::ECDSA_NISTP256_SHA256),
-        other => anyhow::bail!(
-            "TLS-from-TPM currently supports ecc-p256 identities, not {other:?}"
-        ),
+        other => {
+            anyhow::bail!("TLS-from-TPM currently supports ecc-p256 identities, not {other:?}")
+        }
     }
 }
 
@@ -304,10 +306,9 @@ mod tests {
     #[test]
     fn missing_identity_is_an_error() {
         let store = Store::open_memory().unwrap();
-        let backend: Arc<dyn TpmBackend> =
-            Arc::new(tpm_core::backend::MockBackend::new());
-        let err = server_config_from_identity(&store, backend, "nope", "")
-            .expect_err("unknown identity");
+        let backend: Arc<dyn TpmBackend> = Arc::new(tpm_core::backend::MockBackend::new());
+        let err =
+            server_config_from_identity(&store, backend, "nope", "").expect_err("unknown identity");
         assert!(err.to_string().contains("TLS identity not found"));
     }
 }

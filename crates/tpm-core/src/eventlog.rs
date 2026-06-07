@@ -59,7 +59,10 @@ pub struct MeasurementEvent {
 
 impl MeasurementEvent {
     fn digest_for(&self, bank: &str) -> Option<&[u8]> {
-        self.digests.iter().find(|(b, _)| b == bank).map(|(_, d)| d.as_slice())
+        self.digests
+            .iter()
+            .find(|(b, _)| b == bank)
+            .map(|(_, d)| d.as_slice())
     }
 
     /// The measured digest extended for `bank` (the bytes folded into the PCR).
@@ -73,7 +76,10 @@ impl MeasurementEvent {
     /// (e.g. a cmdline string) as authentic. Exact-bytes; platform-specific
     /// normalization (trailing NUL, UTF-16) is follow-up.
     pub fn data_is_measured(&self, bank: &str) -> bool {
-        match (self.digest_for(bank), crate::backend::hash_for_bank(bank, &self.data)) {
+        match (
+            self.digest_for(bank),
+            crate::backend::hash_for_bank(bank, &self.data),
+        ) {
             (Some(d), Ok(h)) => d == h.as_slice(),
             _ => false,
         }
@@ -94,7 +100,9 @@ impl MeasurementEvent {
     /// kernel command line. NOTE: event data is *not* PCR-bound (only the digest
     /// is), so trust it only as far as it is reflected in the measured digest.
     pub fn data_utf8(&self) -> String {
-        String::from_utf8_lossy(&self.data).trim_end_matches('\u{0}').to_string()
+        String::from_utf8_lossy(&self.data)
+            .trim_end_matches('\u{0}')
+            .to_string()
     }
 
     /// Recover the **digest-bound** text payload of this event, or `None` if the
@@ -112,7 +120,9 @@ impl MeasurementEvent {
     pub fn measured_text(&self, bank: &str) -> Option<String> {
         let digest = self.digest_for(bank)?;
         let matches = |bytes: &[u8]| -> bool {
-            crate::backend::hash_for_bank(bank, bytes).map(|h| h.as_slice() == digest).unwrap_or(false)
+            crate::backend::hash_for_bank(bank, bytes)
+                .map(|h| h.as_slice() == digest)
+                .unwrap_or(false)
         };
         // Candidate payloads, in order of specificity. For each we test both the
         // bytes as-is and with a single trailing NUL appended (GRUB hashes the
@@ -128,12 +138,20 @@ impl MeasurementEvent {
         let after_label = after_label.strip_suffix(b"\0").unwrap_or(after_label);
         for cand in [no_nul, after_label] {
             if matches(cand) {
-                return Some(String::from_utf8_lossy(cand).trim_end_matches('\u{0}').to_string());
+                return Some(
+                    String::from_utf8_lossy(cand)
+                        .trim_end_matches('\u{0}')
+                        .to_string(),
+                );
             }
             let mut with_nul = cand.to_vec();
             with_nul.push(0);
             if matches(&with_nul) {
-                return Some(String::from_utf8_lossy(cand).trim_end_matches('\u{0}').to_string());
+                return Some(
+                    String::from_utf8_lossy(cand)
+                        .trim_end_matches('\u{0}')
+                        .to_string(),
+                );
             }
         }
         None
@@ -201,7 +219,9 @@ impl BootEventLog {
 
     /// Events of a given TCG type (e.g. [`ev::EFI_BOOT_SERVICES_APPLICATION`]).
     pub fn events_of_type(&self, tcg_type: u32) -> impl Iterator<Item = &MeasurementEvent> {
-        self.events.iter().filter(move |e| e.tcg_type() == Some(tcg_type))
+        self.events
+            .iter()
+            .filter(move |e| e.tcg_type() == Some(tcg_type))
     }
 
     /// Whether some event for `pcr` measured exactly `digest` in `bank` — used
@@ -265,7 +285,12 @@ impl BootEventLog {
             }
             let data_len = r.u32()? as usize;
             let data = r.take(data_len)?.to_vec();
-            events.push(MeasurementEvent { pcr, event_type: tcg_event_type(etype), digests, data });
+            events.push(MeasurementEvent {
+                pcr,
+                event_type: tcg_event_type(etype),
+                digests,
+                data,
+            });
         }
 
         Ok(BootEventLog { events })
@@ -366,7 +391,10 @@ impl<'a> Reader<'a> {
         self.bytes.len().saturating_sub(self.pos)
     }
     fn take(&mut self, n: usize) -> anyhow::Result<&'a [u8]> {
-        let end = self.pos.checked_add(n).ok_or_else(|| anyhow::anyhow!("length overflow"))?;
+        let end = self
+            .pos
+            .checked_add(n)
+            .ok_or_else(|| anyhow::anyhow!("length overflow"))?;
         let slice = self
             .bytes
             .get(self.pos..end)
@@ -414,7 +442,11 @@ mod tests {
     }
 
     fn pv(pcr: u32, digest: Vec<u8>) -> PcrValue {
-        PcrValue { bank: "sha256".into(), index: pcr, digest }
+        PcrValue {
+            bank: "sha256".into(),
+            index: pcr,
+            digest,
+        }
     }
 
     #[test]
@@ -423,8 +455,18 @@ mod tests {
         let r = log.replay("sha256").unwrap();
         // PCR4 = fold(fold(0, H(kernel)), H(initrd))
         let size = bank_digest_size("sha256").unwrap();
-        let step1 = pcr_fold("sha256", &vec![0u8; size], &hash_for_bank("sha256", b"kernel").unwrap()).unwrap();
-        let step2 = pcr_fold("sha256", &step1, &hash_for_bank("sha256", b"initrd").unwrap()).unwrap();
+        let step1 = pcr_fold(
+            "sha256",
+            &vec![0u8; size],
+            &hash_for_bank("sha256", b"kernel").unwrap(),
+        )
+        .unwrap();
+        let step2 = pcr_fold(
+            "sha256",
+            &step1,
+            &hash_for_bank("sha256", b"initrd").unwrap(),
+        )
+        .unwrap();
         assert_eq!(r.get(&4).unwrap(), &step2);
     }
 
@@ -448,7 +490,10 @@ mod tests {
         };
         let with = BootEventLog::new(vec![extend_event(4, b"a"), noact, extend_event(4, b"b")]);
         let without = BootEventLog::new(vec![extend_event(4, b"a"), extend_event(4, b"b")]);
-        assert_eq!(with.replay("sha256").unwrap(), without.replay("sha256").unwrap());
+        assert_eq!(
+            with.replay("sha256").unwrap(),
+            without.replay("sha256").unwrap()
+        );
     }
 
     // --- TCG binary parsing (Phase B) ---
@@ -492,8 +537,18 @@ mod tests {
         let d_kernel = hash_for_bank("sha256", b"kernel").unwrap();
         let d_cmdline = hash_for_bank("sha256", b"root=/dev/sda1 ro").unwrap();
         let raw = tcg_bytes(&[
-            (4, ev::EFI_BOOT_SERVICES_APPLICATION, d_kernel.clone().try_into().unwrap(), b"\\kernel.efi"),
-            (8, ev::IPL, d_cmdline.try_into().unwrap(), b"root=/dev/sda1 ro"),
+            (
+                4,
+                ev::EFI_BOOT_SERVICES_APPLICATION,
+                d_kernel.clone().try_into().unwrap(),
+                b"\\kernel.efi",
+            ),
+            (
+                8,
+                ev::IPL,
+                d_cmdline.try_into().unwrap(),
+                b"root=/dev/sda1 ro",
+            ),
         ]);
         let log = BootEventLog::parse_tcg(&raw).unwrap();
 
@@ -501,13 +556,17 @@ mod tests {
         assert_eq!(log.events.len(), 3);
         // Replay reproduces the folded PCRs (header is EV_NO_ACTION → no effect).
         let r = log.replay("sha256").unwrap();
-        let pcr4 = pcr_fold("sha256", &vec![0u8; 32], &d_kernel).unwrap();
+        let pcr4 = pcr_fold("sha256", &[0u8; 32], &d_kernel).unwrap();
         assert_eq!(r.get(&4).unwrap(), &pcr4);
         // Classification + cmdline extraction.
         let ipl: Vec<_> = log.events_of_type(ev::IPL).collect();
         assert_eq!(ipl.len(), 1);
         assert_eq!(ipl[0].data_utf8(), "root=/dev/sda1 ro");
-        assert_eq!(log.events_of_type(ev::EFI_BOOT_SERVICES_APPLICATION).count(), 1);
+        assert_eq!(
+            log.events_of_type(ev::EFI_BOOT_SERVICES_APPLICATION)
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -538,7 +597,10 @@ mod tests {
         // data_is_measured (exact bytes) does NOT hold — the label isn't hashed.
         assert!(!ev.data_is_measured("sha256"));
         // measured_text reconciles it to the digest-bound payload.
-        assert_eq!(ev.measured_text("sha256").as_deref(), Some(payload).map(|p| std::str::from_utf8(p).unwrap()));
+        assert_eq!(
+            ev.measured_text("sha256").as_deref(),
+            Some(payload).map(|p| std::str::from_utf8(p).unwrap())
+        );
 
         // And the trailing-NUL convention: digest = H(payload || 0).
         let mut with_nul = payload.to_vec();
@@ -550,7 +612,10 @@ mod tests {
             digests: vec![("sha256".into(), nul_digest)],
             data: payload.to_vec(),
         };
-        assert_eq!(ev2.measured_text("sha256").as_deref(), Some(std::str::from_utf8(payload).unwrap()));
+        assert_eq!(
+            ev2.measured_text("sha256").as_deref(),
+            Some(std::str::from_utf8(payload).unwrap())
+        );
 
         // A digest bound to nothing in the data is not recovered.
         let ev3 = MeasurementEvent {
@@ -581,8 +646,12 @@ mod tests {
 
         let log = BootEventLog::parse_tcg(&out).unwrap();
         let r256 = log.replay("sha256").unwrap();
-        let expected = pcr_fold("sha256", &vec![0u8; 32], &d256).unwrap();
-        assert_eq!(r256.get(&4).unwrap(), &expected, "sha256 replay uses sha256 digest");
+        let expected = pcr_fold("sha256", &[0u8; 32], &d256).unwrap();
+        assert_eq!(
+            r256.get(&4).unwrap(),
+            &expected,
+            "sha256 replay uses sha256 digest"
+        );
         assert!(log.contains_measurement(4, &d256, "sha256"));
     }
 
@@ -601,7 +670,7 @@ mod tests {
         assert_eq!(log.events.len(), 2);
         assert_eq!(
             log.replay("sha256").unwrap().get(&4).unwrap(),
-            &pcr_fold("sha256", &vec![0u8; 32], &d).unwrap()
+            &pcr_fold("sha256", &[0u8; 32], &d).unwrap()
         );
     }
 

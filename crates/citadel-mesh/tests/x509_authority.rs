@@ -9,9 +9,7 @@
 use citadel_mesh::reference::{
     AcceptedReferences, FleetArtifactPolicy, PcrClass, ReferenceOutcome,
 };
-use rcgen::{
-    date_time_ymd, BasicConstraints, CertificateParams, DnType, IsCa, KeyPair,
-};
+use rcgen::{date_time_ymd, BasicConstraints, CertificateParams, DnType, IsCa, KeyPair};
 
 const NOW: u64 = 1_700_000_000; // within 2000..2100 validity
 
@@ -20,7 +18,8 @@ fn ca() -> (rcgen::Certificate, KeyPair) {
     p.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     p.not_before = date_time_ymd(2000, 1, 1);
     p.not_after = date_time_ymd(2100, 1, 1);
-    p.distinguished_name.push(DnType::CommonName, "Vendor UEFI CA");
+    p.distinguished_name
+        .push(DnType::CommonName, "Vendor UEFI CA");
     let key = KeyPair::generate().unwrap();
     let cert = p.self_signed(&key).unwrap();
     (cert, key)
@@ -32,7 +31,11 @@ fn leaf(cn: &str, ca_cert: &rcgen::Certificate, ca_key: &KeyPair) -> Vec<u8> {
     p.not_after = date_time_ymd(2100, 1, 1);
     p.distinguished_name.push(DnType::CommonName, cn);
     let key = KeyPair::generate().unwrap();
-    p.signed_by(&key, ca_cert, ca_key).unwrap().der().as_ref().to_vec()
+    p.signed_by(&key, ca_cert, ca_key)
+        .unwrap()
+        .der()
+        .as_ref()
+        .to_vec()
 }
 
 /// A PCR-4 semantic appraisal with a single EV_EFI_VARIABLE_AUTHORITY event
@@ -49,7 +52,10 @@ fn appraise_with_authority(policy: FleetArtifactPolicy, authority_der: &[u8]) ->
             tpm_core::eventlog::ev::EFI_VARIABLE_AUTHORITY,
         ),
         // The authority event's data is the cert; digest-bound so it's trusted.
-        digests: vec![("sha256".into(), hash_for_bank("sha256", authority_der).unwrap())],
+        digests: vec![(
+            "sha256".into(),
+            hash_for_bank("sha256", authority_der).unwrap(),
+        )],
         data: authority_der.to_vec(),
     };
     let log = tpm_core::eventlog::BootEventLog::new(vec![event]);

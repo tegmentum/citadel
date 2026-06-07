@@ -81,7 +81,10 @@ pub trait StoreBackend: Send {
 
     // -- Approvals --
     fn insert_approval(&self, approval: &crate::model::ApprovalRequest) -> anyhow::Result<()>;
-    fn get_approval(&self, id: &uuid::Uuid) -> anyhow::Result<Option<crate::model::ApprovalRequest>>;
+    fn get_approval(
+        &self,
+        id: &uuid::Uuid,
+    ) -> anyhow::Result<Option<crate::model::ApprovalRequest>>;
     fn list_approvals(&self) -> anyhow::Result<Vec<crate::model::ApprovalRequest>>;
     fn update_approval_status(
         &self,

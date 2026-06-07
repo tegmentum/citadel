@@ -208,7 +208,13 @@ pub struct ChainHeadWitness {
 }
 
 impl ChainHeadWitness {
-    fn signing_bytes(subject: NodeId, seq: u64, head: [u8; 32], witness: NodeId, tick: u64) -> Vec<u8> {
+    fn signing_bytes(
+        subject: NodeId,
+        seq: u64,
+        head: [u8; 32],
+        witness: NodeId,
+        tick: u64,
+    ) -> Vec<u8> {
         serde_json::to_vec(&("chain-head", subject, seq, head, witness, tick))
             .expect("serializable")
     }
@@ -222,7 +228,13 @@ impl ChainHeadWitness {
         chain_head_hash: [u8; 32],
         timestamp_tick: u64,
     ) -> Self {
-        let signature = kp.sign(&Self::signing_bytes(subject, seq, chain_head_hash, witness, timestamp_tick));
+        let signature = kp.sign(&Self::signing_bytes(
+            subject,
+            seq,
+            chain_head_hash,
+            witness,
+            timestamp_tick,
+        ));
         ChainHeadWitness {
             subject,
             seq,
@@ -235,7 +247,13 @@ impl ChainHeadWitness {
 
     pub fn verify(&self, witness_pub: &MeshPublicKey) -> bool {
         witness_pub.verify(
-            &Self::signing_bytes(self.subject, self.seq, self.chain_head_hash, self.witness, self.timestamp_tick),
+            &Self::signing_bytes(
+                self.subject,
+                self.seq,
+                self.chain_head_hash,
+                self.witness,
+                self.timestamp_tick,
+            ),
             &self.signature,
         )
     }
@@ -254,13 +272,31 @@ pub struct EvidenceReceipt {
 }
 
 impl EvidenceReceipt {
-    fn signing_bytes(record_id: [u8; 32], index: usize, holder: NodeId, fragment_hash: [u8; 32], tick: u64) -> Vec<u8> {
-        serde_json::to_vec(&("evidence-receipt", record_id, index, holder, fragment_hash, tick))
-            .expect("serializable")
+    fn signing_bytes(
+        record_id: [u8; 32],
+        index: usize,
+        holder: NodeId,
+        fragment_hash: [u8; 32],
+        tick: u64,
+    ) -> Vec<u8> {
+        serde_json::to_vec(&(
+            "evidence-receipt",
+            record_id,
+            index,
+            holder,
+            fragment_hash,
+            tick,
+        ))
+        .expect("serializable")
     }
 
     /// Sign a receipt for `fragment` as `holder`.
-    pub fn sign(kp: &MeshKeypair, holder: NodeId, fragment: &EvidenceFragment, timestamp_tick: u64) -> Self {
+    pub fn sign(
+        kp: &MeshKeypair,
+        holder: NodeId,
+        fragment: &EvidenceFragment,
+        timestamp_tick: u64,
+    ) -> Self {
         let signature = kp.sign(&Self::signing_bytes(
             fragment.record_id,
             fragment.index,
@@ -280,7 +316,13 @@ impl EvidenceReceipt {
 
     pub fn verify(&self, holder_pub: &MeshPublicKey) -> bool {
         holder_pub.verify(
-            &Self::signing_bytes(self.record_id, self.fragment_index, self.holder, self.fragment_hash, self.timestamp_tick),
+            &Self::signing_bytes(
+                self.record_id,
+                self.fragment_index,
+                self.holder,
+                self.fragment_hash,
+                self.timestamp_tick,
+            ),
             &self.signature,
         )
     }
@@ -391,7 +433,8 @@ mod tests {
     #[test]
     fn full_rewrite_is_caught_by_a_witnessed_head() {
         let mut c = chain_of(5);
-        let witnessed = ChainHeadWitness::sign(&kp(9), nid(9), c.owner(), 4, c.head_at(4).unwrap(), 100);
+        let witnessed =
+            ChainHeadWitness::sign(&kp(9), nid(9), c.owner(), 4, c.head_at(4).unwrap(), 100);
         assert!(witnessed.verify(&kp(9).public()));
         assert!(!c.contradicts_witness(&witnessed), "honest chain agrees");
 
@@ -402,7 +445,10 @@ mod tests {
         // ...verify_integrity now passes (links consistent)...
         assert_eq!(c.verify_integrity(), Ok(()));
         // ...but the head no longer matches what a witness signed.
-        assert!(c.contradicts_witness(&witnessed), "witnessed head detects the rewrite");
+        assert!(
+            c.contradicts_witness(&witnessed),
+            "witnessed head detects the rewrite"
+        );
     }
 
     #[test]
