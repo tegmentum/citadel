@@ -227,8 +227,20 @@ Rationale: do the cheap de-risking and the software-only high-value items
 ## Cross-cutting follow-ups (small, fold into the above)
 * Unused reason codes (`AGENT_VERSION_DEPRECATED`, `NETWORK_LOCATION_UNEXPECTED`,
   `CLOCK_SKEW_EXCESSIVE`, `ROLE_NOT_AUTHORIZED`) — wire or remove as their
-  policies land.
+  policies land. (`AGENT_VERSION_DEPRECATED` / `ROLE_NOT_AUTHORIZED` are realized
+  by **application appraisal**, below.)
 * Quarantine scopes still declared-but-inert (`BlockWorkloadScheduling`,
-  `CredentialRevoke`) — enforce when the corresponding subsystems exist.
+  `CredentialRevoke`) — **enforced by application appraisal** (`application-appraisal.md`
+  P2), which gives these scopes their app-scoped teeth.
 * MMA agent self-measurement (PCR 14) emitted as an event-log entry so the same
   replay/appraise path covers the agent (`mma-upgrade.md` tie-in).
+
+## Related: application-level appraisal (separate design)
+`application-appraisal.md` addresses the asymmetry that a TPM/boot anomaly drives
+quarantine but a failing **registered application** has no detect/respond path.
+It adds app-scoped appraisal (reusing `FleetArtifactPolicy` + `ReferenceManifest`),
+a **report-always** signed `AppAttestationResult` recorded in the evidence chain,
+a **graded** response that finally enforces the two inert quarantine scopes, and
+escalation to node trust only on policy threshold — keeping node-quarantine for
+platform compromise. P1+P2 are software-only; P4 (real app measurement) depends
+on C1 (IMA).
