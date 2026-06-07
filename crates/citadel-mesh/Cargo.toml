@@ -19,6 +19,8 @@ lthash-rs = "1.0.1"
 sha3 = { version = "0.10", default-features = false }
 # A2: X.509 CA-chain authority validation for Secure Boot db/dbx. Optional so
 # the core stays lean (no X.509 stack) unless a deployment needs CA anchors.
+# TODO(release): re-pin to an audited `rev = "<sha>"` before release — a
+# security-sensitive dep must not track a moving branch in a shipped build.
 x509-path = { git = "https://github.com/tegmentum/pkcs11-x509.git", branch = "main", optional = true }
 
 [features]
