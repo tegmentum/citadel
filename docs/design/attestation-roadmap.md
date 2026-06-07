@@ -22,7 +22,7 @@ harness cannot provide.
 | # | Item | Track | Effort | Gating |
 |---|------|-------|--------|--------|
 | A1 | Real-platform event-log corpus validation | Boot appraisal | 2–3 d | sample logs |
-| A2 | X.509 / CA-chain authority validation | Boot appraisal | 1–1.5 wk | no |
+| A2 | X.509 / CA-chain authority validation | Boot appraisal | ✅ done (x509-path crate) | no |
 | A3 | Structured `ArtifactIdentity` extraction from events | Boot appraisal | 1–2 wk | no |
 | B1 | Real event-log ingestion (`/sys`, vTPM, HW) | Hardware bring-up | 1 wk | hardware/vTPM |
 | B2 | Signed reference values from a real RVP | Hardware bring-up | 1 wk | build pipeline |
@@ -51,22 +51,27 @@ harness cannot provide.
 * **Effort:** 2–3 d. **Gating:** needs sample logs (swtpm/QEMU is enough — no
   physical TPM).
 
-### A2 — X.509 / CA-chain authority validation
-* **Goal:** the follow-up called out in the Secure Boot work — today an
-  authority is matched as an **opaque blob** (faithful to *pinned* `db` certs).
-  Real `db` often holds **CA** certs that authorize many leaf images; validating
-  that requires X.509 chain building + signature verification.
-* **Scope:** parse the `EV_EFI_VARIABLE_AUTHORITY` `EFI_SIGNATURE_DATA` to a
-  cert; build/verify the chain to a `db` CA; honor `dbx` by cert hash/serial.
-  Extend `FleetArtifactPolicy` so a trusted authority may be a CA, not only a
-  pinned leaf.
-* **Seam:** `FleetArtifactPolicy::authority_permits` (today byte-membership) →
-  add a chain-validating path; new dep (`x509-cert` + `der`, or `webpki`).
-* **Test:** synthetic CA → leaf chains; revoke via `dbx`; expired/wrong-EKU
-  rejected. Deterministic, in-process.
-* **Effort:** 1–1.5 wk (mostly the new dep + cert plumbing). **Gating:** none.
-* **Risk:** pulling an X.509 stack into the dependency surface — keep it behind
-  a feature flag so the core stays lean.
+### A2 — X.509 / CA-chain authority validation — ✅ DONE
+* **Goal:** an authority that is a **CA** authorizes many leaf images without
+  pinning each — beyond the opaque-blob membership of the original Secure Boot
+  work.
+* **Delivered as shared infra:** a new repo **`~/git/pkcs11-x509`** with a
+  native `x509-path` crate (chain-to-anchor: parse + signature verify + validity
+  + CA constraints + `dbx` revocation; pluggable `CertVerifier` seam, native by
+  default, routable to the PKCS#11 `verify()` primitive) plus a WIT
+  `tegmentum:x509-path` contract and a WASM-component wrapper. Reusable by any
+  project needing chain-to-anchor.
+* **Wired into Citadel** behind the `x509-authority` feature (core stays lean by
+  default): `FleetArtifactPolicy::trust_ca` / `as_of` + `chains_to_ca`, folded
+  into `authority_permits` — an `EV_EFI_VARIABLE_AUTHORITY` is accepted if it is
+  a pinned `db` entry **or** chains to a trusted `db` CA, and `dbx` still blocks.
+* **Tests:** `x509-path` 8 unit tests (rcgen chains); Citadel
+  `tests/x509_authority.rs` (CA-chain accepted; untrusted-CA denied; dbx-revoked
+  denied) under the feature.
+* **Remaining:** parsing the real `EV_EFI_VARIABLE_AUTHORITY` `EFI_SIGNATURE_DATA`
+  wrapper (vs. a raw cert) and a real time source for `as_of` — both intersect A1
+  (real corpus). X.509 name-constraints / EKU are documented non-goals of
+  `x509-path` for now.
 
 ### A3 — Structured `ArtifactIdentity` extraction from events
 * **Goal:** derive `(component, publisher, version)` **directly from the event

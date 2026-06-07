@@ -17,5 +17,14 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 reed-solomon-erasure = "6"
 lthash-rs = "1.0.1"
 sha3 = { version = "0.10", default-features = false }
+# A2: X.509 CA-chain authority validation for Secure Boot db/dbx. Optional so
+# the core stays lean (no X.509 stack) unless a deployment needs CA anchors.
+x509-path = { path = "../../../pkcs11-x509/x509-path", optional = true }
+
+[features]
+# Validate EV_EFI_VARIABLE_AUTHORITY authorities that chain to a trusted db CA
+# (vs. only pinned-cert membership).
+x509-authority = ["dep:x509-path"]
 
 [dev-dependencies]
+rcgen = "0.13"

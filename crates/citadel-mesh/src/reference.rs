@@ -194,6 +194,15 @@ pub struct FleetArtifactPolicy {
     /// When set, every measured `EV_EFI_VARIABLE_AUTHORITY` must be a trusted
     /// authority (enforces "only db-signed images boot").
     require_authorized_boot: bool,
+    /// DER CA certificates an authority may chain to — the `db` CA model (A2).
+    /// An authority is trusted if its cert chains to one of these, in addition
+    /// to the pinned-blob `trusted_authorities` above. Requires the
+    /// `x509-authority` feature to take effect.
+    ca_anchors: Vec<Vec<u8>>,
+    /// Wall-clock time (unix seconds) at which certificate validity is judged
+    /// for CA-chain validation. `0` = epoch (effectively disables the validity
+    /// window); set to "now" in a real deployment.
+    as_of_unix: u64,
 }
 
 impl FleetArtifactPolicy {
@@ -263,15 +272,66 @@ impl FleetArtifactPolicy {
         self
     }
 
+    /// Trust a `db` **CA** certificate (DER): authorities whose cert chains to
+    /// it are accepted (A2). Requires the `x509-authority` feature.
+    pub fn trust_ca(mut self, ca_der: impl Into<Vec<u8>>) -> Self {
+        self.ca_anchors.push(ca_der.into());
+        self
+    }
+
+    /// Set the time (unix seconds) certificate validity is judged against.
+    pub fn as_of(mut self, now_unix: u64) -> Self {
+        self.as_of_unix = now_unix;
+        self
+    }
+
+    /// Whether the authority's certificate chains to a trusted `db` CA. Without
+    /// the `x509-authority` feature (or with no CA anchors) this is always
+    /// `false`, so behaviour falls back to pinned-blob membership.
+    #[cfg(feature = "x509-authority")]
+    fn chains_to_ca(&self, authority: &[u8]) -> bool {
+        if self.ca_anchors.is_empty() {
+            return false;
+        }
+        let Ok(leaf) = x509_path::Cert::from_der(authority) else {
+            return false; // not a parseable cert → not a CA-validated authority
+        };
+        let Ok(store) =
+            x509_path::TrustStore::from_ders(self.ca_anchors.iter().map(|d| d.as_slice()))
+        else {
+            return false;
+        };
+        let mut dbx = x509_path::Revocations::empty();
+        for r in &self.revoked_authorities {
+            dbx.revoke_der(r);
+        }
+        x509_path::validate_chain(
+            &leaf,
+            &[],
+            &store,
+            &dbx,
+            self.as_of_unix,
+            &x509_path::NativeVerifier,
+        )
+        .is_ok()
+    }
+
+    #[cfg(not(feature = "x509-authority"))]
+    fn chains_to_ca(&self, _authority: &[u8]) -> bool {
+        false
+    }
+
     /// Is an image authorized by `authority` permitted? A revoked (`dbx`)
-    /// authority is always blocked; with `require_authorized_boot`, an authority
-    /// not in `db` is blocked; otherwise permitted.
+    /// authority is always blocked. With `require_authorized_boot`, the
+    /// authority must be either a pinned `db` entry **or** chain to a trusted
+    /// `db` CA (A2, `x509-authority` feature); otherwise it is blocked. Without
+    /// `require_authorized_boot`, only `dbx` blocks.
     pub fn authority_permits(&self, authority: &[u8]) -> bool {
         if self.revoked_authorities.contains(authority) {
             return false;
         }
-        if self.require_authorized_boot && !self.trusted_authorities.contains(authority) {
-            return false;
+        if self.require_authorized_boot {
+            return self.trusted_authorities.contains(authority) || self.chains_to_ca(authority);
         }
         true
     }
