@@ -21,7 +21,7 @@ harness cannot provide.
 
 | # | Item | Track | Effort | Gating |
 |---|------|-------|--------|--------|
-| A1 | Real-platform event-log corpus validation | Boot appraisal | 2–3 d | sample logs |
+| A1 | Real-platform event-log corpus validation | Boot appraisal | ◑ lab turnkey; capture pending | swtpm + UEFI guest |
 | A2 | X.509 / CA-chain authority validation | Boot appraisal | ✅ done (x509-path crate) | no |
 | A3 | Structured `ArtifactIdentity` extraction from events | Boot appraisal | 1–2 wk | no |
 | B1 | Real event-log ingestion (vTPM `read_event_log`) | Hardware bring-up | ✅ done (vTPM) | done on vTPM; /sys+HW remain |
@@ -47,12 +47,22 @@ harness cannot provide.
   - **Parser hardening** for real-log warts, with regression tests:
     crypto-agile **multi-bank** records (sha1+sha256 — replay picks the right
     bank), and trailing **padding / `0xFFFFFFFF` terminator** ignored.
-  - A reproducible **capture script** (`scripts/capture-eventlog.sh`):
-    QEMU + OVMF + swtpm boots a Linux guest and drops `.bin`/`.sha256` fixtures.
+  - A **turnkey capture lab**: `scripts/capture-eventlog.sh` (QEMU + OVMF +
+    swtpm, cloud-init-seeded) + `scripts/eventlog-guest-cloud-init.yaml` (the
+    guest mounts a 9p host share, copies `binary_bios_measurements` + the live
+    sha256 PCRs, powers off), then auto-runs the corpus test. One command once
+    `swtpm` + a UEFI guest image are present.
+  - **`SwtpmManager` revived** (`tpm_core::backend::swtpm`): manages a real
+    `swtpm` TPM 2.0 daemon (control + data sockets) — the daemon QEMU drives,
+    and a persistent real-TPM2 for tests. Start/stop tested (self-skips without
+    the binary).
 * **Remaining (gated on the env):** actually capturing the corpus — needs
   `swtpm` installed (absent here; `brew install swtpm`) and a UEFI Linux guest
   image. QEMU + OVMF are present. Once fixtures land, the harness validates them
   and A1 closes; that also unblocks **A3** and the **B1-firmware tail**.
+* **Shortcut:** any real `/sys/.../binary_bios_measurements` + its
+  `/sys/class/tpm/tpm0/pcr-sha256/*` dropped into `tests/fixtures/eventlog/` (as
+  `<name>.bin` + `<name>.sha256`) validates the parser immediately — no QEMU.
 * **Seam:** `tpm_core::eventlog::parse_tcg`; `tests/fixtures/eventlog/`.
 
 ### A2 — X.509 / CA-chain authority validation — ✅ DONE

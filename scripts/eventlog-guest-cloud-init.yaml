@@ -1,0 +1,21 @@
+#cloud-config
+# Guest-side of the A1 event-log capture: mount the 9p host share, copy the
+# firmware measured-boot log + the live sha256 PCR values into it, then power
+# off so the host script can collect the fixtures. NAME is templated by
+# capture-eventlog.sh.
+bootcmd:
+  - [ modprobe, 9pnet_virtio ]
+runcmd:
+  - mkdir -p /mnt/host
+  - mount -t 9p -o trans=virtio,version=9p2000.L host /mnt/host
+  # The TCG crypto-agile binary_bios_measurements log.
+  - cp /sys/kernel/security/tpm0/binary_bios_measurements /mnt/host/__NAME__.bin
+  # The live quoted PCRs (sha256 bank), in the harness sidecar format:
+  #   <pcr_index> <hex_sha256>
+  - |
+    for p in $(seq 0 15); do
+      v=$(cat /sys/class/tpm/tpm0/pcr-sha256/$p 2>/dev/null | tr -d ' \n')
+      [ -n "$v" ] && printf '%s %s\n' "$p" "$v"
+    done > /mnt/host/__NAME__.sha256
+  - sync
+  - poweroff
