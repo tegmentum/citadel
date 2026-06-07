@@ -8,7 +8,7 @@ semantic validation) planned.
 Project: Citadel
 Audience: Architecture, Security, Platform, Runtime Engineers
 Related: `distributed-attestation-mesh.md`, `distributed-log-shipping-lthash.md`,
-`mma-upgrade.md`, `measured-merkle-anchoring.md`
+`mma-upgrade.md`, `measured-merkle-anchoring.md`, `event-log-attestation.md`
 
 > Companion to the [attestation mesh](distributed-attestation-mesh.md). The mesh
 > decides trust from measured state matched against a golden reference; this doc
@@ -324,6 +324,9 @@ quorum the state becomes accepted for that profile. This reuses the mesh's
 witness/enrollment quorum and the §3 `Pending→Active` staging.
 
 ### 10.4 Event-log semantic validation (Layer 4, gated)
+
+> Scoped as its own design: **`event-log-attestation.md`** (ingestion →
+> transport → replay → semantic appraisal, starting at the `TpmBackend` seam).
 
 The deep piece, and the dependency everything semantic rests on. Validate the
 **event log that produced the PCRs**, not just the PCR values:

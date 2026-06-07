@@ -198,7 +198,8 @@ security guarantees degrade.
 **Status: ✗ Not yet built.** No ingestion from `binary_bios_measurements`, the
 TCG event log, or IMA exists. Events are currently appended abstractly via
 `Node::append_event(payload_hash)`; wiring real sources is the boundary between
-"protocol works" and "runs on a real machine."
+"protocol works" and "runs on a real machine." Scoped as its own design:
+**`event-log-attestation.md`** (ingestion → replay → semantic appraisal).
 
 Initially supported:
 
