@@ -76,9 +76,26 @@ const TPM_ALG_KEYEDHASH: u16 = 0x0008;
 const TPM_ECC_NIST_P256: u16 = 0x0003;
 
 /// A TPM backend that delegates to a `VtpmEngine` via raw TPM2 commands.
+/// One recorded PCR extend, for event-log synthesis (`read_event_log`).
+struct RecordedExtend {
+    bank: String,
+    index: u32,
+    digest: Vec<u8>,
+    /// Event data (e.g. an IMA cmdline/path); empty for a bare `pcr_extend`.
+    data: Vec<u8>,
+    /// TCG event type, when measured via `measure_event`.
+    tcg_type: Option<u32>,
+}
+
 pub struct VtpmBackend {
     engine: Mutex<VtpmEngine>,
     initialized: bool,
+    /// Ordered record of PCR extends performed via this backend, so a
+    /// measured-boot event log that replays to the live quote can be
+    /// synthesized (`read_event_log`). A software vTPM has no firmware event
+    /// log; this reconstructs one from what we measured (design
+    /// `event-log-attestation.md` B1).
+    extends: Mutex<Vec<RecordedExtend>>,
     /// When set, the TPM's state is restored from this file on startup
     /// and saved back on drop, so keys, NV, and saved PCRs (0–15) persist
     /// across separate CLI invocations. Without it the vTPM is ephemeral
@@ -133,6 +150,7 @@ impl VtpmBackend {
         Ok(Self {
             engine: Mutex::new(engine),
             initialized: true,
+            extends: Mutex::new(Vec::new()),
             state_path: state_path.map(|p| p.to_path_buf()),
             _lock: lock,
         })
@@ -726,9 +744,55 @@ impl TpmBackend for VtpmBackend {
                 bank
             );
         }
-        let mut engine = self.engine.lock().unwrap();
-        send_command(&mut engine, &build_pcr_extend_cmd(hash_alg, index, digest))?;
+        {
+            let mut engine = self.engine.lock().unwrap();
+            send_command(&mut engine, &build_pcr_extend_cmd(hash_alg, index, digest))?;
+        }
+        self.extends.lock().unwrap().push(RecordedExtend {
+            bank: bank.to_string(),
+            index,
+            digest: digest.to_vec(),
+            data: Vec::new(),
+            tcg_type: None,
+        });
         Ok(())
+    }
+
+    /// Measure raw `data` into a PCR (extend with `H(data)`) and record the data
+    /// + TCG `event_type`, so the synthesized event log carries a digest-bound,
+    /// classifiable event over the real vTPM (e.g. an IMA measurement; P4).
+    fn measure_event(&self, bank: &str, index: u32, event_type: u32, data: &[u8]) -> anyhow::Result<()> {
+        let digest = tpm_core::backend::hash_for_bank(bank, data)?;
+        self.pcr_extend(bank, index, &digest)?;
+        if let Some(rec) = self.extends.lock().unwrap().last_mut() {
+            rec.data = data.to_vec();
+            rec.tcg_type = Some(event_type);
+        }
+        Ok(())
+    }
+
+    /// Synthesize a measured-boot event log that replays to this vTPM's PCRs.
+    /// A real TPM2 PCR starts at zero after `Startup(CLEAR)`, so the log is just
+    /// the recorded extends folded from zero — `replay(log) == quote` over the
+    /// live, genuinely-signed quote (design `event-log-attestation.md` B1).
+    fn read_event_log(&self) -> anyhow::Result<Option<Vec<u8>>> {
+        use tpm_core::eventlog::{BootEventLog, EventType, MeasurementEvent};
+        let events = self
+            .extends
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| MeasurementEvent {
+                pcr: r.index,
+                event_type: match r.tcg_type {
+                    Some(t) => EventType::Unknown(t),
+                    None => EventType::Extend,
+                },
+                digests: vec![(r.bank.clone(), r.digest.clone())],
+                data: r.data.clone(),
+            })
+            .collect();
+        Ok(Some(BootEventLog::new(events).to_bytes()))
     }
 
     fn pcr_read(&self, bank: &str, indices: &[u32]) -> anyhow::Result<Vec<PcrValue>> {
@@ -1557,6 +1621,51 @@ mod tests {
     use tpm_core::backend::TpmBackend;
     use tpm_core::model::{Algorithm, ObjectPath};
 
+    /// B1 (event-log-attestation): the event log synthesized from real PCR
+    /// extends replays to the *live vTPM PCR values* — `replay(log) == quote`
+    /// over a genuine TPM2 quote, not the mock. Skipped unless
+    /// TPM_VTPM_COMPONENT is set.
+    #[test]
+    fn synthesized_event_log_replays_to_the_live_vtpm() {
+        use tpm_core::eventlog::BootEventLog;
+        let Ok(component) = std::env::var("TPM_VTPM_COMPONENT") else {
+            eprintln!("skipping: TPM_VTPM_COMPONENT not set");
+            return;
+        };
+        let backend = VtpmBackend::new(std::path::Path::new(&component)).unwrap();
+
+        // Measure into a resettable debug PCR (16) on the real vTPM: a bare
+        // extend, then a typed IMA-style measure_event (binds data to digest).
+        backend
+            .pcr_extend("sha256", 16, &sha256("bootloader".as_bytes()))
+            .unwrap();
+        backend
+            .measure_event("sha256", 16, 0x0000_000D, b"vmlinuz-6.8.0")
+            .unwrap();
+
+        // The live PCR 16 value, read straight from the vTPM.
+        let quoted = backend.pcr_read("sha256", &[16]).unwrap();
+
+        // The synthesized log must replay to exactly that value.
+        let bytes = backend.read_event_log().unwrap().expect("vtpm supplies a log");
+        let log = BootEventLog::from_bytes(&bytes).unwrap();
+        assert!(
+            log.explains(&quoted),
+            "synthesized event log must replay to the live vTPM PCR 16"
+        );
+
+        // The IMA event's data is digest-bound (P4 binding holds on real hw).
+        assert!(
+            log.contains_measurement(16, &sha256("vmlinuz-6.8.0".as_bytes()), "sha256"),
+            "the measured kernel digest is present in the log"
+        );
+        let ima = log
+            .events_of_type(0x0000_000D)
+            .next()
+            .expect("an EV_IPL-typed event");
+        assert!(ima.data_is_measured("sha256"), "event data binds to its digest");
+    }
+
     /// In-process sign -> verify round-trip against the real libtpms
     /// vTPM. Skipped unless TPM_VTPM_COMPONENT points at the component.
     /// Proves verify_signature handles non-deterministic ECDSA (the
@@ -1834,6 +1943,7 @@ mod tests {
     #[test]
     fn mesh_peer_attestation_over_real_vtpm() {
         use citadel_mesh::attest::{Attestor, TrustAnchors};
+        use citadel_mesh::reference::{AcceptedReferences, ReferenceMatchPolicy, RetiredAction};
         use citadel_mesh::types::{AttestationChallenge, ReasonCode, Verdict};
         use citadel_mesh::NodeId;
 
@@ -1851,7 +1961,8 @@ mod tests {
         // Capture the golden reference (the known-good measured state) from
         // the attester before any divergence — this stands in for the
         // policy / reference-value provider.
-        let reference = attester.reference_over("sha256", &[0, 7]).unwrap();
+        let reference =
+            AcceptedReferences::from_reference(attester.reference_over("sha256", &[0, 7]).unwrap());
 
         let subject = NodeId([1u8; 32]);
         let verifier_id = NodeId([2u8; 32]);
@@ -1867,7 +1978,10 @@ mod tests {
 
         // Healthy: the peer accepts a fresh, nonce-bound real quote.
         let evidence = attester.produce(&challenge, 1, None, None, 1).unwrap();
-        let healthy = verifier.verify(&challenge, &evidence, &reference, &TrustAnchors::default(), verifier_id, 2);
+        let healthy = verifier.verify(
+            &challenge, &evidence, &reference, &TrustAnchors::default(), verifier_id, 2,
+            ReferenceMatchPolicy::Flexible, RetiredAction::Fail,
+        );
         assert_eq!(
             healthy.result,
             Verdict::Pass,
@@ -1879,11 +1993,14 @@ mod tests {
         // no longer matches the golden — the peer flags it.
         attester.backend().pcr_extend("sha256", 0, &[0xAA; 32]).unwrap();
         let tampered = attester.produce(&challenge, 1, None, None, 3).unwrap();
-        let flagged = verifier.verify(&challenge, &tampered, &reference, &TrustAnchors::default(), verifier_id, 4);
+        let flagged = verifier.verify(
+            &challenge, &tampered, &reference, &TrustAnchors::default(), verifier_id, 4,
+            ReferenceMatchPolicy::Flexible, RetiredAction::Fail,
+        );
         assert_eq!(flagged.result, Verdict::Fail, "divergent state must fail");
         assert!(
-            flagged.reason_codes.contains(&ReasonCode::PcrMismatch),
-            "divergence is a PCR mismatch: {:?}",
+            flagged.reason_codes.contains(&ReasonCode::ReferenceUnknown),
+            "divergence matches no accepted reference: {:?}",
             flagged.reason_codes
         );
     }
@@ -1895,6 +2012,7 @@ mod tests {
     #[test]
     fn forged_quote_signature_is_rejected_on_real_vtpm() {
         use citadel_mesh::attest::{Attestor, TrustAnchors};
+        use citadel_mesh::reference::{AcceptedReferences, ReferenceMatchPolicy, RetiredAction};
         use citadel_mesh::types::{AttestationChallenge, ReasonCode, Verdict};
         use citadel_mesh::NodeId;
 
@@ -1906,7 +2024,8 @@ mod tests {
 
         let attester = Attestor::new(Box::new(VtpmBackend::new(comp).unwrap())).unwrap();
         let verifier = Attestor::new(Box::new(VtpmBackend::new(comp).unwrap())).unwrap();
-        let reference = attester.reference_over("sha256", &[0, 7]).unwrap();
+        let reference =
+            AcceptedReferences::from_reference(attester.reference_over("sha256", &[0, 7]).unwrap());
 
         let subject = NodeId([1u8; 32]);
         let challenge = AttestationChallenge {
@@ -1925,7 +2044,10 @@ mod tests {
         for b in evidence.quote.signature.iter_mut() {
             *b ^= 0xFF;
         }
-        let res = verifier.verify(&challenge, &evidence, &reference, &TrustAnchors::default(), NodeId([2u8; 32]), 2);
+        let res = verifier.verify(
+            &challenge, &evidence, &reference, &TrustAnchors::default(), NodeId([2u8; 32]), 2,
+            ReferenceMatchPolicy::Flexible, RetiredAction::Fail,
+        );
         assert_eq!(res.result, Verdict::Fail, "a forged signature must fail");
         assert!(
             res.reason_codes.contains(&ReasonCode::QuoteSignatureInvalid),

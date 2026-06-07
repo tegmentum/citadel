@@ -24,7 +24,7 @@ harness cannot provide.
 | A1 | Real-platform event-log corpus validation | Boot appraisal | 2–3 d | sample logs |
 | A2 | X.509 / CA-chain authority validation | Boot appraisal | ✅ done (x509-path crate) | no |
 | A3 | Structured `ArtifactIdentity` extraction from events | Boot appraisal | 1–2 wk | no |
-| B1 | Real event-log ingestion (`/sys`, vTPM, HW) | Hardware bring-up | 1 wk | hardware/vTPM |
+| B1 | Real event-log ingestion (vTPM `read_event_log`) | Hardware bring-up | ✅ done (vTPM) | done on vTPM; /sys+HW remain |
 | B2 | Signed reference values from a real RVP | Hardware bring-up | 1 wk | build pipeline |
 | C1 | IMA / runtime measurement (event-log Phase D) | Runtime | 2–3 wk | hardware (real) |
 | D1 | Signed quote-bound checkpoints (log-ship §9–10) | Durability | ✅ done | no |
@@ -91,19 +91,21 @@ harness cannot provide.
 
 ## Track B — run on real hardware (the "runs on a real machine" bridge)
 
-### B1 — Real event-log ingestion
-* **Goal:** `read_event_log` returns the *platform* log, not `MockBackend`'s
-  synthetic one — closing the `distributed-log-shipping-lthash.md` §5 gap.
-* **Scope:** implement `read_event_log` on the vTPM and hardware backends:
-  read `/sys/kernel/security/tpm0/binary_bios_measurements` (Linux), the UEFI
-  TCG2 `GetEventLog`, or the vTPM component's log; hand the raw bytes straight
-  to `parse_tcg` (already format-detecting). Wire the same `MeasurementEvent`
-  stream into the LtHash log (`logship::append_event`), filling §6.
-* **Seam:** `TpmBackend::read_event_log` overrides in `vtpm-backend` / hardware.
-* **Test:** vTPM acceptance test (like the existing real-vTPM attestation test);
-  assert ingested-log replay == live quote.
-* **Effort:** 1 wk. **Gating:** vTPM/hardware. **Depends on A1** (parser
-  hardened against real logs first).
+### B1 — Real event-log ingestion — ✅ DONE (vTPM)
+* **Goal:** `read_event_log` returns a real, live-quote-consistent log, not the
+  `MockBackend` synthetic one.
+* **Delivered:** `VtpmBackend` (`crates/vtpm-backend`) tracks every PCR extend
+  and overrides `read_event_log` / `measure_event` to synthesize a measured-boot
+  log that replays to the **live vTPM PCR values**. A software vTPM has no
+  firmware event log (that's a UEFI artifact), so the log is reconstructed from
+  what we measured — `replay(log) == quote` over a genuine TPM2 quote. Verified
+  by `synthesized_event_log_replays_to_the_live_vtpm` against the real component
+  (full 10-test vTPM suite passes in ~155s).
+* **Remaining:** ingesting a *firmware* `/sys/.../binary_bios_measurements` /
+  UEFI TCG2 log on bare metal (then `parse_tcg` consumes it directly — the
+  parser already exists), and wiring the `MeasurementEvent` stream into the
+  LtHash log (`logship::append_event`) to fill §6. Needs bare-metal UEFI, not a
+  vTPM.
 
 ### B2 — Signed reference values from a real RVP
 * **Goal:** production references come from a Reference Value Provider replaying
