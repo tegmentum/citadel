@@ -70,6 +70,25 @@ swtpm also won't create its own `--tpmstate dir` — the script `mkdir`s it.
 - **A2 tail** — parsing the real `EV_EFI_VARIABLE_AUTHORITY` `EFI_SIGNATURE_DATA`
   wrapper against real authority blobs.
 
+## C1 — IMA runtime measurements (PCR 10)
+The runtime appraisal layer (`tpm_core::ima` + `citadel_mesh::runtime`) is built;
+it needs a real IMA list to validate the parser. The capture cloud-init already
+grabs `<name>.ima.ascii` best-effort, but a default cloud image has **no IMA
+policy**, so you get only the `boot_aggregate`. For a rich list, boot with an IMA
+policy and drop it into the C1 corpus:
+
+```sh
+# on a Linux box with IMA in the kernel (most distro kernels): add
+# `ima_policy=tcb` to the kernel cmdline (GRUB), reboot, then:
+sudo cp /sys/kernel/security/ima/ascii_runtime_measurements \
+        <citadel>/crates/tpm-core/tests/fixtures/ima/$(hostname).ascii
+cargo test -p tpm-core --test ima_corpus -- --nocapture
+```
+
+The harness asserts every line parses (no unknown templates). A skipped line is a
+real-firmware/kernel wart — send it over and I'll extend `tpm_core::ima` (same
+real-data → parser-hardening loop as A1/A3).
+
 ## macOS notes (why it stalled there originally)
 - `qemu-system-x86_64` on Apple Silicon is TCG-only (no same-arch HVF) → emulated
   x86 boot is too slow; and `-serial file:` silently doesn't capture on the brew

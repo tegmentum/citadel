@@ -26,7 +26,7 @@ harness cannot provide.
 | A3 | Structured `ArtifactIdentity` extraction from events | Boot appraisal | ✅ done | no |
 | B1 | Real event-log ingestion (vTPM `read_event_log`) | Hardware bring-up | ✅ done (vTPM) | done on vTPM; /sys+HW remain |
 | B2 | Signed reference values from a real RVP | Hardware bring-up | 1 wk | build pipeline |
-| C1 | IMA / runtime measurement (event-log Phase D) | Runtime | 2–3 wk | hardware (real) |
+| C1 | IMA / runtime measurement (event-log Phase D) | Runtime | ◑ parser+policy built | real IMA corpus |
 | D1 | Signed quote-bound checkpoints (log-ship §9–10) | Durability | ✅ done | no |
 | D2 | On-disk persistence (log-ship §17) | Durability | ✅ done | no |
 | D3 | Erasure placement as the default replication | Durability | ✅ done | no |
@@ -157,19 +157,29 @@ harness cannot provide.
 
 ## Track C — runtime measurement (new domain)
 
-### C1 — IMA / runtime (event-log Phase D)
+### C1 — IMA / runtime (event-log Phase D) — ◑ parser + policy built; real corpus + shipping pending
 * **Goal:** attest measurements that happen *after* boot — file/exec integrity
   via Linux IMA (PCR 10), ongoing rather than one-shot.
-* **Scope:** parse `binary_runtime_measurements` (`ima-ng`/`ima-sig`
-  templates); a runtime appraisal policy (allowed file hashes / signing keys);
-  feed the rolling log into the LtHash shipping pipeline so runtime evidence is
-  reconciled and preserved like boot evidence; periodic re-quote of PCR 10.
-* **Seam:** new IMA parser in `eventlog`; appraisal alongside `appraise_eventlog`;
-  ties into `logship`. Likely a new PCR class behavior (append-only, growing).
-* **Test:** IMA template parse units; e2e an unauthorized exec drives distrust.
-* **Effort:** 2–3 wk. **Gating:** real Linux/IMA (synthetic templates get unit
-  coverage, but meaningful validation needs a running kernel). Largest new
-  surface; genuinely separate from boot appraisal.
+* **Built:**
+  - `tpm_core::ima` — parser for the **ASCII** IMA list
+    (`ascii_runtime_measurements`), handling `ima-ng` / `ima-sig` / legacy `ima`
+    templates → `(pcr, template_hash, file algo+hash, path, sig)`. Skips
+    unrecognized lines (count returned) rather than failing the whole log. (The
+    ASCII form is parsed deliberately — the binary `d-ng` field layout is the
+    kind of thing that bites you without real data; ASCII is unambiguous.)
+  - `citadel_mesh::runtime::RuntimePolicy` — content-hash runtime appraisal:
+    a **denylist** (known-bad file hashes, the `dbx` analogue) and an optional
+    **allowlist** (lockdown: only listed hashes may run); empty = report-only.
+    `appraise` returns the violating files (report-always, like app appraisal).
+  - Fixture-driven corpus harness (`tpm-core/tests/ima_corpus.rs`) + capture
+    wired into the lab (`<name>.ima.ascii`) — see `docs/a1-capture-handoff.md`.
+* **Remaining:** validate the parser against a **real** IMA list (needs a kernel
+  booted with an IMA policy, e.g. `ima_policy=tcb` — a default cloud image emits
+  only `boot_aggregate`); wire `RuntimePolicy` violations into node trust /
+  quarantine (like the P3 app-escalation path); feed the rolling IMA log into the
+  LtHash shipping pipeline (`logship`) and periodic PCR-10 re-quote; an
+  append-only PCR class.
+* **Seam:** `tpm_core::ima`; `citadel_mesh::runtime`; ties into `logship` + `node`.
 
 ---
 

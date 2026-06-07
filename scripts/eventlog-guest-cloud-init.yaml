@@ -21,5 +21,9 @@ runcmd:
       v=$(cat /sys/class/tpm/tpm0/pcr-sha256/$p 2>/dev/null | tr -d ' \n')
       [ -n "$v" ] && printf '%s %s\n' "$p" "$v"
     done > /mnt/host/__NAME__.sha256
+  # The IMA runtime measurement list (PCR 10), best-effort — present only when
+  # IMA is active (boot with ima_policy=tcb for a rich list; otherwise just the
+  # boot_aggregate). Feeds the C1 corpus (tests/fixtures/ima/).
+  - sh -c 'cp /sys/kernel/security/ima/ascii_runtime_measurements /mnt/host/__NAME__.ima.ascii 2>/dev/null || true'
   - sync
   - poweroff
