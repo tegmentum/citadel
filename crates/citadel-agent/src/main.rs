@@ -16,11 +16,39 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use citadel_agent::http::{router, HttpTransport};
-use citadel_agent::{build_node, peer_id, peer_public_key, spawn_node};
+use citadel_agent::http::{mtls_client, router, serve_mtls, HttpTransport};
+use citadel_agent::{build_node_with_backend, mint_tls_identity, peer_id, peer_public_key, spawn_node};
 use citadel_mesh::id::MeshId;
 use citadel_mesh::node::NodeConfig;
 use citadel_mesh::NodeId;
+use tpm_core::backend::{MockBackend, TpmBackend};
+
+/// Select this agent's TPM backend. The binary owns this choice (generic seam):
+/// the default is the in-process `MockBackend` (the all-mock demo, which can't
+/// sign real TLS handshakes, so the agent runs plain HTTP). A deployment swaps
+/// in a vTPM/hardware backend here to enable mutual TLS (E2).
+fn make_backend() -> Box<dyn TpmBackend> {
+    Box::new(MockBackend::new())
+}
+
+/// Parse `CITADEL_PEER_CERTS` (JSON `[[seed, "hex-DER"], …]`) into the pinnable
+/// peer roster for mutual TLS — the out-of-band cert distribution for the static
+/// launcher (enrolment/gossip distributes them at runtime otherwise).
+fn parse_peer_certs(mesh_id: &MeshId, epoch: u64) -> Vec<tpm_tls::CertificateDer<'static>> {
+    let raw = std::env::var("CITADEL_PEER_CERTS").unwrap_or_else(|_| "[]".into());
+    let entries: Vec<(u8, String)> = serde_json::from_str(&raw).unwrap_or_default();
+    entries
+        .iter()
+        .filter_map(|(seed, hex)| {
+            let _ = peer_id(mesh_id, epoch, *seed); // validate addressable
+            let der = (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok())
+                .collect::<Option<Vec<u8>>>()?;
+            Some(tpm_tls::CertificateDer::from(der))
+        })
+        .collect()
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -57,14 +85,38 @@ async fn main() -> anyhow::Result<()> {
         .map(|(s, url)| (peer_id(&mesh_id, epoch, *s), url.clone()))
         .collect();
 
-    let (node, id) = build_node(&mesh_id, seed, &role, config, &peers);
-    tracing::info!("citadel-agent {} (seed {seed}) listening on {listen}", id);
+    let (mut node, id) = build_node_with_backend(&mesh_id, seed, &role, config, &peers, make_backend());
 
-    let transport = Arc::new(HttpTransport::new(url_map));
+    // E2: mint a mutual-TLS identity on this node's TPM, if the backend can
+    // (the demo MockBackend can't → `None` → plain HTTP). Peers learn our cert
+    // via enrolment/gossip; we pin theirs from `CITADEL_PEER_CERTS` (launcher)
+    // or `node.tls_roster()` at runtime.
+    let tls_identity = mint_tls_identity(&mut node, &id.to_string());
+    let peer_certs = parse_peer_certs(&mesh_id, epoch);
+    let mtls = tls_identity.as_ref().filter(|_| !peer_certs.is_empty());
+
+    let transport = match &mtls {
+        Some(identity) => {
+            tracing::info!("citadel-agent {id} (seed {seed}) mutual-TLS on {listen}");
+            Arc::new(HttpTransport::with_client(url_map, mtls_client(identity, peer_certs.clone())?))
+        }
+        None => {
+            tracing::info!("citadel-agent {id} (seed {seed}) plain HTTP on {listen}");
+            Arc::new(HttpTransport::new(url_map))
+        }
+    };
     let handle = spawn_node(node, transport, Duration::from_millis(tick_ms));
-
     let app = router(handle);
-    let listener = tokio::net::TcpListener::bind(&listen).await?;
-    axum::serve(listener, app).await?;
+
+    match mtls {
+        Some(identity) => {
+            let addr: std::net::SocketAddr = listen.parse()?;
+            serve_mtls(app, addr, identity, peer_certs).await?;
+        }
+        None => {
+            let listener = tokio::net::TcpListener::bind(&listen).await?;
+            axum::serve(listener, app).await?;
+        }
+    }
     Ok(())
 }

@@ -31,7 +31,7 @@ harness cannot provide.
 | D2 | On-disk persistence (log-ship §17) | Durability | ✅ done | no |
 | D3 | Erasure placement as the default replication | Durability | ✅ done | no |
 | E1 | Reference manifest flows over HTTP transport | Distribution | ✅ done | no |
-| E2 | mTLS between agents via the TPM-held key | Distribution | ◑ crypto core done (vTPM) | transport wiring |
+| E2 | mTLS between agents via the TPM-held key | Distribution | ✅ done | verified on vTPM |
 
 ---
 
@@ -285,14 +285,20 @@ harness cannot provide.
   tls_cert`) for steady-state roster updates among admitted peers. Tested:
   `tests/tls_roster.rs` (gossip propagation; admission-time pinning) + the
   enrolment-claim signature path.
-* **Remaining:** the agent **binary** (`main.rs`) still serves plain HTTP — to
-  switch it on, the agent needs a real **TPM backend** (today it uses
-  seed-derived mesh keys + a `MockBackend` attestor) to mint its `TpmTlsIdentity`
-  and `set_tls_cert`, then build `mtls_client` / `serve_mtls` from
-  `node.tls_roster()`. That's the agent↔TPM-backend selection step (vTPM/hardware
-  dep + env config). Optionally refactor `tpmd::tls` onto `tpm-tls` to dedupe.
-* **Seam:** `tpm-tls`; `citadel-agent::http` (done); mesh enrolment + membership
-  cert distribution (done); agent TPM-backend selection (remaining).
+* **Agent binary wired (generic backend):** `Attestor` now holds an `Arc<dyn
+  TpmBackend>` (exposing `backend_arc`) so the *same* TPM that quotes also mints
+  the TLS key; `build_node_with_backend` lets the binary pick the backend
+  (`main.rs::make_backend`, default `MockBackend` for the demo);
+  `mint_tls_identity` creates the ECC key, self-signs the cert in the TPM, and
+  `set_tls_cert`s it; `main.rs` runs **mutual TLS** (`serve_mtls` + `mtls_client`
+  off the pinned roster) when a real backend mints an identity and peer certs are
+  available, else plain HTTP — so the all-mock demo is unchanged while a real
+  deployment gets mTLS by swapping the backend. Graceful fallback tested
+  (`tests/tls_identity.rs`: MockBackend → `None` → plain HTTP).
+* **Optional follow-up:** a real hardware-TPM backend behind `make_backend`;
+  refactor `tpmd::tls` onto `tpm-tls` to dedupe the signing-key code.
+* **Seam:** `tpm-tls`; `citadel-agent::http` + `main.rs` (done); mesh enrolment +
+  membership cert distribution (done); `Attestor::backend_arc` (done).
 
 ---
 

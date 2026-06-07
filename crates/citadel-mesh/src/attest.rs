@@ -102,7 +102,7 @@ impl ReferenceMeasurements {
 /// Wraps a node's TPM backend with a long-lived attestation key, producing
 /// and verifying nonce-bound quotes.
 pub struct Attestor {
-    backend: Box<dyn TpmBackend>,
+    backend: std::sync::Arc<dyn TpmBackend>,
     ak: KeyHandle,
 }
 
@@ -112,13 +112,21 @@ impl Attestor {
     /// are not fixed here.
     pub fn new(backend: Box<dyn TpmBackend>) -> anyhow::Result<Self> {
         let ak = backend.create_ak(Algorithm::EccP256)?;
-        Ok(Attestor { backend, ak })
+        // Store as Arc so the same TPM device can also back a TLS identity
+        // (E2) — opening a second backend would be a *different* TPM.
+        Ok(Attestor { backend: std::sync::Arc::from(backend), ak })
     }
 
     /// Borrow the backend (e.g. to extend a PCR in tests, simulating a
     /// measured-state change / tamper).
     pub fn backend(&self) -> &dyn TpmBackend {
         self.backend.as_ref()
+    }
+
+    /// A shared handle to the *same* TPM backend — so an agent can mint a
+    /// TLS identity (E2) on the same device that produces quotes.
+    pub fn backend_arc(&self) -> std::sync::Arc<dyn TpmBackend> {
+        self.backend.clone()
     }
 
     /// The public identifier of this attestor's AK — the bytes that appear as

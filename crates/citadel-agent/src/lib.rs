@@ -322,11 +322,24 @@ pub fn build_node(
     config: NodeConfig,
     peers: &[(NodeId, citadel_mesh::crypto::MeshPublicKey)],
 ) -> (Node, NodeId) {
+    build_node_with_backend(mesh_id, seed, role, config, peers, Box::new(MockBackend::new()))
+}
+
+/// Like [`build_node`] but the caller chooses the TPM backend — the binary
+/// selects MockBackend (demo), a vTPM, or hardware. The same backend instance
+/// later mints the node's TLS identity (E2), so it must be the real device.
+pub fn build_node_with_backend(
+    mesh_id: &MeshId,
+    seed: u8,
+    role: &str,
+    config: NodeConfig,
+    peers: &[(NodeId, citadel_mesh::crypto::MeshPublicKey)],
+    backend: Box<dyn TpmBackend>,
+) -> (Node, NodeId) {
     let keypair = MeshKeypair::from_seed([seed; 32]);
     let pubkey = keypair.public();
     let id = NodeId::derive(mesh_id, Epoch(config.mesh_epoch), &pubkey.fingerprint(), &[seed]);
     let membership = Membership::new(id, pubkey, role, 0);
-    let backend: Box<dyn TpmBackend> = Box::new(MockBackend::new());
     let attestor = Attestor::new(backend).expect("attestor");
     let mut node = Node::new(mesh_id.clone(), id, keypair, membership, attestor, config);
     // Adopt a reference from this node's own (default) measured state so the
@@ -340,6 +353,21 @@ pub fn build_node(
         }
     }
     (node, id)
+}
+
+/// Mint the node's mutual-TLS identity (E2) on the **same** TPM backend that
+/// produces its quotes: create a dedicated ECC P-256 key, self-sign a cert in
+/// the TPM, and advertise that cert to the mesh (`set_tls_cert`) so peers learn
+/// it via enrolment/gossip. Returns the identity, or `None` if the backend
+/// can't mint one (e.g. the demo `MockBackend` — the agent then runs plain
+/// HTTP). The agent serves mTLS with this identity + `node.tls_roster()`.
+pub fn mint_tls_identity(node: &mut Node, common_name: &str) -> Option<tpm_tls::TpmTlsIdentity> {
+    use tpm_core::model::{Algorithm, ObjectPath};
+    let backend = node.attestor().backend_arc();
+    let handle = backend.create_key(Algorithm::EccP256, &ObjectPath::new("tls/agent").ok()?).ok()?;
+    let identity = tpm_tls::TpmTlsIdentity::new(backend, handle, common_name).ok()?;
+    node.set_tls_cert(identity.certificate().as_ref().to_vec());
+    Some(identity)
 }
 
 /// The public key a peer seeded by `seed` presents.
