@@ -64,6 +64,8 @@ harness cannot provide.
   `/sys/class/tpm/tpm0/pcr-sha256/*` dropped into `tests/fixtures/eventlog/` (as
   `<name>.bin` + `<name>.sha256`) validates the parser immediately — no QEMU.
 * **Seam:** `tpm_core::eventlog::parse_tcg`; `tests/fixtures/eventlog/`.
+* **Pick up on Linux:** `docs/a1-capture-handoff.md` (drop a real `/sys` log,
+  the QEMU+OVMF+swtpm lab, or direct-kernel boot — all minutes on Linux).
 
 ### A2 — X.509 / CA-chain authority validation — ✅ DONE
 * **Goal:** an authority that is a **CA** authorizes many leaf images without
