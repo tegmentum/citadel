@@ -21,7 +21,7 @@ harness cannot provide.
 
 | # | Item | Track | Effort | Gating |
 |---|------|-------|--------|--------|
-| A1 | Real-platform event-log corpus validation | Boot appraisal | ◑ lab turnkey; capture pending | swtpm + UEFI guest |
+| A1 | Real-platform event-log corpus validation | Boot appraisal | ✅ done | corpus captured (OVMF) |
 | A2 | X.509 / CA-chain authority validation | Boot appraisal | ✅ done (x509-path crate) | no |
 | A3 | Structured `ArtifactIdentity` extraction from events | Boot appraisal | 1–2 wk | no |
 | B1 | Real event-log ingestion (vTPM `read_event_log`) | Hardware bring-up | ✅ done (vTPM) | done on vTPM; /sys+HW remain |
@@ -37,35 +37,37 @@ harness cannot provide.
 
 ## Track A — finish boot-appraisal (no new domain, mostly no hardware)
 
-### A1 — Real-platform event-log corpus validation — ◑ harness + hardening done; corpus capture pending
+### A1 — Real-platform event-log corpus validation — ✅ DONE
 * **Goal:** prove `parse_tcg` / `replay` against logs real firmware emits, not
   just hand-built ones. The robustness risk flagged in `event-log-attestation.md`.
-* **Built (this turn):**
-  - A **fixture-driven corpus test** (`tpm-core/tests/eventlog_corpus.rs`): scans
-    `tests/fixtures/eventlog/<name>.bin` + `<name>.sha256`, asserts each parses
-    and its sha256 replay equals the expected quoted PCRs. No-op until populated.
+* **Delivered:**
+  - A real **OVMF firmware corpus entry** captured on Linux
+    (`tests/fixtures/eventlog/ubuntu-24.04-ovmf-amd64.{bin,sha256}`): the
+    parser + replay reproduce **11 firmware PCRs** exactly against the live
+    quote. (Quote-only PCRs the boot log can't explain — 10 = IMA runtime,
+    11–13/15 never-extended zeros — are correctly skipped.)
+  - A **fixture-driven corpus test** (`tpm-core/tests/eventlog_corpus.rs`):
+    scans `<name>.bin` + `<name>.sha256`, requires PCR 0 (CRTM) so an empty log
+    can't pass vacuously, and asserts every PCR the firmware log measures equals
+    the quote. New fixtures validate automatically.
   - **Parser hardening** for real-log warts, with regression tests:
     crypto-agile **multi-bank** records (sha1+sha256 — replay picks the right
     bank), and trailing **padding / `0xFFFFFFFF` terminator** ignored.
-  - A **turnkey capture lab**: `scripts/capture-eventlog.sh` (QEMU + OVMF +
-    swtpm, cloud-init-seeded) + `scripts/eventlog-guest-cloud-init.yaml` (the
-    guest mounts a 9p host share, copies `binary_bios_measurements` + the live
-    sha256 PCRs, powers off), then auto-runs the corpus test. One command once
-    `swtpm` + a UEFI guest image are present.
-  - **`SwtpmManager` revived** (`tpm_core::backend::swtpm`): manages a real
-    `swtpm` TPM 2.0 daemon (control + data sockets) — the daemon QEMU drives,
-    and a persistent real-TPM2 for tests. Start/stop tested (self-skips without
-    the binary).
-* **Remaining (gated on the env):** actually capturing the corpus — needs
-  `swtpm` installed (absent here; `brew install swtpm`) and a UEFI Linux guest
-  image. QEMU + OVMF are present. Once fixtures land, the harness validates them
-  and A1 closes; that also unblocks **A3** and the **B1-firmware tail**.
-* **Shortcut:** any real `/sys/.../binary_bios_measurements` + its
+  - A **turnkey capture lab**: `scripts/capture-eventlog.sh` (x86, KVM/HVF) +
+    `scripts/capture-eventlog-aarch64.sh` (arm64 HVF) + the guest cloud-init,
+    plus `docs/a1-capture-handoff.md`. **`SwtpmManager`** revived
+    (`tpm_core::backend::swtpm`) to manage the real `swtpm` daemon.
+* **More breadth (optional):** add fixtures from other firmwares (bare-metal
+  vendor BIOS, different OVMF versions) the same way — each just drops two files
+  in and the harness validates them.
+* **Unblocks:** **A3** (structured `ArtifactIdentity` from real events) and the
+  **B1-firmware tail** now have a real corpus to work against.
+* **Add more:** any real `/sys/.../binary_bios_measurements` + its
   `/sys/class/tpm/tpm0/pcr-sha256/*` dropped into `tests/fixtures/eventlog/` (as
-  `<name>.bin` + `<name>.sha256`) validates the parser immediately — no QEMU.
+  `<name>.bin` + `<name>.sha256`) validates immediately — see
+  `docs/a1-capture-handoff.md` for the capture paths (no QEMU needed for a real
+  box; the lab for reproducible firmware variants).
 * **Seam:** `tpm_core::eventlog::parse_tcg`; `tests/fixtures/eventlog/`.
-* **Pick up on Linux:** `docs/a1-capture-handoff.md` (drop a real `/sys` log,
-  the QEMU+OVMF+swtpm lab, or direct-kernel boot — all minutes on Linux).
 
 ### A2 — X.509 / CA-chain authority validation — ✅ DONE
 * **Goal:** an authority that is a **CA** authorizes many leaf images without
