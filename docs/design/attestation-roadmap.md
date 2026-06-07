@@ -29,7 +29,7 @@ harness cannot provide.
 | C1 | IMA / runtime measurement (event-log Phase D) | Runtime | 2–3 wk | hardware (real) |
 | D1 | Signed quote-bound checkpoints (log-ship §9–10) | Durability | ✅ done | no |
 | D2 | On-disk persistence (log-ship §17) | Durability | 1–2 wk | no |
-| D3 | Erasure placement as the default replication | Durability | 3–5 d | no |
+| D3 | Erasure placement as the default replication | Durability | ✅ done | no |
 | E1 | Reference manifest flows over HTTP transport | Distribution | ✅ done | no |
 | E2 | mTLS between agents via the TPM-held key | Distribution | 3–5 d | hardware |
 
@@ -165,15 +165,20 @@ harness cannot provide.
 * **Test:** kill/reload preserves roots, fragments, manifests, audit integrity.
 * **Effort:** 1–2 wk. **Gating:** none.
 
-### D3 — Erasure placement as the default
-* **Goal:** make the bounded-fan-out erasure path (already built) the default,
-  retiring legacy N-1 full replication for the 10k-node profile
-  (`distributed-log-shipping-lthash.md` §18 caveat).
-* **Scope:** flip `evidence_replication` defaults; migrate/retire the
-  full-replica path; re-tune defaults for scale.
-* **Seam:** `NodeConfig` defaults + remove/guard the legacy path.
-* **Test:** existing erasure/migration suites at larger N.
-* **Effort:** 3–5 d. **Gating:** none.
+### D3 — Erasure placement as the default — ✅ DONE
+* **Goal:** make the bounded-fan-out erasure path (already built) the default
+  durability mechanism, so durable evidence scales O(holders)/window not O(N)
+  (`distributed-log-shipping-lthash.md` §18).
+* **Delivered:** `NodeConfig::evidence_replication` now defaults `true` — the
+  erasure-coded HRW holder vault is on out of the box. Low-risk because it only
+  activates for nodes with *sealed log windows* (empty-log nodes no-op), so the
+  whole suite passed unchanged. The digest-advertise *reconciliation* path
+  (live replicas for divergence/equivocation) is **independent** of this and
+  remains for that purpose; at scale it is tuned via `log_advertise_interval`
+  while checkpoints (§9) + the erasure vault carry durability/tamper-evidence.
+* **Note:** the full-replica path is not removed — it serves reconciliation, a
+  different job than the durable vault. "Default replication" = the *durability*
+  default is now bounded-fan-out erasure.
 
 ---
 

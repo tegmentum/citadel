@@ -83,9 +83,10 @@ pub struct NodeConfig {
     /// lighter unsigned `DigestAdvertisement` path only.
     pub checkpoint_enabled: bool,
     /// Ship sealed log windows as erasure-coded fragments to a bounded set of
-    /// assigned holders (durable evidence vault; design §12.4) rather than
-    /// relying on full-window replication to every peer. `false` keeps the
-    /// legacy full-replica behaviour.
+    /// assigned holders (durable evidence vault; design §12.4) — the default
+    /// durability mechanism, which scales (bounded fan-out) where full-window
+    /// replication to every peer (N-1) does not. `false` disables the durable
+    /// vault (the digest-advertise reconciliation path is independent of it).
     pub evidence_replication: bool,
     /// Reed–Solomon data shards: any this many of `data + parity` fragments
     /// reconstruct a window.
@@ -134,7 +135,7 @@ impl Default for NodeConfig {
             log_window_size: 16,
             log_advertise_interval: 5,
             checkpoint_enabled: false,
-            evidence_replication: false,
+            evidence_replication: true,
             evidence_data_shards: 3,
             evidence_parity_shards: 2,
             evidence_offbox: false,

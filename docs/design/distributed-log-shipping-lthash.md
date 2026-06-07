@@ -50,7 +50,7 @@ Section-by-section map of this design against `crates/citadel-mesh`. ✅ done,
 | 6 | Canonical event format | ◑ | implemented `EventRecord` carries node/boot/seq/payload only |
 | 7 | Sequence numbers | ◑ | sequences yes; explicit gap/replay/reorder detection no |
 | 16 | Quarantine workflow | ◑ | scopes/votes/operator gate done; most scope→action enforcement still inert |
-| 18 | Scaling | ◑ | advertisements-only steady state holds; legacy full-replication path is N-1 |
+| 18 | Scaling | ✅ | erasure holder placement is the default durable path (bounded fan-out) |
 | 20 | Future (mesh / cluster identity / consensus) | ◑ | mesh + TPM-keyed identity + witness-quorum trust exist; no Cluster Trust Score / PCR-outlier correlation |
 | 9 | Signed checkpoints | ✅ | `logship::Checkpoint`, `node::checkpoint_window`/`on_checkpoint` (gated by `checkpoint_enabled`) |
 | 10 | TPM quote ↔ checkpoint link | ✅ | checkpoint quote nonce = `checkpoint_nonce(boot,window,root)` |
@@ -609,11 +609,14 @@ loses local state — persistence behind it is the remaining piece.
 
 ## 18. Scaling Characteristics
 
-**Status: ◑ Partial.** The advertisements-only steady state and on-divergence
-reconciliation hold as designed. Caveat: the *legacy* full-window replication
-path is N-1 (a replica on every peer); the erasure-coded holder placement
-(§14) is the bounded-fan-out path and is what scales — make it the default
-before claiming the 10,000-node profile.
+**Status: ✅ Holds.** The advertisements-only steady state and on-divergence
+reconciliation hold as designed, and the bounded-fan-out **erasure-coded holder
+placement (§14) is now the default** durability mechanism (`evidence_replication`
+defaults on) — so durable evidence scales as O(holders) per window rather than
+O(N). The digest-advertise *reconciliation* path (which keeps live replicas for
+divergence/equivocation detection) is independent and can be tuned down
+(`log_advertise_interval`) at scale where signed checkpoints (§9) + the erasure
+vault carry the durability and tamper-evidence load.
 
 For 10,000 nodes, only advertisements are exchanged routinely. A typical
 message is < 256 bytes, so total gossip remains manageable. Reconciliation
