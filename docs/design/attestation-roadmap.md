@@ -276,14 +276,23 @@ harness cannot provide.
   `HttpTransport::with_client` injects the mTLS client. **Proven end-to-end on
   the real vTPM** (`tests/mtls_transport.rs`, ~34 s): a pinned peer's gossip
   POST flows over real TCP+mTLS and is accepted; an unpinned client is refused.
+* **Cert distribution (done):** a node advertises its TLS cert
+  (`Node::set_tls_cert`); peers assemble the pinnable roster (`Node::tls_roster`)
+  two ways — (1) **signed enrolment claim** (`EnrollmentClaim.tls_cert`, bound to
+  the signature) so a joining node's cert arrives on the bootstrap/plain channel
+  *before* mTLS is up (avoids the chicken-and-egg of distributing certs over the
+  very channel they'd protect), and (2) **membership gossip** (`MemberUpdate.
+  tls_cert`) for steady-state roster updates among admitted peers. Tested:
+  `tests/tls_roster.rs` (gossip propagation; admission-time pinning) + the
+  enrolment-claim signature path.
 * **Remaining:** the agent **binary** (`main.rs`) still serves plain HTTP — to
-  switch it on, the agent needs a TPM backend (today it uses seed-derived mesh
-  keys, no TPM) to mint its identity, and a **peer-cert roster distributed via
-  enrolment**. Both are their own increment (agent↔TPM integration + cert
-  exchange), not transport plumbing. Optionally refactor `tpmd::tls` onto
-  `tpm-tls` to dedupe the signing-key code.
-* **Seam:** `tpm-tls`; `citadel-agent::http` (done); mesh enrolment for cert
-  exchange + agent TPM-backend selection (remaining).
+  switch it on, the agent needs a real **TPM backend** (today it uses
+  seed-derived mesh keys + a `MockBackend` attestor) to mint its `TpmTlsIdentity`
+  and `set_tls_cert`, then build `mtls_client` / `serve_mtls` from
+  `node.tls_roster()`. That's the agent↔TPM-backend selection step (vTPM/hardware
+  dep + env config). Optionally refactor `tpmd::tls` onto `tpm-tls` to dedupe.
+* **Seam:** `tpm-tls`; `citadel-agent::http` (done); mesh enrolment + membership
+  cert distribution (done); agent TPM-backend selection (remaining).
 
 ---
 

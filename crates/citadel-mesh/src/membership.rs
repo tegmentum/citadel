@@ -31,6 +31,11 @@ pub struct MemberUpdate {
     pub public_key: MeshPublicKey,
     pub incarnation: u64,
     pub liveness: LivenessState,
+    /// The node's TLS certificate (DER), for E2 mutual-TLS peer pinning. Rides
+    /// membership gossip so the roster of pinned peer certs assembles itself.
+    /// `None` for nodes that haven't advertised one (back-compat via serde).
+    #[serde(default)]
+    pub tls_cert: Option<Vec<u8>>,
 }
 
 /// A node's view of one member.
@@ -44,6 +49,9 @@ pub struct Member {
     pub role: String,
     /// Tick at which `liveness` last changed (drives the suspicion timer).
     pub last_change_tick: u64,
+    /// The member's TLS certificate (DER) for mutual-TLS pinning (E2), learned
+    /// via gossip; `None` until advertised.
+    pub tls_cert: Option<Vec<u8>>,
 }
 
 impl Member {
@@ -53,6 +61,7 @@ impl Member {
             public_key: self.public_key,
             incarnation: self.incarnation,
             liveness: self.liveness,
+            tls_cert: self.tls_cert.clone(),
         }
     }
 }
@@ -100,6 +109,7 @@ impl Membership {
                 trust: TrustState::Trusted,
                 role: role.into(),
                 last_change_tick: tick,
+                tls_cert: None,
             },
         );
         Membership { me, members }
@@ -157,9 +167,34 @@ impl Membership {
                 trust: TrustState::Unknown,
                 role: role.into(),
                 last_change_tick: tick,
+                tls_cert: None,
             },
         );
         true
+    }
+
+    /// Set this node's own TLS certificate (DER) — advertised to peers via the
+    /// next membership gossip so they can pin it (E2).
+    pub fn set_my_tls_cert(&mut self, cert: Vec<u8>) {
+        if let Some(m) = self.members.get_mut(&self.me) {
+            m.tls_cert = Some(cert);
+        }
+    }
+
+    /// Record a known member's TLS certificate (e.g. learned from its signed
+    /// enrolment claim on the bootstrap channel).
+    pub fn learn_cert(&mut self, id: &NodeId, cert: Vec<u8>) {
+        if let Some(m) = self.members.get_mut(id) {
+            m.tls_cert = Some(cert);
+        }
+    }
+
+    /// The pinnable peer roster: `(node, cert DER)` for every *other* member
+    /// that has advertised a TLS certificate.
+    pub fn tls_roster(&self) -> Vec<(NodeId, Vec<u8>)> {
+        self.others()
+            .filter_map(|m| m.tls_cert.clone().map(|c| (m.node_id, c)))
+            .collect()
     }
 
     /// Apply a gossiped [`MemberUpdate`] under SWIM precedence. Returns
@@ -181,11 +216,17 @@ impl Membership {
                         trust: TrustState::Unknown,
                         role: String::new(),
                         last_change_tick: tick,
+                        tls_cert: u.tls_cert.clone(),
                     },
                 );
                 true
             }
             Some(m) => {
+                // Learn a peer's TLS cert from gossip (orthogonal to liveness
+                // precedence): adopt it the first time we see one.
+                if m.tls_cert.is_none() && u.tls_cert.is_some() {
+                    m.tls_cert = u.tls_cert.clone();
+                }
                 if supersedes(u.incarnation, u.liveness, m.incarnation, m.liveness) {
                     let changed_liveness = m.liveness != u.liveness;
                     m.incarnation = u.incarnation;
@@ -285,14 +326,14 @@ mod tests {
     fn higher_incarnation_alive_refutes_suspect() {
         let mut m = fresh();
         m.apply(
-            &MemberUpdate { node_id: nid(2), public_key: key(2), incarnation: 0, liveness: LivenessState::Suspect },
+            &MemberUpdate { node_id: nid(2), public_key: key(2), incarnation: 0, liveness: LivenessState::Suspect, tls_cert: None },
             1,
         );
         assert_eq!(m.get(&nid(2)).unwrap().liveness, LivenessState::Suspect);
 
         // Same incarnation Alive does NOT supersede Suspect.
         let changed = m.apply(
-            &MemberUpdate { node_id: nid(2), public_key: key(2), incarnation: 0, liveness: LivenessState::Alive },
+            &MemberUpdate { node_id: nid(2), public_key: key(2), incarnation: 0, liveness: LivenessState::Alive, tls_cert: None },
             2,
         );
         assert!(!changed);
@@ -300,7 +341,7 @@ mod tests {
 
         // Higher incarnation Alive refutes.
         let changed = m.apply(
-            &MemberUpdate { node_id: nid(2), public_key: key(2), incarnation: 1, liveness: LivenessState::Alive },
+            &MemberUpdate { node_id: nid(2), public_key: key(2), incarnation: 1, liveness: LivenessState::Alive, tls_cert: None },
             3,
         );
         assert!(changed);
@@ -311,7 +352,7 @@ mod tests {
     fn suspect_beats_alive_at_same_incarnation() {
         let mut m = fresh();
         let changed = m.apply(
-            &MemberUpdate { node_id: nid(2), public_key: key(2), incarnation: 0, liveness: LivenessState::Suspect },
+            &MemberUpdate { node_id: nid(2), public_key: key(2), incarnation: 0, liveness: LivenessState::Suspect, tls_cert: None },
             1,
         );
         assert!(changed, "suspect outranks alive at the same incarnation");
@@ -321,7 +362,7 @@ mod tests {
     fn cannot_be_marked_faulty_about_self() {
         let mut m = fresh();
         let changed = m.apply(
-            &MemberUpdate { node_id: nid(1), public_key: key(1), incarnation: 5, liveness: LivenessState::Faulty },
+            &MemberUpdate { node_id: nid(1), public_key: key(1), incarnation: 5, liveness: LivenessState::Faulty, tls_cert: None },
             1,
         );
         assert!(!changed);

@@ -585,16 +585,33 @@ impl Mesh {
     /// Attempt to enroll a new node (healthy candidate). See
     /// [`Self::enroll_inner`].
     pub fn enroll(&mut self, seed: u8, role: &str) -> (AdmissionOutcome, NodeId) {
-        self.enroll_inner(seed, role, false)
+        self.enroll_inner(seed, role, false, None)
     }
 
     /// Attempt to enroll a candidate whose measured state diverges from the
     /// golden (a tampered/unauthorized image) — admission should be refused.
     pub fn enroll_tampered(&mut self, seed: u8, role: &str) -> (AdmissionOutcome, NodeId) {
-        self.enroll_inner(seed, role, true)
+        self.enroll_inner(seed, role, true, None)
     }
 
-    fn enroll_inner(&mut self, seed: u8, role: &str, tamper: bool) -> (AdmissionOutcome, NodeId) {
+    /// Enroll a candidate that advertises a TLS certificate in its signed claim
+    /// (E2): on admission, existing members learn it into their pin roster.
+    pub fn enroll_with_tls_cert(
+        &mut self,
+        seed: u8,
+        role: &str,
+        tls_cert: Vec<u8>,
+    ) -> (AdmissionOutcome, NodeId) {
+        self.enroll_inner(seed, role, false, Some(tls_cert))
+    }
+
+    fn enroll_inner(
+        &mut self,
+        seed: u8,
+        role: &str,
+        tamper: bool,
+        tls_cert: Option<Vec<u8>>,
+    ) -> (AdmissionOutcome, NodeId) {
         let tick = self.tick;
         let cfg = self.template_config.clone().unwrap_or_default();
 
@@ -602,6 +619,9 @@ impl Mesh {
         // reference so it could later witness others.
         let mut candidate = self.make_node(seed, role, cfg.clone(), Box::new(MockBackend::new()));
         candidate.set_peer_reference(self.golden.clone());
+        if let Some(cert) = &tls_cert {
+            candidate.set_tls_cert(cert.clone());
+        }
         if tamper {
             candidate
                 .attestor()
@@ -659,7 +679,7 @@ impl Mesh {
                 .collect();
             // Existing members admit the candidate as probationary.
             for n in &mut self.nodes {
-                n.admit_probationary(candidate_id, candidate_key, role, tick);
+                n.admit_probationary(candidate_id, candidate_key, role, tick, claim.tls_cert.clone());
             }
             // The candidate learns the existing members.
             for (id, key) in &roster_keys {

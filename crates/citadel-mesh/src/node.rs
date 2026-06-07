@@ -997,6 +997,19 @@ impl Node {
         self.membership.learn(id, key, role, tick);
     }
 
+    /// Advertise this node's TLS certificate (DER) to the mesh (E2): it rides
+    /// membership gossip so peers can pin it for mutual TLS.
+    pub fn set_tls_cert(&mut self, cert: Vec<u8>) {
+        self.membership.set_my_tls_cert(cert);
+    }
+
+    /// The pinnable peer roster — `(node, cert DER)` for every peer whose TLS
+    /// certificate this node has learned via gossip. Feeds `mtls_client` /
+    /// `serve_mtls`.
+    pub fn tls_roster(&self) -> Vec<(NodeId, Vec<u8>)> {
+        self.membership.tls_roster()
+    }
+
     // -- log-shipping (LtHash) ------------------------------------------
 
     /// Append a measurement event to this node's own log at the next sequence.
@@ -2212,6 +2225,9 @@ impl Node {
                     self.endorsement.clone(),
                     self.tick,
                 )?;
+        // Present our TLS cert (if advertised) in the signed claim, so admitting
+        // nodes learn it on the bootstrap channel before mTLS comes up (E2).
+        let tls_cert = self.membership.get(&self.id).and_then(|m| m.tls_cert.clone());
         Ok(EnrollmentClaim::create(
             &self.keypair,
             challenge.mesh_id.clone(),
@@ -2222,6 +2238,7 @@ impl Node {
             challenge.nonce.clone(),
             evidence,
             self.tick,
+            tls_cert,
         ))
     }
 
@@ -2299,8 +2316,12 @@ impl Node {
         key: crate::crypto::MeshPublicKey,
         role: &str,
         tick: u64,
+        tls_cert: Option<Vec<u8>>,
     ) {
         self.membership.learn(node_id, key, role, tick);
+        if let Some(cert) = tls_cert {
+            self.membership.learn_cert(&node_id, cert);
+        }
         self.membership.set_trust(&node_id, TrustState::Probationary);
         self.probation_start.insert(node_id, tick);
     }

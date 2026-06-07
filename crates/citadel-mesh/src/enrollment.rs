@@ -55,6 +55,12 @@ pub struct EnrollmentClaim {
     pub nonce: Vec<u8>,
     pub evidence: AttestationEvidence,
     pub timestamp_tick: u64,
+    /// The candidate's TLS certificate (DER) for mutual-TLS pinning (E2),
+    /// presented at admission so the mesh learns it on the bootstrap (plain)
+    /// channel before mTLS comes up. Bound to the claim signature. `None` for a
+    /// node not using TPM-TLS.
+    #[serde(default)]
+    pub tls_cert: Option<Vec<u8>>,
     pub signature: Signature,
 }
 
@@ -70,6 +76,7 @@ impl EnrollmentClaim {
         nonce: &[u8],
         evidence: &AttestationEvidence,
         timestamp_tick: u64,
+        tls_cert: Option<&[u8]>,
     ) -> Vec<u8> {
         serde_json::to_vec(&(
             "enrollment-claim",
@@ -82,6 +89,7 @@ impl EnrollmentClaim {
             nonce,
             evidence,
             timestamp_tick,
+            tls_cert,
         ))
         .expect("serializable")
     }
@@ -98,6 +106,7 @@ impl EnrollmentClaim {
         nonce: Vec<u8>,
         evidence: AttestationEvidence,
         timestamp_tick: u64,
+        tls_cert: Option<Vec<u8>>,
     ) -> Self {
         let public_key = kp.public();
         let claimed_role = claimed_role.into();
@@ -112,6 +121,7 @@ impl EnrollmentClaim {
             &nonce,
             &evidence,
             timestamp_tick,
+            tls_cert.as_deref(),
         ));
         EnrollmentClaim {
             mesh_id,
@@ -123,6 +133,7 @@ impl EnrollmentClaim {
             nonce,
             evidence,
             timestamp_tick,
+            tls_cert,
             signature,
         }
     }
@@ -142,6 +153,7 @@ impl EnrollmentClaim {
                 &self.nonce,
                 &self.evidence,
                 self.timestamp_tick,
+                self.tls_cert.as_deref(),
             ),
             &self.signature,
         )
