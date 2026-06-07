@@ -1,7 +1,8 @@
 # Citadel: Application-Level Appraisal & Graded Response
 
-Document Version: 0.2
-Status: Phase 1 (report-only) **built**; Phases 2–4 planned
+Document Version: 0.3
+Status: Phases 1–3 **built**; Phase 4 software core **built** (real IMA-template
+ingestion gated on roadmap C1)
 Project: Citadel
 Audience: Architecture, Security, Platform, Runtime Engineers
 Related: `distributed-attestation-mesh.md`, `measured-state-transitions.md`,
@@ -208,17 +209,32 @@ recorded as a `RecordType::OperatorAction`, closing the audit loop.)
   `application.rs` units + e2e (`tests/application.rs`): healthy report
   propagates + audited; a *failing* app is reported but the node stays Trusted;
   self-reported measurements are advisory.
-* **P2 — graded enforcement.** App-scoped quarantine proposals/votes; enforce
-  `BlockWorkloadScheduling` / `CredentialRevoke` via new hooks
-  (`block_workload_scheduling`/`revoke_credentials`). Wires the inert scopes.
-* **P3 — escalation policy.** Roll-up thresholds (critical app / ≥K apps /
-  repeat-after-remediation) to node trust.
-* **P4 — real app measurement.** Bind to IMA (depends on `attestation-roadmap.md`
-  C1) for non-self-reported, PCR-bound app evidence; absence detection.
+* **P2 — graded enforcement. ✅ Built.** App-scoped quarantine via the harness
+  quorum driver (`quarantine_app`: witnesses independently appraise the app,
+  enact `scope` on quorum + operator gate); `node.rs` `apply_app_scope` /
+  `app_scope_of` and enforcement hooks `app_workload_blocked` /
+  `app_credentials_revoked`, backed by new `QuarantineScope::
+  blocks_workload_scheduling` / `revokes_credentials`. Wires the two inert
+  scopes. Tests: graded block-scheduling without node quarantine; credential
+  revoke needs an operator.
+* **P3 — escalation policy. ✅ Built.** `app_escalation_threshold` config + an
+  app's `mark_critical`; `maybe_escalate` rolls a *critical*-app failure (or ≥K
+  distinct failed apps) up to node `Suspicious`, recorded in a sticky
+  `app_escalated` set that `aggregate_trust` honours (a clean platform quote
+  cannot silently clear an app escalation). Default off → app failure stays
+  report-only. Tests: critical-app escalation; threshold-after-two-apps.
+* **P4 — real app measurement. ◑ Software core built; ingestion gated.** The
+  `pcr_bound` claim is now **verified** (`node.rs` `validate_binding` +
+  `BootEventLog::contains_measurement`): a measurement counts as bound only if
+  its digest is actually folded into the IMA PCR (10) of a replayable event log,
+  else it is downgraded to advisory (confidence 0.5). Tested via
+  `MockBackend::measure_event`. Remaining (gated on roadmap C1): parsing real
+  `/sys` IMA templates and absence detection.
 
-P1 + P2 are software-only and deliver the answer to the original question
-(report always; graded app-scoped action; node-quarantine reserved for platform
-compromise). P4 is gated on IMA/runtime measurement.
+P1–P3 are software-only and deliver the original answer (report always; graded
+app-scoped action; node-quarantine reserved for platform compromise / critical
+or widespread app failure). P4's verification core is in; real IMA ingestion is
+gated on runtime measurement (roadmap C1).
 
 ## 10. Open questions
 

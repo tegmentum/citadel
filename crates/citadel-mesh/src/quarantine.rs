@@ -66,6 +66,19 @@ impl QuarantineScope {
         self.severity() >= QuarantineScope::NetworkIsolate.severity()
     }
 
+    /// At/above this scope new workloads may not be scheduled on the target —
+    /// the enforcement behind an app-scoped `BlockWorkloadScheduling` response
+    /// (`application-appraisal.md` §5.2).
+    pub fn blocks_workload_scheduling(&self) -> bool {
+        self.severity() >= QuarantineScope::BlockWorkloadScheduling.severity()
+    }
+
+    /// At/above this scope the target's mesh-issued credentials are revoked —
+    /// the enforcement behind an app-scoped `CredentialRevoke` response.
+    pub fn revokes_credentials(&self) -> bool {
+        self.severity() >= QuarantineScope::CredentialRevoke.severity()
+    }
+
     /// What it takes to enact this scope over `witness_count` witnesses
     /// (design §13.4): a fraction of the witnesses, escalating with
     /// severity, plus an operator sign-off for the most destructive scopes.

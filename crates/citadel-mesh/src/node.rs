@@ -18,7 +18,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::attest::{Attestor, ReferenceMeasurements, TrustAnchors};
-use crate::application::{AppAttestationResult, AppMeasurement, AppPolicy};
+use crate::application::{AppAttestationResult, AppMeasurement, AppPolicy, AppVerdict};
 use crate::promotion::{PromotionProposal, PromotionVote};
 use crate::reference::{
     AcceptedReferences, ArtifactIdentity, BootProfile, FleetArtifactPolicy, PcrClass,
@@ -44,6 +44,11 @@ use crate::types::{
 };
 use crate::witness;
 use tpm_core::backend::TpmBackend;
+use tpm_core::eventlog::BootEventLog;
+
+/// PCR the IMA runtime measurement log extends — where app measurements bind
+/// (`application-appraisal.md` P4).
+const IMA_PCR: u32 = 10;
 
 /// Tunable SWIM / attestation parameters (design §9.8).
 #[derive(Clone, Debug)]
@@ -112,6 +117,11 @@ pub struct NodeConfig {
     /// How a verifier treats a quote that matches only a *retired* reference
     /// (an unpatched node): `Fail`, `Warn`, or `GraceThenFail`.
     pub retired_action: RetiredAction,
+    /// App failures that roll up to *node* distrust (`application-appraisal.md`
+    /// §5.3): if this many distinct apps fail on one node, escalate it to
+    /// `Suspicious`. `0` disables threshold escalation (a critical-app failure
+    /// still escalates regardless). Default `0` — app failure is report-only.
+    pub app_escalation_threshold: usize,
     /// Ticks between advertising this node's adopted reference-manifest set for
     /// anti-entropy (`0` disables); lets a node that missed a gossiped manifest
     /// catch up (design §10.2).
@@ -143,6 +153,7 @@ impl Default for NodeConfig {
             evidence_migration_rate: 0,
             reference_match: ReferenceMatchPolicy::Flexible,
             retired_action: RetiredAction::Fail,
+            app_escalation_threshold: 0,
             reference_advertise_interval: 0,
         }
     }
@@ -232,6 +243,13 @@ pub struct Node {
     app_results: HashMap<(NodeId, String), AppAttestationResult>,
     /// Hash-chained audit of app appraisals this node produced.
     app_audit: EvidenceChain,
+    /// App-scoped quarantine scope enforced per `(subject node, app name)` —
+    /// the graded response (block scheduling / revoke creds) short of node
+    /// quarantine (`application-appraisal.md` §5.2).
+    app_scopes: HashMap<(NodeId, String), QuarantineScope>,
+    /// Nodes escalated to distrust by app-failure policy (§5.3). Sticky: the
+    /// platform witness quorum must not silently clear an app escalation.
+    app_escalated: HashSet<NodeId>,
     /// Named boot profiles this node can appraise subjects against (design §10.3).
     profiles: std::collections::BTreeMap<String, BootProfile>,
     /// Which profile each subject is assigned (`node_id → profile name`);
@@ -369,6 +387,8 @@ impl Node {
             app_policy: AppPolicy::new(),
             app_results: HashMap::new(),
             app_audit,
+            app_scopes: HashMap::new(),
+            app_escalated: HashSet::new(),
             profiles: std::collections::BTreeMap::new(),
             profile_assignments: std::collections::BTreeMap::new(),
             endorsement: None,
@@ -467,14 +487,42 @@ impl Node {
         self.app_policy = policy;
     }
 
+    /// Validate a measurement's `pcr_bound` claim against this node's own event
+    /// log (P4): a measurement is only treated as bound if its digest actually
+    /// appears as an IMA event (PCR 10) in a log that replays — otherwise it is
+    /// downgraded to a self-reported (advisory) claim. Turns `pcr_bound` from a
+    /// self-asserted flag into a verified fact.
+    fn validate_binding(&self, measurement: &AppMeasurement) -> AppMeasurement {
+        if !measurement.pcr_bound {
+            return measurement.clone();
+        }
+        let bound = self
+            .attestor
+            .backend()
+            .read_event_log()
+            .ok()
+            .flatten()
+            .and_then(|bytes| BootEventLog::from_bytes(&bytes).ok())
+            .is_some_and(|log| {
+                log.contains_measurement(IMA_PCR, &measurement.digest, &self.config.pcr_bank)
+            });
+        if bound {
+            measurement.clone()
+        } else {
+            AppMeasurement { pcr_bound: false, ..measurement.clone() }
+        }
+    }
+
     /// Appraise an application measurement (running on this node) and produce a
-    /// signed result — pure, no side effects.
+    /// signed result — pure, no side effects. The measurement's `pcr_bound`
+    /// claim is verified against the event log (P4) before appraisal.
     pub fn appraise_app(&self, measurement: &AppMeasurement) -> AppAttestationResult {
+        let measurement = self.validate_binding(measurement);
         AppAttestationResult::create(
             &self.keypair,
             self.id,
             self.id,
-            measurement,
+            &measurement,
             &self.app_policy,
             self.tick,
         )
@@ -482,7 +530,9 @@ impl Node {
 
     /// Report an application measurement: appraise it, record the signed result
     /// locally (audit + latest-per-app) and gossip it so a control plane can
-    /// remediate. **Report-only** — node trust is untouched (P1).
+    /// remediate. Records may escalate to node trust only under the §5.3 policy
+    /// (`app_escalation_threshold` / critical apps); by default node trust is
+    /// untouched.
     pub fn report_app(&mut self, measurement: &AppMeasurement) -> AppAttestationResult {
         let result = self.appraise_app(measurement);
         self.record_app_result(result.clone());
@@ -490,18 +540,40 @@ impl Node {
         result
     }
 
-    /// Record a (verified) app result: append to the audit chain and keep the
-    /// latest per `(subject, app name)`.
+    /// Record a (verified) app result: append to the audit chain, keep the
+    /// latest per `(subject, app name)`, and apply §5.3 escalation.
     fn record_app_result(&mut self, result: AppAttestationResult) {
+        let subject = result.subject;
         self.app_audit.append(
-            result.subject,
+            subject,
             RecordType::AppAttestationResult,
             result.content_id(),
             self.tick,
             self.config.policy_revision,
         );
         self.app_results
-            .insert((result.subject, result.app.name.clone()), result);
+            .insert((subject, result.app.name.clone()), result);
+        self.maybe_escalate(subject);
+    }
+
+    /// §5.3 escalation: roll an app failure up to *node* trust only when the
+    /// platform is implicated — a **critical** app failed, or at least
+    /// `app_escalation_threshold` distinct apps failed on the node. Otherwise
+    /// app failure is report-only and node trust is untouched.
+    fn maybe_escalate(&mut self, subject: NodeId) {
+        let failed: Vec<&String> = self
+            .app_results
+            .iter()
+            .filter(|((n, _), r)| *n == subject && r.verdict == AppVerdict::Failed)
+            .map(|((_, app), _)| app)
+            .collect();
+        let critical_failed = failed.iter().any(|a| self.app_policy.is_critical(a));
+        let threshold_crossed =
+            self.config.app_escalation_threshold > 0 && failed.len() >= self.config.app_escalation_threshold;
+        if critical_failed || threshold_crossed {
+            self.app_escalated.insert(subject);
+            self.membership.set_trust(&subject, TrustState::Suspicious);
+        }
     }
 
     /// Handle a gossiped app result: verify the verifier's signature, then
@@ -527,6 +599,35 @@ impl Node {
     /// Length of this node's app-appraisal audit chain (testing/ops).
     pub fn app_audit_len(&self) -> usize {
         self.app_audit.len()
+    }
+
+    // -- graded app-scoped response (P2; design §5.2) -------------------
+
+    /// Apply an app-scoped quarantine to `(subject, app)` — the graded response
+    /// (block scheduling / revoke creds) enacted on a quorum decision.
+    pub fn apply_app_scope(&mut self, subject: NodeId, app: &str, scope: QuarantineScope) {
+        self.app_scopes.insert((subject, app.to_string()), scope);
+    }
+
+    /// Lift an app-scoped quarantine (e.g. after the app is remediated).
+    pub fn lift_app_scope(&mut self, subject: NodeId, app: &str) {
+        self.app_scopes.remove(&(subject, app.to_string()));
+    }
+
+    /// The app-scope currently enforced on `(subject, app)`, if any.
+    pub fn app_scope_of(&self, subject: NodeId, app: &str) -> Option<QuarantineScope> {
+        self.app_scopes.get(&(subject, app.to_string())).copied()
+    }
+
+    /// Enforcement hook: may new workloads of `app` be scheduled on `subject`?
+    /// `false` once an app-scope at/above `BlockWorkloadScheduling` is enforced.
+    pub fn app_workload_blocked(&self, subject: NodeId, app: &str) -> bool {
+        self.app_scope_of(subject, app).is_some_and(|s| s.blocks_workload_scheduling())
+    }
+
+    /// Enforcement hook: are `app`'s credentials on `subject` revoked?
+    pub fn app_credentials_revoked(&self, subject: NodeId, app: &str) -> bool {
+        self.app_scope_of(subject, app).is_some_and(|s| s.revokes_credentials())
     }
 
     /// The accepted set used for a profile name (the named profile's, or the
@@ -1816,6 +1917,12 @@ impl Node {
         // A quarantined node's trust is frozen until a rejoin explicitly
         // lifts the quarantine — re-attesting alone must not auto-clear it.
         if self.quarantine.contains_key(&subject) {
+            return;
+        }
+        // Likewise an app-escalated node stays distrusted until remediation —
+        // a clean platform quote must not silently clear an app failure (§5.3).
+        if self.app_escalated.contains(&subject) {
+            self.membership.set_trust(&subject, TrustState::Suspicious);
             return;
         }
         let ws = self.witnesses_for(subject);

@@ -85,6 +85,8 @@ pub struct AppPolicy {
     allowed_roles: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     /// Channel / version-baseline / denylist gating (shared vocabulary).
     artifact_policy: FleetArtifactPolicy,
+    /// Apps whose failure escalates straight to *node* distrust (§5.3).
+    critical: std::collections::BTreeSet<String>,
 }
 
 impl AppPolicy {
@@ -105,6 +107,17 @@ impl AppPolicy {
     /// Install the artifact gating policy (channel / baseline / denylist).
     pub fn set_artifact_policy(&mut self, policy: FleetArtifactPolicy) {
         self.artifact_policy = policy;
+    }
+
+    /// Mark an app **critical**: its failure escalates straight to node distrust
+    /// (§5.3), bypassing the count threshold.
+    pub fn mark_critical(&mut self, app: impl Into<String>) {
+        self.critical.insert(app.into());
+    }
+
+    /// Is `app` marked critical?
+    pub fn is_critical(&self, app: &str) -> bool {
+        self.critical.contains(app)
     }
 
     fn role_ok(&self, app: &str, role: &str) -> bool {

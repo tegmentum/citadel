@@ -430,6 +430,43 @@ impl Mesh {
         self.node_mut(reporter).report_app(measurement)
     }
 
+    /// Graded app-scoped response (design §5.2): the subject's witnesses each
+    /// independently appraise `measurement`; those that see it `Failed` approve;
+    /// on the scope's quorum (plus operator sign-off for severe scopes) every
+    /// node enforces `scope` on `(subject, app)`. Returns whether it enacted.
+    pub fn quarantine_app(
+        &mut self,
+        subject: NodeId,
+        measurement: &crate::application::AppMeasurement,
+        scope: QuarantineScope,
+        operator_approved: bool,
+    ) -> bool {
+        use crate::application::AppVerdict;
+        let cfg = self.template_config.clone().unwrap_or_default();
+        let roster: Vec<NodeId> = self.nodes.iter().map(|n| n.id()).collect();
+        let ws = witness::assign(subject, &roster, Epoch(cfg.mesh_epoch), cfg.witness_count.max(1));
+
+        // Eligible witnesses that independently appraise the app as Failed.
+        let mut approvals = 0usize;
+        for w in &ws.witnesses {
+            if self.is_eligible_voter(*w)
+                && self.node(*w).appraise_app(measurement).verdict == AppVerdict::Failed
+            {
+                approvals += 1;
+            }
+        }
+        let req = scope.requirement(cfg.witness_count.max(1));
+        let enacted = approvals >= req.approvals_needed
+            && (!req.operator_required || operator_approved);
+        if enacted {
+            let app = measurement.app.name.clone();
+            for n in &mut self.nodes {
+                n.apply_app_scope(subject, &app, scope);
+            }
+        }
+        enacted
+    }
+
     /// Define a boot profile on every node (design §10.3).
     pub fn define_profile_all(&mut self, profile: BootProfile) {
         for n in &mut self.nodes {

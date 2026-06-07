@@ -162,6 +162,16 @@ impl BootEventLog {
         self.events.iter().filter(move |e| e.tcg_type() == Some(tcg_type))
     }
 
+    /// Whether some event for `pcr` measured exactly `digest` in `bank` — used
+    /// to confirm an app/runtime measurement was actually folded into a PCR
+    /// (e.g. an IMA measurement into PCR 10), the binding behind a verified
+    /// `pcr_bound` claim (`application-appraisal.md` P4).
+    pub fn contains_measurement(&self, pcr: u32, digest: &[u8], bank: &str) -> bool {
+        self.events
+            .iter()
+            .any(|e| e.pcr == pcr && e.digest_for(bank) == Some(digest))
+    }
+
     /// Parse a raw TCG `binary_bios_measurements` log (crypto-agile format):
     /// a legacy `TCG_PCR_EVENT` header carrying the Spec ID Event (which
     /// declares the digest algorithms and sizes), followed by `TCG_PCR_EVENT2`
