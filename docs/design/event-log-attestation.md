@@ -1,8 +1,8 @@
 # Citadel: Event-Log Ingestion & Semantic Validation
 
-Document Version: 0.3
-Status: Phase A (replay / integrity) and Phase B (TCG binary parse +
-classification) **built**; Phases C–D planned
+Document Version: 0.4
+Status: Phases A (replay / integrity), B (TCG binary parse + classification),
+and C (semantic policy) **built**; Phase D (IMA / runtime) planned
 Project: Citadel
 Audience: Architecture, Security, Platform, Runtime Engineers
 Related: `measured-state-transitions.md`, `distributed-log-shipping-lthash.md`,
@@ -231,9 +231,23 @@ cmdline event **only when** its digest matches the measured value.
   policy. The raw classification + cmdline extraction needed by policy is in
   place. Tested against a hand-built crypto-agile log; real-platform corpus
   (OVMF/shim/GRUB/Linux) validation is follow-up.
-* **Phase C — semantic policy.** Wire extracted artifacts into
-  `FleetArtifactPolicy` (signed-mapping path first, then embedded-sig); cmdline
-  require/deny; promote `Semantic` indices from value-unchecked to validated.
+* **Phase C — semantic policy. ✅ Built.** `Semantic` PCRs are now
+  content-validated, not just integrity-checked: after `replay==quote` holds,
+  `AcceptedReferences::appraise_eventlog` judges the log's events for those
+  PCRs. Cmdline require/deny (`FleetArtifactPolicy::require_cmdline`/
+  `deny_cmdline`/`cmdline_permits`) is enforced against a measured (digest-
+  bound, via `MeasurementEvent::data_is_measured`) `EV_IPL` command line; an
+  extend whose event digest maps to an artifact-bearing accepted entry (for a
+  Semantic index the entry's `digest` is the *event* measurement digest) is
+  judged by fleet artifact policy, so revocation/baseline/channel reach
+  event-measured components. Violations → `REFERENCE_DENIED` hard fail. Tested
+  in-process via `MockBackend::measure_event` (records a typed, data-carrying
+  measurement) — units in `reference.rs`, e2e
+  `a_forbidden_kernel_cmdline_distrusts_a_node`. The signed-mapping path
+  (manifest digest→identity) is reused; **embedded Secure Boot signature
+  verification** (`EV_EFI_VARIABLE_AUTHORITY` cert → `db` anchor) is the
+  remaining provenance source, and structured `ArtifactIdentity` extraction
+  direct from image events is follow-up.
 * **Phase D — IMA / runtime.** Ingest the IMA log (PCR 10); ongoing runtime
   attestation beyond boot; ties into the log-shipping pipeline.
 

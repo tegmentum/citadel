@@ -259,24 +259,32 @@ impl Attestor {
             ReferenceOutcome::Incomplete => reference_incomplete = true,
         }
 
-        // Event-log integrity: a Semantic-class PCR must be backed by an event
-        // log that replays to the quote (event-log-attestation.md, Phase A).
-        let needs_event_log = evidence
+        // Event log: a Semantic-class PCR must be backed by an event log that
+        // (1) replays to the quote — integrity (Phase A) — and (2) whose
+        // content satisfies fleet semantic policy — cmdline + per-event-digest
+        // artifact (Phase C).
+        let semantic: std::collections::BTreeSet<u32> = evidence
             .quote
             .pcr_values
             .iter()
-            .any(|pv| accepted.class_of(pv.index) == PcrClass::Semantic);
-        if needs_event_log {
+            .filter(|pv| accepted.class_of(pv.index) == PcrClass::Semantic)
+            .map(|pv| pv.index)
+            .collect();
+        if !semantic.is_empty() {
             match &evidence.event_log {
                 None => reasons.push(ReasonCode::EventLogMissing),
-                Some(bytes) => {
-                    let explains = tpm_core::eventlog::BootEventLog::from_bytes(bytes)
-                        .map(|log| log.explains(&evidence.quote.pcr_values))
-                        .unwrap_or(false);
-                    if !explains {
-                        reasons.push(ReasonCode::EventLogInconsistent);
+                Some(bytes) => match tpm_core::eventlog::BootEventLog::from_bytes(bytes) {
+                    Ok(log) if log.explains(&evidence.quote.pcr_values) => {
+                        // Integrity holds → content-validate the semantic PCRs.
+                        if accepted.appraise_eventlog(&log, &challenge.pcr_bank, &semantic)
+                            == ReferenceOutcome::Denied
+                        {
+                            reasons.push(ReasonCode::ReferenceDenied);
+                            state_hard_fail = true;
+                        }
                     }
-                }
+                    _ => reasons.push(ReasonCode::EventLogInconsistent),
+                },
             }
         }
 

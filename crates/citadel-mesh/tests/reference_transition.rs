@@ -453,6 +453,48 @@ fn quorum_rejects_promotion_of_a_disallowed_artifact() {
 }
 
 #[test]
+fn a_forbidden_kernel_cmdline_distrusts_a_node() {
+    // §10.4 Phase C: PCR 8 is Semantic; its quote must be backed by a replayable
+    // event log, and a measured EV_IPL kernel cmdline is judged by fleet policy.
+    // A node that booted with `init=/bin/sh` is distrusted; the others are not.
+    let mut mesh = Mesh::new("prod-east-1");
+    let cfg = NodeConfig {
+        witness_count: 3,
+        attestation_interval: 3,
+        pcr_selection: vec![0, 7, 8], // include the semantic PCR in the quote
+        ..NodeConfig::default()
+    };
+    let ids: Vec<NodeId> = (1..=6).map(|s| mesh.add_node(s, "worker", cfg.clone())).collect();
+    mesh.wire_full_membership();
+    mesh.set_pcr_class_all(8, PcrClass::Semantic);
+    mesh.set_artifact_policy_all(FleetArtifactPolicy::new().deny_cmdline("init=/bin/sh"));
+    mesh.run(12);
+
+    // Everyone is trusted to begin with (no IPL events; semantic PCR 8 just
+    // replays to its base).
+    let bad_node = ids[4];
+    for &o in &ids {
+        if o != bad_node {
+            assert_eq!(mesh.trust_of(o, bad_node), Some(TrustState::Trusted));
+        }
+    }
+
+    // The node boots with a forbidden cmdline measured into PCR 8.
+    mesh.measure_event(bad_node, "sha256", 8, 0x0000_000D /* EV_IPL */, b"ro init=/bin/sh");
+    mesh.run(12);
+
+    for &o in &ids {
+        if o != bad_node {
+            assert_eq!(
+                mesh.trust_of(o, bad_node),
+                Some(TrustState::Suspicious),
+                "{o} distrusts {bad_node} booted with init=/bin/sh"
+            );
+        }
+    }
+}
+
+#[test]
 fn old_and_new_both_pass_during_a_rolling_upgrade() {
     // The overlap window: some nodes upgraded, some not — all stay trusted
     // because both the old and the new measured state are authorized.

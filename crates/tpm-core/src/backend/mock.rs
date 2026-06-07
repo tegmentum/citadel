@@ -28,9 +28,18 @@ pub struct MockBackend {
     /// authPolicy a key was bound to (key id -> PolicyPCR digest), so
     /// `sign_with_policy` can enforce the measured-state gate in software.
     key_policies: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
-    /// Ordered record of `pcr_extend` digests, per `(bank, index)`, so a
-    /// replayable event log can be synthesized (`read_event_log`).
-    extends: Mutex<HashMap<(String, u32), Vec<Vec<u8>>>>,
+    /// Ordered record of measurements, per `(bank, index)`, so a replayable
+    /// event log can be synthesized (`read_event_log`).
+    extends: Mutex<HashMap<(String, u32), Vec<RecordedExtend>>>,
+}
+
+/// One recorded measurement for event-log synthesis.
+struct RecordedExtend {
+    digest: Vec<u8>,
+    /// Event data (e.g. a kernel command line); empty for a bare `pcr_extend`.
+    data: Vec<u8>,
+    /// TCG event type, when measured via [`MockBackend::measure_event`].
+    tcg_type: Option<u32>,
 }
 
 struct MockKey {
@@ -287,7 +296,22 @@ impl TpmBackend for MockBackend {
             .unwrap()
             .entry(key)
             .or_default()
-            .push(digest.to_vec());
+            .push(RecordedExtend { digest: digest.to_vec(), data: Vec::new(), tcg_type: None });
+        Ok(())
+    }
+
+    /// Measure raw `data` into a PCR and record the data + TCG `event_type`, so
+    /// the synthesized event log carries a digest-bound, classifiable event
+    /// (e.g. an `EV_IPL` kernel command line). Testing aid for the event-log
+    /// semantic path.
+    fn measure_event(&self, bank: &str, index: u32, event_type: u32, data: &[u8]) -> anyhow::Result<()> {
+        let digest = hash_for_bank(bank, data)?;
+        self.pcr_extend(bank, index, &digest)?;
+        let mut extends = self.extends.lock().unwrap();
+        if let Some(rec) = extends.get_mut(&(bank.to_string(), index)).and_then(|v| v.last_mut()) {
+            rec.data = data.to_vec();
+            rec.tcg_type = Some(event_type);
+        }
         Ok(())
     }
 
@@ -317,12 +341,15 @@ impl TpmBackend for MockBackend {
             if key.0 != bank {
                 continue;
             }
-            for digest in &extends[key] {
+            for rec in &extends[key] {
                 events.push(MeasurementEvent {
                     pcr: key.1,
-                    event_type: EventType::Extend,
-                    digests: vec![(bank.to_string(), digest.clone())],
-                    data: Vec::new(),
+                    event_type: match rec.tcg_type {
+                        Some(t) => EventType::Unknown(t),
+                        None => EventType::Extend,
+                    },
+                    digests: vec![(bank.to_string(), rec.digest.clone())],
+                    data: rec.data.clone(),
                 });
             }
         }

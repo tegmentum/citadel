@@ -62,6 +62,23 @@ impl MeasurementEvent {
         self.digests.iter().find(|(b, _)| b == bank).map(|(_, d)| d.as_slice())
     }
 
+    /// The measured digest extended for `bank` (the bytes folded into the PCR).
+    pub fn measured_digest(&self, bank: &str) -> Option<&[u8]> {
+        self.digest_for(bank)
+    }
+
+    /// Whether this event's `data` is **bound** to its measured digest — i.e.
+    /// the digest is exactly `H(data)` for `bank`. Event data is otherwise not
+    /// PCR-bound (design §3); only when this holds may a verifier trust the data
+    /// (e.g. a cmdline string) as authentic. Exact-bytes; platform-specific
+    /// normalization (trailing NUL, UTF-16) is follow-up.
+    pub fn data_is_measured(&self, bank: &str) -> bool {
+        match (self.digest_for(bank), crate::backend::hash_for_bank(bank, &self.data)) {
+            (Some(d), Ok(h)) => d == h.as_slice(),
+            _ => false,
+        }
+    }
+
     /// The TCG event-type number, if this event came from a TCG log
     /// (`NoAction` → 0x03, `Unknown(n)` → n). `Base`/`Extend` are
     /// Citadel-internal and have none.

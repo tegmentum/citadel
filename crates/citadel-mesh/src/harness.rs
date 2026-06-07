@@ -352,6 +352,17 @@ impl Mesh {
             .expect("pcr extend");
     }
 
+    /// Measure a typed, data-carrying event into a node's PCR (e.g. an `EV_IPL`
+    /// kernel command line) — appears in the node's synthesized event log for
+    /// semantic appraisal (§10.4).
+    pub fn measure_event(&self, node: NodeId, bank: &str, index: u32, event_type: u32, data: &[u8]) {
+        self.node(node)
+            .attestor()
+            .backend()
+            .measure_event(bank, index, event_type, data)
+            .expect("measure event");
+    }
+
     /// A node's current digest for a PCR index — what an RVP would measure from
     /// the approved build in order to authorize it.
     pub fn pcr_digest(&self, node: NodeId, bank: &str, index: u32) -> Vec<u8> {

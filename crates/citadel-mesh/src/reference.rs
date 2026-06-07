@@ -179,6 +179,10 @@ pub struct FleetArtifactPolicy {
     min_version: BTreeMap<String, Vec<u64>>,
     denied_versions: std::collections::BTreeSet<(String, Vec<u64>)>,
     denied_builds: std::collections::BTreeSet<String>,
+    /// Substrings the kernel command line must contain (e.g. `lockdown=`).
+    cmdline_require: Vec<String>,
+    /// Substrings the kernel command line must not contain (e.g. `init=/bin/sh`).
+    cmdline_deny: Vec<String>,
 }
 
 impl FleetArtifactPolicy {
@@ -208,6 +212,25 @@ impl FleetArtifactPolicy {
     pub fn deny_build(mut self, build_id: impl Into<String>) -> Self {
         self.denied_builds.insert(build_id.into());
         self
+    }
+
+    /// Require the kernel command line to contain `token` (e.g. `lockdown=`).
+    pub fn require_cmdline(mut self, token: impl Into<String>) -> Self {
+        self.cmdline_require.push(token.into());
+        self
+    }
+
+    /// Forbid the kernel command line from containing `token` (e.g.
+    /// `init=/bin/sh`, `selinux=0`).
+    pub fn deny_cmdline(mut self, token: impl Into<String>) -> Self {
+        self.cmdline_deny.push(token.into());
+        self
+    }
+
+    /// Does `cmdline` satisfy the require/deny policy?
+    pub fn cmdline_permits(&self, cmdline: &str) -> bool {
+        self.cmdline_require.iter().all(|t| cmdline.contains(t.as_str()))
+            && !self.cmdline_deny.iter().any(|t| cmdline.contains(t.as_str()))
     }
 
     /// Does fleet policy permit this artifact? An unconstrained component is
@@ -541,6 +564,50 @@ impl AcceptedReferences {
     /// promotion: peers independently judge provenance).
     pub fn permits_artifact(&self, artifact: &ArtifactIdentity) -> bool {
         self.artifact_policy.permits(artifact)
+    }
+
+    /// Content-validate the `Semantic`-class PCRs against the (already
+    /// replay-verified) event log (design §10.4, Phase C). For each event in a
+    /// semantic PCR:
+    ///
+    /// * a measured kernel command line (`EV_IPL` whose data is bound to its
+    ///   digest) must satisfy the fleet cmdline require/deny policy;
+    /// * an extend whose measured digest maps to an artifact-bearing accepted
+    ///   entry (for a `Semantic` index, an entry's `digest` is the *event*
+    ///   measurement digest) must be permitted by fleet artifact policy.
+    ///
+    /// Any violation → [`ReferenceOutcome::Denied`]; otherwise `Accepted`.
+    pub fn appraise_eventlog(
+        &self,
+        log: &tpm_core::eventlog::BootEventLog,
+        bank: &str,
+        semantic: &std::collections::BTreeSet<u32>,
+    ) -> ReferenceOutcome {
+        use tpm_core::eventlog::ev;
+        for event in &log.events {
+            if !semantic.contains(&event.pcr) {
+                continue;
+            }
+            // Cmdline policy on a measured (digest-bound) EV_IPL event.
+            if event.tcg_type() == Some(ev::IPL) && event.data_is_measured(bank) {
+                if !self.artifact_policy.cmdline_permits(&event.data_utf8()) {
+                    return ReferenceOutcome::Denied;
+                }
+            }
+            // Per-event-digest artifact policy.
+            if let Some(d) = event.measured_digest(bank) {
+                for entry in self.entries.iter().filter(|e| e.index == event.pcr) {
+                    if entry.digest == d {
+                        if let Some(a) = &entry.artifact {
+                            if !self.artifact_policy.permits(a) {
+                                return ReferenceOutcome::Denied;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        ReferenceOutcome::Accepted
     }
 
     /// Add a coupled profile (accepted only when fully satisfied). Idempotent
@@ -1051,6 +1118,73 @@ mod tests {
             r.appraise(&[pcr(4, b"old")], 0, 0, ReferenceMatchPolicy::Flexible, RetiredAction::Fail),
             ReferenceOutcome::Denied
         );
+    }
+
+    #[test]
+    fn cmdline_policy_require_and_deny() {
+        let p = FleetArtifactPolicy::new()
+            .require_cmdline("lockdown=integrity")
+            .deny_cmdline("init=/bin/sh");
+        assert!(p.cmdline_permits("ro lockdown=integrity quiet"));
+        assert!(!p.cmdline_permits("ro quiet")); // missing required
+        assert!(!p.cmdline_permits("lockdown=integrity init=/bin/sh")); // denied token
+    }
+
+    // Build a minimal in-memory event log (Citadel-internal form) for §10.4.
+    fn ipl_cmdline_event(pcr: u32, cmdline: &str) -> tpm_core::eventlog::MeasurementEvent {
+        use tpm_core::backend::hash_for_bank;
+        tpm_core::eventlog::MeasurementEvent {
+            pcr,
+            event_type: tpm_core::eventlog::EventType::Unknown(tpm_core::eventlog::ev::IPL),
+            digests: vec![("sha256".into(), hash_for_bank("sha256", cmdline.as_bytes()).unwrap())],
+            data: cmdline.as_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn eventlog_cmdline_appraisal_denies_a_bad_cmdline() {
+        let mut r = refs();
+        r.set_pcr_class(8, PcrClass::Semantic);
+        r.set_artifact_policy(FleetArtifactPolicy::new().deny_cmdline("init=/bin/sh"));
+        let semantic: std::collections::BTreeSet<u32> = [8].into_iter().collect();
+
+        let good = tpm_core::eventlog::BootEventLog::new(vec![ipl_cmdline_event(8, "ro quiet")]);
+        assert_eq!(r.appraise_eventlog(&good, "sha256", &semantic), ReferenceOutcome::Accepted);
+
+        let bad =
+            tpm_core::eventlog::BootEventLog::new(vec![ipl_cmdline_event(8, "ro init=/bin/sh")]);
+        assert_eq!(r.appraise_eventlog(&bad, "sha256", &semantic), ReferenceOutcome::Denied);
+    }
+
+    #[test]
+    fn eventlog_artifact_appraisal_denies_a_revoked_event_digest() {
+        use tpm_core::backend::hash_for_bank;
+        let kernel_digest = hash_for_bank("sha256", b"vmlinuz-6.8.0").unwrap();
+        let mut r = refs();
+        r.set_pcr_class(4, PcrClass::Semantic);
+        // For a Semantic index, the entry digest is the *event* measurement
+        // digest, mapped to its artifact identity.
+        r.accept(
+            ReferenceEntry::new(4, kernel_digest.clone(), Validity::always())
+                .with_artifact(kernel_artifact(vec![6, 8, 0])),
+        );
+        let semantic: std::collections::BTreeSet<u32> = [4].into_iter().collect();
+
+        let event = tpm_core::eventlog::MeasurementEvent {
+            pcr: 4,
+            event_type: tpm_core::eventlog::EventType::Extend,
+            digests: vec![("sha256".into(), kernel_digest)],
+            data: b"\\vmlinuz".to_vec(),
+        };
+        let log = tpm_core::eventlog::BootEventLog::new(vec![event]);
+
+        // Permitted under a baseline of 6.8.0.
+        r.set_artifact_policy(FleetArtifactPolicy::new().min_version("kernel", vec![6, 8, 0]));
+        assert_eq!(r.appraise_eventlog(&log, "sha256", &semantic), ReferenceOutcome::Accepted);
+
+        // Revoke that version → the event-measured kernel is denied.
+        r.set_artifact_policy(FleetArtifactPolicy::new().deny_version("kernel", vec![6, 8, 0]));
+        assert_eq!(r.appraise_eventlog(&log, "sha256", &semantic), ReferenceOutcome::Denied);
     }
 
     #[test]
