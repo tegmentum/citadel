@@ -4,6 +4,10 @@
 # off so the host script can collect the fixtures. NAME is templated by
 # capture-eventlog.sh.
 bootcmd:
+  # Under QEMU user-mode networking the NIC often doesn't satisfy
+  # systemd-networkd-wait-online (its "no limit" job would stall multi-user.target
+  # and so the runcmd below never runs). Mask it early so the capture completes.
+  - [ systemctl, mask, --now, systemd-networkd-wait-online.service ]
   - [ modprobe, 9pnet_virtio ]
 runcmd:
   - mkdir -p /mnt/host

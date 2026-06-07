@@ -61,19 +61,47 @@ fn corpus_logs_parse_and_replay_to_their_quotes() {
             .replay("sha256")
             .unwrap_or_else(|e| panic!("replay failed for {name}: {e}"));
 
-        for (idx, want) in parse_expected(&expected_text) {
-            let got = replay
-                .get(&idx)
-                .unwrap_or_else(|| panic!("{name}: log has no PCR {idx} the quote expects"));
+        let expected: std::collections::BTreeMap<u32, Vec<u8>> =
+            parse_expected(&expected_text).into_iter().collect();
+
+        // A firmware measured-boot log must at least measure the CRTM into PCR 0;
+        // an empty replay would otherwise pass vacuously.
+        assert!(
+            replay.contains_key(&0),
+            "{name}: firmware log replayed no PCR 0 (CRTM) — log is empty or unparsed"
+        );
+
+        // Assert the property that matters: every PCR the *firmware log* measures
+        // must equal the live quote. We iterate the replayed PCRs (not the sidecar)
+        // because the quote also holds PCRs no firmware log can explain — notably
+        // PCR 10 (IMA), extended by the kernel at runtime and recorded in a separate
+        // IMA log, plus never-extended all-zero PCRs.
+        for (idx, got) in &replay {
+            let want = expected.get(idx).unwrap_or_else(|| {
+                panic!("{name}: log measures PCR {idx} but the quote sidecar has no value for it")
+            });
             assert_eq!(
-                got, &want,
+                got, want,
                 "{name}: PCR {idx} replay mismatch\n  got  {}\n  want {}",
                 hex(got),
-                hex(&want)
+                hex(want)
             );
         }
         samples += 1;
-        eprintln!("corpus: {name} parsed + replayed OK");
+        let uncovered: Vec<u32> = expected
+            .keys()
+            .copied()
+            .filter(|i| !replay.contains_key(i))
+            .collect();
+        eprintln!(
+            "corpus: {name} parsed + replayed OK ({} firmware PCRs matched the quote{})",
+            replay.len(),
+            if uncovered.is_empty() {
+                String::new()
+            } else {
+                format!("; quote PCRs not measured by this log, skipped: {uncovered:?}")
+            }
+        );
     }
 
     if samples == 0 {
