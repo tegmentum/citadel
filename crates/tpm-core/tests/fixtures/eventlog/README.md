@@ -28,4 +28,9 @@ Committed samples:
   measured-boot log: `Spec ID Event03` with four banks (sha1/sha256/sha384/
   sha512), `EV_S_CRTM_VERSION`, `EV_EFI_PLATFORM_FIRMWARE_BLOB`, secure-boot
   `EV_EFI_VARIABLE_DRIVER_CONFIG` (PCR 7), shim/grub `EV_EFI_BOOT_SERVICES_*`
-  and `EV_IPL`.
+  and `EV_IPL`. Replays PCRs 0–9, 14.
+* `seabios-q35-tpm2-amd64` — the same guest under a *different* firmware,
+  **SeaBIOS** + swtpm 2.0 (real `parse_tcg` breadth vs. OVMF). A compact BIOS-style
+  crypto-agile log exercising `EV_EVENT_TAG` (not present in the OVMF log),
+  `EV_SEPARATOR`, and `EV_ACTION`; SeaBIOS leaves the DRTM PCRs 17–22 at all-`ff`.
+  Replays PCRs 0–7.
