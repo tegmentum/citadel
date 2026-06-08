@@ -53,23 +53,29 @@ returns a non-signature fallback. The mTLS tests use `VtpmBackend::open(.., Some
 
 ## What's left to do on Linux
 
-### 1. Close C1 — real IMA corpus  (◑ software loop done)
-The IMA parser + runtime policy + trust escalation + LtHash shipping + evidence
-transport are all built and tested; they just need validation against a **real**
-IMA list. A default cloud image emits only `boot_aggregate` — boot with an IMA
-policy:
+### 1. C1 — real IMA corpus  ✅ (corpus validated; agent reader remains)
+`tpm_core::ima` is validated against a real kernel list: `cargo test -p tpm-core
+--test ima_corpus` parses **3619 `ima-ng`/sha256 entries**, 0 skipped, from an
+Ubuntu 24.04 (6.8.0) guest booted under `ima_policy=tcb` — fixture
+`crates/tpm-core/tests/fixtures/ima/ubuntu-24.04-tcb-amd64.ascii`.
+
+Captured in the QEMU lab with **no host reboot** (SeaBIOS direct `-kernel` so the
+`ima_policy=tcb` cmdline is ours, swtpm wired at `--ctrl` so `boot_aggregate` over
+PCRs 0–9 is TPM-real). To add more breadth, re-run the lab or, on a box with IMA
+already active:
 ```sh
-# on a box with IMA in the kernel (most distro kernels):
-#   add `ima_policy=tcb` to the kernel cmdline (GRUB), reboot, then:
 sudo cp /sys/kernel/security/ima/ascii_runtime_measurements \
         crates/tpm-core/tests/fixtures/ima/$(hostname).ascii
 cargo test -p tpm-core --test ima_corpus -- --nocapture
 ```
-The harness asserts every line parses (no unknown templates). A skipped line is
-a real-kernel wart — send it over and I'll harden `tpm_core::ima` (same loop
-that fixed the GRUB label-hashing in A3). Then C1 → ✅. Remaining after that: an
-agent-side reader of `/sys/.../ascii_runtime_measurements` feeding
-`Node::stage_ima` (so a deployed agent ships its real list).
+The harness asserts every line parses (no unknown templates); a skipped line is a
+real-kernel wart to harden in `tpm_core::ima`. The captured list is all `ima-ng`
+(Ubuntu's tcb default) — an `ima-sig` / appended-signature corpus (EVM/IMA
+signing) would exercise the remaining template branches.
+
+**Remaining for C1:** an agent-side reader of
+`/sys/.../ascii_runtime_measurements` feeding `Node::stage_ima` so a deployed
+agent ships its real list.
 
 ### 2. Close the B1 firmware tail  (vTPM part done)
 Ingest a *firmware* event log on bare metal and wire it into the LtHash log:
