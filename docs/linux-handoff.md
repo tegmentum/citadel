@@ -5,7 +5,8 @@ software-reachable roadmap is done; what's left needs **real hardware / real
 data / a build pipeline** that a Linux workstation provides and macOS couldn't.
 
 Companion docs: `docs/design/attestation-roadmap.md` (full status, per-item
-detail), `docs/a1-capture-handoff.md` (firmware event-log capture mechanics).
+detail), `docs/a1-capture-handoff.md` (firmware event-log capture mechanics),
+`docs/real-node-handoff.md` (work that must run on a real TPM-equipped node).
 
 ---
 
