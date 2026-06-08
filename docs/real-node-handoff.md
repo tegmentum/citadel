@@ -22,6 +22,16 @@ This is the broadest parser test available: real **vendor** firmware (not OVMF)
 and the node's own runtime list. It closes A1 breadth and the C1 corpus on real
 hardware.
 
+> **Status:** done in a VM as far as a VM can go. A TPM-equipped QEMU guest
+> (swtpm = TPM 2.0, root `/sys`) covers the prereqs, so the corpus now has two
+> firmwares — `ubuntu-24.04-ovmf-amd64` (OVMF/UEFI) and `seabios-q35-tpm2-amd64`
+> (SeaBIOS, adds `EV_EVENT_TAG`) — plus the `ubuntu-24.04-tcb-amd64` IMA list,
+> all replaying/parsing green. What a VM *can't* give is real **vendor** firmware
+> (Dell/HP/Lenovo UEFI, fTPM): run `sudo scripts/capture-node.sh` on actual
+> bare metal to surface vendor `EV_*` quirks. (This dev box is a TPM **1.2** host
+> with password `sudo`, so it can't — it has no `pcr-sha256` bank and a 0-byte
+> firmware log.)
+
 ```sh
 sudo scripts/capture-node.sh          # NAME=<label> to override the hostname
 ```
