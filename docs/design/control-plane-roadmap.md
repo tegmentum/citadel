@@ -23,7 +23,7 @@ calendar (1 engineer). "Gating" = needs something outside the item itself.
 | CP1 | Observer ingestion → verify → fleet view | Read | ✅ done | M0, M1 |
 | CP2 | Agreement records + drill-down (§17.4) | Read | ✅ done | CP1 |
 | CP3 | Evidence durability + reconstruction check | Read | ✅ done | CP1 |
-| CP4 | Forensic timeline + audit-chain verify + change feed | Read | 1–2 wk | CP1, CP2 |
+| CP4 | Forensic timeline + audit-chain verify + change feed | Read | ✅ done | CP1, CP2 |
 | CP5 | Operator workflow (signed policy / quarantine) | Write | 1–2 wk | CP1; RVP, quarantine |
 | CP6 | Web dashboard SPA (all §16.3 views) | UI | 3–5 wk | CP1–CP5 view API |
 | CP7 | Scale / HA (sharded observers, replica API) | Scale | 2–3 wk | CP1–CP5 |

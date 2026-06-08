@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -13,7 +13,14 @@ use citadel_mesh::NodeId;
 
 use crate::{
     AgreementView, ControlPlane, ControlPlaneStore, EvidenceDurabilityView, FleetHealth, NodeView,
+    TimelineEvent,
 };
+
+#[derive(serde::Deserialize)]
+pub struct SinceQuery {
+    #[serde(default)]
+    since: u64,
+}
 
 /// A shared, lockable control plane to serve from. The lock is held only for
 /// the synchronous read; no `.await` happens under it.
@@ -27,6 +34,8 @@ pub fn router<S: ControlPlaneStore + 'static>(cp: Shared<S>) -> Router {
         .route("/v1/nodes/{id}", get(node::<S>))
         .route("/v1/nodes/{id}/agreement", get(agreement::<S>))
         .route("/v1/nodes/{id}/evidence", get(evidence::<S>))
+        .route("/v1/nodes/{id}/timeline", get(timeline::<S>))
+        .route("/v1/events", get(events::<S>))
         .with_state(cp)
 }
 
@@ -74,4 +83,19 @@ async fn evidence<S: ControlPlaneStore + 'static>(
         .evidence_view(&nid)
         .map(Json)
         .ok_or(StatusCode::NOT_FOUND)
+}
+
+async fn timeline<S: ControlPlaneStore + 'static>(
+    State(cp): State<Shared<S>>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<TimelineEvent>>, StatusCode> {
+    let nid = NodeId::from_hex(&id).ok_or(StatusCode::BAD_REQUEST)?;
+    Ok(Json(cp.lock().unwrap().timeline(&nid)))
+}
+
+async fn events<S: ControlPlaneStore + 'static>(
+    State(cp): State<Shared<S>>,
+    Query(q): Query<SinceQuery>,
+) -> Json<Vec<TimelineEvent>> {
+    Json(cp.lock().unwrap().events_since(q.since))
 }

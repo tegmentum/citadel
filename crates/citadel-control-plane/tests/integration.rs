@@ -340,3 +340,99 @@ async fn read_api_serves_evidence() {
     assert!(e["records"].is_array());
     assert!(e["records_total"].as_u64().unwrap() >= 1);
 }
+
+#[test]
+fn the_forensic_timeline_records_what_changed() {
+    let mut mesh = Mesh::new("prod-east-1");
+    let cfg = NodeConfig {
+        witness_count: 3,
+        attestation_interval: 3,
+        pcr_selection: vec![0, 7],
+        ..NodeConfig::default()
+    };
+    let workers: Vec<NodeId> = (1..=5)
+        .map(|s| mesh.add_node(s, "worker", cfg.clone()))
+        .collect();
+    let observer = mesh.add_node(
+        6,
+        "control-plane",
+        NodeConfig {
+            observer: true,
+            ..cfg.clone()
+        },
+    );
+    mesh.wire_full_membership();
+
+    let mut cp = ControlPlane::new(MemStore::new());
+    mesh.run(12);
+    cp.observe(mesh.node_mut(observer), 12); // healthy → enrolled + trusted
+
+    let bad = workers[4];
+    mesh.measured_state_change(bad, "sha256", 0, &[0xAA; 32]);
+    mesh.run(16);
+    cp.observe(mesh.node_mut(observer), 28); // tamper → trusted → suspicious
+
+    let tl = cp.timeline(&bad);
+    assert!(
+        tl.iter().any(|e| e.kind == "enrolled"),
+        "enrolment is on the timeline"
+    );
+    let transition = tl
+        .iter()
+        .find(|e| e.kind == "trust-transition" && e.detail.contains("suspicious"));
+    assert!(
+        transition.is_some(),
+        "the trust drop is recorded with the reason"
+    );
+    assert!(
+        transition.unwrap().detail.contains("Mismatch")
+            || transition.unwrap().detail.contains("Reference"),
+        "the transition carries the dissent reason: {}",
+        transition.unwrap().detail
+    );
+
+    // The change feed includes the bad node's transition.
+    let feed = cp.events_since(0);
+    assert!(feed
+        .iter()
+        .any(|e| e.subject == bad.to_hex() && e.kind == "trust-transition"));
+
+    // Healthy audit chains → no audit-broken events.
+    cp.poll_audit(mesh.node(bad), 30);
+    assert!(!cp.timeline(&bad).iter().any(|e| e.kind == "audit-broken"));
+}
+
+#[tokio::test]
+async fn read_api_serves_timeline_and_change_feed() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let (cp, workers, _o) = observed_mesh();
+    let app = api::router(Arc::new(Mutex::new(cp)));
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::get("/v1/events?since=0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let feed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(feed.is_array());
+
+    let resp = app
+        .oneshot(
+            Request::get(format!("/v1/nodes/{}/timeline", workers[0].to_hex()))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+}

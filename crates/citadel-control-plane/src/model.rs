@@ -107,6 +107,19 @@ pub struct EvidenceDurabilityView {
     pub durability_pct: f32,
 }
 
+/// One entry in the forensic timeline (§17 "what changed") — every entry is
+/// derived from a verified artifact (a signed verdict transition, an enrolment,
+/// an audit-chain break). Ordered by `tick`; feeds both the per-subject timeline
+/// and the fleet change feed.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct TimelineEvent {
+    pub tick: u64,
+    pub subject: String,
+    /// `enrolled` | `trust-transition` | `audit-broken`.
+    pub kind: String,
+    pub detail: String,
+}
+
 /// Map a derived [`TrustState`] into the fleet histogram.
 pub(crate) fn bump(h: &mut FleetHealth, trust: TrustState) {
     h.total += 1;

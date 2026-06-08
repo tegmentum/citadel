@@ -23,7 +23,7 @@ mod store;
 
 pub use model::{
     AgreementView, DurabilityRecord, EvidenceDurabilityView, FleetHealth, NodeRecord, NodeView,
-    ReportView,
+    ReportView, TimelineEvent,
 };
 pub use store::{ControlPlaneStore, MemStore};
 
@@ -212,9 +212,11 @@ impl<S: ControlPlaneStore> ControlPlane<S> {
     }
 
     /// Ingest a (verified-by-the-observer-envelope) membership update: record
-    /// the member's facts + key. Observer-ness rides the update (M0).
+    /// the member's facts + key. Observer-ness rides the update (M0). The first
+    /// time a node is seen, a timeline `enrolled` event is recorded (CP4).
     pub fn ingest_member(&mut self, u: &MemberUpdate, tick: u64) {
         let prev = self.store.get_node(&u.node_id);
+        let first_seen = prev.is_none();
         self.store.upsert_node(NodeRecord {
             id: u.node_id,
             public_key: u.public_key,
@@ -223,6 +225,45 @@ impl<S: ControlPlaneStore> ControlPlane<S> {
             observer: u.observer,
             last_seen_tick: tick,
         });
+        if first_seen && !u.observer {
+            self.record_event(tick, u.node_id, "enrolled", String::new());
+        }
+    }
+
+    /// Append a forensic-timeline event (CP4).
+    fn record_event(&mut self, tick: u64, subject: NodeId, kind: &str, detail: String) {
+        self.store.append_event(TimelineEvent {
+            tick,
+            subject: subject.to_hex(),
+            kind: kind.to_string(),
+            detail,
+        });
+    }
+
+    /// One subject's forensic timeline (§17 "what changed") — every entry backed
+    /// by a verified artifact.
+    pub fn timeline(&self, subject: &NodeId) -> Vec<TimelineEvent> {
+        self.store.timeline_for(&subject.to_hex())
+    }
+
+    /// The fleet change feed: timeline events after the `since` tick cursor.
+    pub fn events_since(&self, since: u64) -> Vec<TimelineEvent> {
+        self.store.events_since(since)
+    }
+
+    /// Verify a node's audit-chain integrity (CP4) and timeline a break. Polled
+    /// (owner-centric, like durability). `reference_audit_ok` is the node's
+    /// hash-chain integrity check; a fully-relinked rewrite is caught instead by
+    /// the mesh's witnessed chain heads (a stronger CP follow-up).
+    pub fn poll_audit(&mut self, node: &citadel_mesh::node::Node, tick: u64) {
+        if !node.reference_audit_ok() {
+            self.record_event(
+                tick,
+                node.id(),
+                "audit-broken",
+                "reference audit chain".into(),
+            );
+        }
     }
 
     /// Ingest a verifier's verdict. **Re-verifies the signature** (M1) against
@@ -236,7 +277,25 @@ impl<S: ControlPlaneStore> ControlPlane<S> {
         if !v.verify_signature(&verifier.public_key) {
             return false;
         }
+        // CP4: a verdict that flips the subject's derived trust is a timeline
+        // event ("what changed"), carrying the triggering verdict's reasons.
+        let before = self.derived_trust(&v.subject).0;
         self.store.append_verdict(v.clone());
+        let after = self.derived_trust(&v.subject).0;
+        if before != after {
+            let reasons: Vec<String> = v.reason_codes.iter().map(|r| format!("{r:?}")).collect();
+            let detail = if reasons.is_empty() {
+                format!("{} → {}", model::trust_str(before), model::trust_str(after))
+            } else {
+                format!(
+                    "{} → {} ({})",
+                    model::trust_str(before),
+                    model::trust_str(after),
+                    reasons.join(", ")
+                )
+            };
+            self.record_event(v.timestamp_tick, v.subject, "trust-transition", detail);
+        }
         true
     }
 
@@ -426,6 +485,39 @@ mod tests {
         forged.verifier = NodeId(real.public().fingerprint());
         assert!(!cp.ingest_verdict(&forged), "forged verdict rejected");
         assert!(cp.store().verdicts_for(&subject).is_empty());
+    }
+
+    #[test]
+    fn trust_transition_is_recorded_on_the_timeline() {
+        let mut cp = ControlPlane::new(MemStore::new());
+        let subject_kp = MeshKeypair::from_seed([1; 32]);
+        let subject = NodeId(subject_kp.public().fingerprint());
+        let w: Vec<MeshKeypair> = (2u8..=5).map(|s| MeshKeypair::from_seed([s; 32])).collect();
+        cp.ingest_member(&member(&subject_kp, false), 1);
+        for kp in &w {
+            cp.ingest_member(&member(kp, false), 1);
+        }
+        // First a Pass quorum (unknown → trusted), then a Fail quorum (→ suspicious).
+        for kp in &w {
+            cp.ingest_verdict(&verdict(kp, subject, Verdict::Pass, 10));
+        }
+        for kp in &w {
+            cp.ingest_verdict(&verdict(kp, subject, Verdict::Fail, 20));
+        }
+        let tl = cp.timeline(&subject);
+        assert!(tl.iter().any(|e| e.kind == "enrolled"));
+        assert!(tl
+            .iter()
+            .any(|e| e.kind == "trust-transition" && e.detail.contains("trusted")));
+        assert!(tl
+            .iter()
+            .any(|e| e.kind == "trust-transition" && e.detail.contains("suspicious")));
+        // The change feed (tick cursor) returns the later transition only.
+        assert!(cp.events_since(15).iter().all(|e| e.tick > 15));
+        assert!(cp
+            .events_since(15)
+            .iter()
+            .any(|e| e.detail.contains("suspicious")));
     }
 
     #[test]

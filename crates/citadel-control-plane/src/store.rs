@@ -12,7 +12,7 @@ use citadel_mesh::evidence::EvidenceDurability;
 use citadel_mesh::types::AttestationResult;
 use citadel_mesh::NodeId;
 
-use crate::model::NodeRecord;
+use crate::model::{NodeRecord, TimelineEvent};
 
 /// Pluggable persistence for the control plane. Implementors store and return
 /// data verbatim; all signature checking happens in `ControlPlane` before
@@ -32,6 +32,12 @@ pub trait ControlPlaneStore: Send + Sync {
     fn upsert_durability(&mut self, owner: NodeId, records: Vec<EvidenceDurability>);
     /// A node's last-polled evidence-durability records.
     fn durability(&self, owner: &NodeId) -> Vec<EvidenceDurability>;
+    /// Append a forensic-timeline event (CP4), in arrival order.
+    fn append_event(&mut self, event: TimelineEvent);
+    /// One subject's timeline, in order.
+    fn timeline_for(&self, subject: &str) -> Vec<TimelineEvent>;
+    /// The fleet change feed: events with `tick > since`, in order.
+    fn events_since(&self, since: u64) -> Vec<TimelineEvent>;
 }
 
 /// In-memory store — the default backend (tests, small fleets, the read-replica
@@ -41,6 +47,7 @@ pub struct MemStore {
     nodes: std::collections::HashMap<NodeId, NodeRecord>,
     verdicts: std::collections::HashMap<NodeId, Vec<AttestationResult>>,
     durability: std::collections::HashMap<NodeId, Vec<EvidenceDurability>>,
+    events: Vec<TimelineEvent>,
 }
 
 impl MemStore {
@@ -73,5 +80,22 @@ impl ControlPlaneStore for MemStore {
     }
     fn durability(&self, owner: &NodeId) -> Vec<EvidenceDurability> {
         self.durability.get(owner).cloned().unwrap_or_default()
+    }
+    fn append_event(&mut self, event: TimelineEvent) {
+        self.events.push(event);
+    }
+    fn timeline_for(&self, subject: &str) -> Vec<TimelineEvent> {
+        self.events
+            .iter()
+            .filter(|e| e.subject == subject)
+            .cloned()
+            .collect()
+    }
+    fn events_since(&self, since: u64) -> Vec<TimelineEvent> {
+        self.events
+            .iter()
+            .filter(|e| e.tick > since)
+            .cloned()
+            .collect()
     }
 }
