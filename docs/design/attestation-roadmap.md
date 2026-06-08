@@ -140,18 +140,23 @@ harness cannot provide.
   LtHash log (`logship::append_event`) to fill §6. Needs bare-metal UEFI, not a
   vTPM.
 
-### B2 — Signed reference values from a real RVP
-* **Goal:** production references come from a Reference Value Provider replaying
-  approved builds, not test self-capture — closing the `set_peer_reference`
+### B2 — Signed reference values from a real RVP — ✅ DONE (tooling)
+* **Goal:** production references come from a Reference Value Provider that
+  **approved a build**, not test self-capture — closing the `set_peer_reference`
   bootstrap caveat in `measured-state-transitions.md` §5.
-* **Scope:** a small RVP tool that, given an approved image, computes its
-  expected PCRs / event digests and emits a signed `ReferenceManifest` (+
-  `ArtifactIdentity`); operators ingest it via the existing manifest gossip.
-* **Seam:** reuses `ReferenceManifest::issue_chained` and the manifest path —
-  this is tooling around an existing API, not new mesh code.
-* **Test:** RVP output adopted by a node; a matching build passes, a tampered
-  one is `REFERENCE_UNKNOWN`.
-* **Effort:** 1 wk. **Gating:** an approved-build pipeline to measure against.
+* **Delivered:** `citadel_mesh::rvp` — `issue_from_pcrs` builds a signed
+  `ReferenceManifest` pinning an approved build's expected PCRs (optionally with
+  `ArtifactIdentity` provenance), and `issue_from_eventlog` **replays an approved
+  build's measured-boot log** to those PCRs first (so an RVP holding the golden
+  log derives the reference). Reuses `ReferenceManifest::issue_chained` + the
+  existing adoption/gossip path — tooling over an existing API, no new mesh code.
+* **Tests (`tests/rvp.rs`):** an RVP manifest from an approved log is adopted;
+  the approved build is `Accepted` and a tampered firmware PCR is
+  `REFERENCE_UNKNOWN`; an RVP-attached `ArtifactIdentity` is gated by fleet
+  version policy (`Denied` on a denylisted kernel version).
+* **Remaining (real-pipeline only):** point it at a real approved-build
+  pipeline's output (the measurement source); the issuing/signing/ingest path is
+  complete. The RVP can also be exposed as a CLI subcommand when wanted.
 
 ---
 
