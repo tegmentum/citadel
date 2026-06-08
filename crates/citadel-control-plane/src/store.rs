@@ -13,6 +13,7 @@ use citadel_mesh::types::AttestationResult;
 use citadel_mesh::NodeId;
 
 use crate::model::{NodeRecord, TimelineEvent};
+use crate::operator::OperatorAuditEntry;
 
 /// Pluggable persistence for the control plane. Implementors store and return
 /// data verbatim; all signature checking happens in `ControlPlane` before
@@ -38,6 +39,10 @@ pub trait ControlPlaneStore: Send + Sync {
     fn timeline_for(&self, subject: &str) -> Vec<TimelineEvent>;
     /// The fleet change feed: events with `tick > since`, in order.
     fn events_since(&self, since: u64) -> Vec<TimelineEvent>;
+    /// Append a link to the operator-action audit chain (CP5).
+    fn append_operator_audit(&mut self, entry: OperatorAuditEntry);
+    /// The operator-action audit chain, in order.
+    fn operator_audit(&self) -> Vec<OperatorAuditEntry>;
 }
 
 /// In-memory store — the default backend (tests, small fleets, the read-replica
@@ -48,6 +53,7 @@ pub struct MemStore {
     verdicts: std::collections::HashMap<NodeId, Vec<AttestationResult>>,
     durability: std::collections::HashMap<NodeId, Vec<EvidenceDurability>>,
     events: Vec<TimelineEvent>,
+    operator_audit: Vec<OperatorAuditEntry>,
 }
 
 impl MemStore {
@@ -97,5 +103,11 @@ impl ControlPlaneStore for MemStore {
             .filter(|e| e.tick > since)
             .cloned()
             .collect()
+    }
+    fn append_operator_audit(&mut self, entry: OperatorAuditEntry) {
+        self.operator_audit.push(entry);
+    }
+    fn operator_audit(&self) -> Vec<OperatorAuditEntry> {
+        self.operator_audit.clone()
     }
 }

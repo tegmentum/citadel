@@ -19,22 +19,36 @@
 
 pub mod api;
 mod model;
+pub mod operator;
 mod store;
 
 pub use model::{
     AgreementView, DurabilityRecord, EvidenceDurabilityView, FleetHealth, NodeRecord, NodeView,
     ReportView, TimelineEvent,
 };
+pub use operator::{OperatorAction, OperatorAuditEntry, WriteError};
 pub use store::{ControlPlaneStore, MemStore};
 
 fn hex32(b: &[u8; 32]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-use std::collections::HashMap;
+fn from_hex32(s: &str) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    for (i, byte) in out.iter_mut().enumerate() {
+        if let Some(h) = s.get(i * 2..i * 2 + 2) {
+            *byte = u8::from_str_radix(h, 16).unwrap_or(0);
+        }
+    }
+    out
+}
 
+use std::collections::{HashMap, HashSet};
+
+use citadel_mesh::crypto::MeshPublicKey;
 use citadel_mesh::id::Epoch;
 use citadel_mesh::membership::MemberUpdate;
+use citadel_mesh::reference::ReferenceManifest;
 use citadel_mesh::state::TrustState;
 use citadel_mesh::types::{AttestationResult, Verdict};
 use citadel_mesh::NodeId;
@@ -47,6 +61,8 @@ pub struct ControlPlane<S: ControlPlaneStore> {
     /// agreement then reports all reporters as unassigned.
     epoch: u64,
     witness_count: usize,
+    /// Registered operator keys allowed to authorize writes (CP5).
+    operators: HashSet<MeshPublicKey>,
 }
 
 impl<S: ControlPlaneStore> ControlPlane<S> {
@@ -55,7 +71,100 @@ impl<S: ControlPlaneStore> ControlPlane<S> {
             store,
             epoch: 0,
             witness_count: 0,
+            operators: HashSet::new(),
         }
+    }
+
+    /// Register an operator key allowed to authorize writes (CP5).
+    pub fn authorize_operator(&mut self, operator: MeshPublicKey) {
+        self.operators.insert(operator);
+    }
+
+    /// Relay an **operator-authorized**, authority-signed reference manifest into
+    /// the mesh (CP5 `POST /v1/policies`). The CP holds no key that decides
+    /// trust: it (1) checks the operator is registered, (2) verifies the
+    /// operator's signature over this manifest's content id, (3) verifies the
+    /// manifest's own authority signature, then broadcasts it via the observer
+    /// node and records a tamper-evident audit link. Nodes still adopt it only
+    /// if they trust the manifest's authority. Returns the manifest content id.
+    pub fn publish_policy(
+        &mut self,
+        action: &OperatorAction,
+        manifest: &ReferenceManifest,
+        observer: &mut citadel_mesh::node::Node,
+        tick: u64,
+    ) -> Result<[u8; 32], WriteError> {
+        let target = manifest.content_id();
+        if action.target != target {
+            return Err(WriteError::TargetMismatch);
+        }
+        if !self.operators.contains(&action.operator) {
+            return Err(WriteError::Unauthorized);
+        }
+        if !action.verify() {
+            return Err(WriteError::BadSignature);
+        }
+        if !manifest.verify_signature() {
+            return Err(WriteError::BadArtifact);
+        }
+        observer.broadcast_reference_manifest(manifest.clone());
+        self.append_operator_audit("publish-policy", &target, &action.operator, tick);
+        Ok(target)
+    }
+
+    fn append_operator_audit(
+        &mut self,
+        kind: &str,
+        target: &[u8; 32],
+        operator: &MeshPublicKey,
+        tick: u64,
+    ) {
+        let chain = self.store.operator_audit();
+        let seq = chain.len() as u64;
+        let prev_hash = chain
+            .last()
+            .map(|e| from_hex32(&e.hash))
+            .unwrap_or([0u8; 32]);
+        let op_fp = operator.fingerprint();
+        let hash = operator::entry_hash(seq, kind, target, &op_fp, tick, &prev_hash);
+        self.store.append_operator_audit(OperatorAuditEntry {
+            seq,
+            kind: kind.to_string(),
+            target: hex32(target),
+            operator: hex32(&op_fp),
+            tick,
+            prev_hash: hex32(&prev_hash),
+            hash: hex32(&hash),
+        });
+    }
+
+    /// The operator-action audit chain (CP5) — what the CP relayed, in order.
+    pub fn operator_audit(&self) -> Vec<OperatorAuditEntry> {
+        self.store.operator_audit()
+    }
+
+    /// Whether the operator-action audit chain verifies intact (each link
+    /// commits to the previous; a tampered or dropped entry breaks it).
+    pub fn operator_audit_ok(&self) -> bool {
+        let mut prev = [0u8; 32];
+        for (i, e) in self.store.operator_audit().iter().enumerate() {
+            if e.seq != i as u64 || from_hex32(&e.prev_hash) != prev {
+                return false;
+            }
+            let recomputed = operator::entry_hash(
+                e.seq,
+                &e.kind,
+                &from_hex32(&e.target),
+                &from_hex32(&e.operator),
+                e.tick,
+                &prev,
+            );
+            if from_hex32(&e.hash) != recomputed {
+                return false;
+            }
+            prev = recomputed;
+        }
+        true
     }
 
     /// Set the mesh params (epoch, witnesses-per-subject) used to recompute

@@ -13,7 +13,7 @@ use citadel_mesh::NodeId;
 
 use crate::{
     AgreementView, ControlPlane, ControlPlaneStore, EvidenceDurabilityView, FleetHealth, NodeView,
-    TimelineEvent,
+    OperatorAuditEntry, TimelineEvent,
 };
 
 #[derive(serde::Deserialize)]
@@ -36,6 +36,7 @@ pub fn router<S: ControlPlaneStore + 'static>(cp: Shared<S>) -> Router {
         .route("/v1/nodes/{id}/evidence", get(evidence::<S>))
         .route("/v1/nodes/{id}/timeline", get(timeline::<S>))
         .route("/v1/events", get(events::<S>))
+        .route("/v1/audit", get(operator_audit::<S>))
         .with_state(cp)
 }
 
@@ -98,4 +99,10 @@ async fn events<S: ControlPlaneStore + 'static>(
     Query(q): Query<SinceQuery>,
 ) -> Json<Vec<TimelineEvent>> {
     Json(cp.lock().unwrap().events_since(q.since))
+}
+
+async fn operator_audit<S: ControlPlaneStore + 'static>(
+    State(cp): State<Shared<S>>,
+) -> Json<Vec<OperatorAuditEntry>> {
+    Json(cp.lock().unwrap().operator_audit())
 }
