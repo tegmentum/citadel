@@ -5,6 +5,13 @@ version.workspace = true
 license = "Apache-2.0"
 description = "Citadel mesh agent: runs a citadel-mesh node as a networked process, gossiping with peers over HTTP"
 
+[features]
+# Real TPM via tss-esapi (hardware /dev/tpm* or swtpm over a TCTI) — selected at
+# runtime with CITADEL_TPM_BACKEND=tcti + CITADEL_TPM_TCTI.
+tpm-hw = ["tpm-core/tpm-hw"]
+# In-process libtpms vTPM — CITADEL_TPM_BACKEND=vtpm + TPM_VTPM_COMPONENT.
+vtpm = ["dep:vtpm-backend"]
+
 [lib]
 name = "citadel_agent"
 path = "src/lib.rs"
@@ -26,7 +33,9 @@ tracing-subscriber.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tpm-tls = { path = "../tpm-tls" }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
+# Optional in-process vTPM backend, enabled by the `vtpm` feature (used by the
+# agent binary's backend selector and the mtls_transport test).
+vtpm-backend = { path = "../vtpm-backend", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
-vtpm-backend = { path = "../vtpm-backend" }
