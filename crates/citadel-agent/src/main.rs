@@ -33,34 +33,24 @@ fn make_backend() -> Box<dyn TpmBackend> {
     Box::new(MockBackend::new())
 }
 
-/// Read this node's own measured state from securityfs and stage it into the
-/// node's evidence: the firmware measured-boot log (B1) and the IMA runtime list
-/// (C1). Both are shipped in attestation evidence and preserved in the LtHash
-/// log. Logs that are absent (no measured boot / IMA inactive) are skipped; a
-/// genuine read error (e.g. not running as root) is logged and tolerated so the
-/// agent still starts. Paths are overridable via `CITADEL_FIRMWARE_EVENT_LOG` /
-/// `CITADEL_IMA_RUNTIME_LIST` (point them at a captured fixture off a real node).
+/// Read this node's own measured state from securityfs (firmware log + IMA list)
+/// and stage it into the node's evidence (B1/C1). Absent logs (no measured boot
+/// / IMA inactive) and read errors (e.g. not running as root) are tolerated so
+/// the agent still starts. Paths are overridable via `CITADEL_FIRMWARE_EVENT_LOG`
+/// / `CITADEL_IMA_RUNTIME_LIST` — point them at a captured fixture off a real
+/// node to dry-run without a live securityfs.
 fn stage_node_logs(node: &mut citadel_mesh::node::Node) {
-    match tpm_core::sys::read_firmware_event_log() {
-        Ok(Some(bytes)) => {
-            node.stage_event_log(&bytes);
-            match node.ingest_own_event_log(&bytes) {
-                Ok(n) => tracing::info!("staged firmware event log ({n} events)"),
-                Err(e) => tracing::warn!("firmware event log did not parse: {e}"),
-            }
-        }
-        Ok(None) => tracing::info!("no firmware measured-boot log on this node"),
-        Err(e) => tracing::warn!("reading firmware event log: {e}"),
-    }
-    match tpm_core::sys::read_ima_runtime_list() {
-        Ok(Some(ima)) => {
-            node.stage_ima(&ima);
-            let (_violations, ingested) = node.ingest_own_ima(&ima);
-            tracing::info!("staged IMA runtime list ({ingested} entries)");
-        }
-        Ok(None) => tracing::info!("no IMA runtime list on this node (IMA inactive)"),
-        Err(e) => tracing::warn!("reading IMA runtime list: {e}"),
-    }
+    let firmware = tpm_core::sys::read_firmware_event_log().unwrap_or_else(|e| {
+        tracing::warn!("reading firmware event log: {e}");
+        None
+    });
+    let ima = tpm_core::sys::read_ima_runtime_list().unwrap_or_else(|e| {
+        tracing::warn!("reading IMA runtime list: {e}");
+        None
+    });
+    let (fw_events, ima_entries) =
+        citadel_agent::stage_node_logs(node, firmware.as_deref(), ima.as_deref());
+    tracing::info!("staged measured state: {fw_events} firmware events, {ima_entries} IMA entries");
 }
 
 /// Parse `CITADEL_PEER_CERTS` (JSON `[[seed, "hex-DER"], …]`) into the pinnable

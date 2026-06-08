@@ -67,13 +67,24 @@ logs into its evidence:
   log). The agent wires both in `stage_node_logs` at startup.
 
 Unit + integration tests cover the readers (against the committed corpus), the
-ingest, and the staged-log binding; `crates/citadel-mesh/tests/firmware_shipping.rs`.
+ingest, and the staged-log binding (`firmware_shipping.rs`), plus an end-to-end
+**node-validation over the real HTTP transport**
+(`crates/citadel-agent/tests/node_validation.rs`): real agent processes form a
+mesh, the "bad" one stages real kernel IMA lines via the startup reader, and a
+witness challenges → receives the shipped IMA log → distrusts it when it carries
+a denylisted file (≈0.2 s). So the C1 distrust path is validated with real
+sockets, not just the in-process harness.
 
-**Remaining — node validation** (needs a real/VM node, not just CI): run two
-agents, confirm one distrusts the other when a denylisted file is in the *real*
-IMA list, and that the firmware log ships + replays against the quote. The
-`CITADEL_*` env overrides let you stage a captured corpus into a running agent
-to exercise the path end-to-end before bare metal.
+**Remaining — bare-metal only:**
+- *Firmware ships + replays against the quote.* Needs a backend whose quote
+  matches the staged firmware log; the demo `MockBackend` synthesizes its own
+  log, so a real captured firmware log won't replay against a mock quote — this
+  lands with **Task 3** (real/vTPM backend).
+- *Vendor firmware breadth* (Task 1) still wants real hardware.
+
+The `CITADEL_FIRMWARE_EVENT_LOG` / `CITADEL_IMA_RUNTIME_LIST` overrides let you
+stage a captured corpus into a deployed agent to exercise the readers on a real
+node before then.
 
 ---
 

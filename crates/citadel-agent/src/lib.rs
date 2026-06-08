@@ -384,6 +384,41 @@ pub fn build_node_with_backend(
     (node, id)
 }
 
+/// Stage this node's own measured state into the evidence it produces: the
+/// firmware measured-boot log (B1) and the IMA runtime list (C1). Both ship in
+/// attestation evidence and are preserved in the node's LtHash log. The args are
+/// the bytes/text already read from securityfs (`tpm_core::sys`) or a captured
+/// fixture — `None` means the node has no such log. An unparseable firmware log
+/// is dropped (not shipped). Returns `(firmware_events, ima_entries)` ingested.
+pub fn stage_node_logs(
+    node: &mut Node,
+    firmware_log: Option<&[u8]>,
+    ima_list: Option<&str>,
+) -> (usize, usize) {
+    // Firmware (B1): only ship a log that parses, so a node never gossips a
+    // garbage event log. `stage_event_log` ships the raw bytes in evidence;
+    // `ingest_own_event_log` preserves each event in the LtHash log.
+    let firmware_events = match firmware_log {
+        Some(bytes) => match node.ingest_own_event_log(bytes) {
+            Ok(n) => {
+                node.stage_event_log(bytes);
+                n
+            }
+            Err(_) => 0,
+        },
+        None => 0,
+    };
+    // IMA (C1): stage the list to ship in evidence and preserve it in the log.
+    let ima_entries = match ima_list {
+        Some(ima) => {
+            node.stage_ima(ima);
+            node.ingest_own_ima(ima).1
+        }
+        None => 0,
+    };
+    (firmware_events, ima_entries)
+}
+
 /// Mint the node's mutual-TLS identity (E2) on the **same** TPM backend that
 /// produces its quotes: create a dedicated ECC P-256 key, self-sign a cert in
 /// the TPM, and advertise that cert to the mesh (`set_tls_cert`) so peers learn
