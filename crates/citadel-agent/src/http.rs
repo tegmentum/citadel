@@ -1,6 +1,7 @@
 //! HTTP transport and the agent's gossip/status endpoints.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -22,10 +23,14 @@ pub struct HttpTransport {
 
 impl HttpTransport {
     pub fn new(peers: HashMap<NodeId, String>) -> Self {
-        HttpTransport {
-            peers,
-            client: reqwest::Client::new(),
-        }
+        // Gossip is fire-and-forget: bound each send so a slow/dead peer can't
+        // pin the spawned task, and don't keep idle connections to gone peers.
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .pool_idle_timeout(Duration::from_secs(2))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        HttpTransport { peers, client }
     }
 
     /// A transport whose reqwest client is already built — used to inject the
