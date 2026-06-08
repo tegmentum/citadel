@@ -25,8 +25,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake clang libclang-dev pkg-config libssl-dev libsqlite3-dev \
-            libtss2-dev
+            build-essential cmake clang libclang-dev pkg-config libssl-dev libsqlite3-dev
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -51,10 +50,10 @@ jobs:
       - name: Test (x509-authority feature)
         run: cargo test -p citadel-mesh --features x509-authority
 
-      # Compile-check the agent's optional TPM backends so the feature-gated
-      # code can't bit-rot (it isn't in the default build). Runtime needs a real
-      # TPM / built vTPM component, so this is build-only.
-      - name: Build (agent TPM backend features)
-        run: |
-          cargo clippy -p citadel-agent --features vtpm --all-targets -- -D warnings
-          cargo build -p citadel-agent --features tpm-hw
+      # Compile-check the agent's optional vTPM backend so the feature-gated code
+      # can't bit-rot (it isn't in the default build). Runtime needs a built vTPM
+      # component, so this is build-only. The `tpm-hw` feature needs tpm2-tss
+      # >= 4.1.3 (newer than the runner's libtss2-dev) — it's compile/run-checked
+      # on the equipped node instead (see docs/real-node-handoff.md).
+      - name: Clippy (agent vtpm backend feature)
+        run: cargo clippy -p citadel-agent --features vtpm --all-targets -- -D warnings
