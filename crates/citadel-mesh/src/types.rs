@@ -315,6 +315,66 @@ pub struct AttestationResult {
     /// Verifier confidence in `[0,1]`.
     pub confidence: f32,
     pub timestamp_tick: u64,
+    /// The verifier's signature over this verdict. Lets it be counted, relayed,
+    /// and audited **detached** from the signed gossip envelope it arrived in —
+    /// the basis for control-plane agreement (`monitoring-control-plane.md`).
+    /// `Signature::zero()` until signed via [`AttestationResult::signed`].
+    #[serde(default = "Signature::zero")]
+    pub signature: Signature,
+}
+
+impl AttestationResult {
+    fn signing_bytes(
+        subject: &NodeId,
+        verifier: &NodeId,
+        result: Verdict,
+        reason_codes: &[ReasonCode],
+        policy_revision: u64,
+        confidence: f32,
+        timestamp_tick: u64,
+    ) -> Vec<u8> {
+        serde_json::to_vec(&(
+            "attestation-result",
+            subject,
+            verifier,
+            result,
+            reason_codes,
+            policy_revision,
+            confidence.to_bits(),
+            timestamp_tick,
+        ))
+        .expect("serializable")
+    }
+
+    /// Sign this verdict with the verifier's keypair (the verifier is `me`).
+    pub fn signed(mut self, kp: &MeshKeypair) -> Self {
+        self.signature = kp.sign(&Self::signing_bytes(
+            &self.subject,
+            &self.verifier,
+            self.result,
+            &self.reason_codes,
+            self.policy_revision,
+            self.confidence,
+            self.timestamp_tick,
+        ));
+        self
+    }
+
+    /// Verify the verdict against the verifier's mesh public key.
+    pub fn verify_signature(&self, verifier_pub: &MeshPublicKey) -> bool {
+        verifier_pub.verify(
+            &Self::signing_bytes(
+                &self.subject,
+                &self.verifier,
+                self.result,
+                &self.reason_codes,
+                self.policy_revision,
+                self.confidence,
+                self.timestamp_tick,
+            ),
+            &self.signature,
+        )
+    }
 }
 
 /// Overall attestation verdict (design §8.4).

@@ -348,6 +348,8 @@ impl Attestor {
             policy_revision: challenge.policy_revision,
             confidence,
             timestamp_tick: tick,
+            // Unsigned here; the node signs with its keypair before gossiping.
+            signature: crate::crypto::Signature::zero(),
         }
     }
 }

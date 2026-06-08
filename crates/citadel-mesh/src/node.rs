@@ -74,6 +74,11 @@ pub struct NodeConfig {
     /// Number of witnesses assigned per subject (`0` disables witnessing —
     /// trust then comes only from a node's own direct challenges).
     pub witness_count: usize,
+    /// Observer mode (control-plane ingestion, M0): this node enrols and gossips
+    /// but is **excluded from witness assignment**, casts **no counting
+    /// verdict**, and enforces no quarantine — it only ingests and verifies the
+    /// signed traffic every node sees. Default `false`.
+    pub observer: bool,
     /// Ticks between a witness re-challenging each of its subjects.
     pub attestation_interval: u64,
     /// Ticks a newly-admitted node stays probationary (passing attestation)
@@ -142,6 +147,7 @@ impl Default for NodeConfig {
             policy_revision: 1,
             mesh_epoch: 1,
             witness_count: 3,
+            observer: false,
             attestation_interval: 4,
             probation_period: 6,
             boot_id: 1,
@@ -407,6 +413,12 @@ impl Node {
         let config_window = config.log_window_size;
         let reference_audit = EvidenceChain::new(id, mesh_id.clone());
         let app_audit = EvidenceChain::new(id, mesh_id.clone());
+        let mut membership = membership;
+        // Advertise observer-ness so peers exclude this node from witness
+        // assignment fleet-wide (M0).
+        if config.observer {
+            membership.set_my_observer();
+        }
         Node {
             mesh_id,
             id,
@@ -2062,10 +2074,17 @@ impl Node {
             GossipMessage::AttestChallenge(ch) => self.on_challenge(ch, now),
             GossipMessage::AttestEvidence(ev) => self.on_evidence(*ev, now),
             GossipMessage::AttestResult(res) => {
-                // A witness's verdict: record it and re-aggregate the
-                // subject's trust from its assigned witnesses.
-                self.record_report(res.subject, res.verifier, res.result);
-                self.aggregate_trust(res.subject);
+                // A witness's verdict: verify the verifier's signature (M1) —
+                // a forged or tampered verdict can't sway the quorum — then
+                // record it and re-aggregate the subject's trust.
+                let ok = self
+                    .membership
+                    .get(&res.verifier)
+                    .is_some_and(|m| res.verify_signature(&m.public_key));
+                if ok {
+                    self.record_report(res.subject, res.verifier, res.result);
+                    self.aggregate_trust(res.subject);
+                }
             }
             GossipMessage::LogDigest(ad) => self.on_log_digest(env.sender, ad, now),
             GossipMessage::LogRangeQuery { boot_id, lo, hi } => {
@@ -2259,15 +2278,28 @@ impl Node {
         self.record_report(ev.subject, self.id, verdict);
         self.aggregate_trust(ev.subject);
         // Gossip the signed verdict so every node aggregates the same
-        // witness quorum (design §9.1, §11.4).
-        self.broadcast(GossipMessage::AttestResult(result));
+        // witness quorum (design §9.1, §11.4). Signed by this verifier so it is
+        // verifiable detached from the envelope (M1 / control-plane agreement).
+        self.broadcast(GossipMessage::AttestResult(result.signed(&self.keypair)));
     }
 
     // -- witness duties + trust aggregation (design §10, §11) -----------
 
     /// The full set of node ids this node knows (its witness roster).
+    /// The witness roster: all known members **except observers** (M0) — so
+    /// observer/control-plane nodes are never assigned as witnesses fleet-wide.
     fn roster(&self) -> Vec<NodeId> {
-        self.membership.iter().map(|m| m.node_id).collect()
+        self.membership
+            .iter()
+            .filter(|m| !m.observer)
+            .map(|m| m.node_id)
+            .collect()
+    }
+
+    /// The node ids assigned to witness `subject` (observers excluded). Exposed
+    /// for tests / the control plane to recompute agreement.
+    pub fn witness_ids_for(&self, subject: NodeId) -> Vec<NodeId> {
+        self.witnesses_for(subject).witnesses
     }
 
     /// The witness set assigned to `subject` under the current roster/epoch.
@@ -2283,7 +2315,8 @@ impl Node {
     /// As an assigned witness, periodically (re-)challenge the alive subjects
     /// this node is responsible for.
     fn run_witness_duties(&mut self, now: u64) {
-        if self.config.witness_count == 0 {
+        // Observers cast no verdicts (M0); they only ingest peers' gossiped ones.
+        if self.config.observer || self.config.witness_count == 0 {
             return;
         }
         let roster = self.roster();

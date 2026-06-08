@@ -36,6 +36,11 @@ pub struct MemberUpdate {
     /// `None` for nodes that haven't advertised one (back-compat via serde).
     #[serde(default)]
     pub tls_cert: Option<Vec<u8>>,
+    /// Observer (control-plane) node: excluded from witness assignment
+    /// fleet-wide (M0). Gossiped so every node leaves observers out of its
+    /// witness rosters.
+    #[serde(default)]
+    pub observer: bool,
 }
 
 /// A node's view of one member.
@@ -52,6 +57,9 @@ pub struct Member {
     /// The member's TLS certificate (DER) for mutual-TLS pinning (E2), learned
     /// via gossip; `None` until advertised.
     pub tls_cert: Option<Vec<u8>>,
+    /// Whether this member is an observer (control plane) — excluded from
+    /// witness assignment (M0). Learned via gossip.
+    pub observer: bool,
 }
 
 impl Member {
@@ -62,6 +70,7 @@ impl Member {
             incarnation: self.incarnation,
             liveness: self.liveness,
             tls_cert: self.tls_cert.clone(),
+            observer: self.observer,
         }
     }
 }
@@ -110,6 +119,7 @@ impl Membership {
                 role: role.into(),
                 last_change_tick: tick,
                 tls_cert: None,
+                observer: false,
             },
         );
         Membership { me, members }
@@ -171,6 +181,7 @@ impl Membership {
                 role: role.into(),
                 last_change_tick: tick,
                 tls_cert: None,
+                observer: false,
             },
         );
         true
@@ -181,6 +192,14 @@ impl Membership {
     pub fn set_my_tls_cert(&mut self, cert: Vec<u8>) {
         if let Some(m) = self.members.get_mut(&self.me) {
             m.tls_cert = Some(cert);
+        }
+    }
+
+    /// Mark this node as an observer (control plane) — advertised via gossip so
+    /// peers exclude it from witness assignment (M0).
+    pub fn set_my_observer(&mut self) {
+        if let Some(m) = self.members.get_mut(&self.me) {
+            m.observer = true;
         }
     }
 
@@ -220,6 +239,7 @@ impl Membership {
                         role: String::new(),
                         last_change_tick: tick,
                         tls_cert: u.tls_cert.clone(),
+                        observer: u.observer,
                     },
                 );
                 true
@@ -229,6 +249,10 @@ impl Membership {
                 // precedence): adopt it the first time we see one.
                 if m.tls_cert.is_none() && u.tls_cert.is_some() {
                     m.tls_cert = u.tls_cert.clone();
+                }
+                // Observer-ness is a stable property; learn it from gossip.
+                if u.observer {
+                    m.observer = true;
                 }
                 if supersedes(u.incarnation, u.liveness, m.incarnation, m.liveness) {
                     let changed_liveness = m.liveness != u.liveness;
@@ -342,6 +366,7 @@ mod tests {
                 incarnation: 0,
                 liveness: LivenessState::Suspect,
                 tls_cert: None,
+                observer: false,
             },
             1,
         );
@@ -355,6 +380,7 @@ mod tests {
                 incarnation: 0,
                 liveness: LivenessState::Alive,
                 tls_cert: None,
+                observer: false,
             },
             2,
         );
@@ -369,6 +395,7 @@ mod tests {
                 incarnation: 1,
                 liveness: LivenessState::Alive,
                 tls_cert: None,
+                observer: false,
             },
             3,
         );
@@ -386,6 +413,7 @@ mod tests {
                 incarnation: 0,
                 liveness: LivenessState::Suspect,
                 tls_cert: None,
+                observer: false,
             },
             1,
         );
@@ -402,6 +430,7 @@ mod tests {
                 incarnation: 5,
                 liveness: LivenessState::Faulty,
                 tls_cert: None,
+                observer: false,
             },
             1,
         );

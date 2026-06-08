@@ -18,8 +18,8 @@ calendar (1 engineer). "Gating" = needs something outside the item itself.
 
 | # | Item | Track | Effort | Gating |
 |---|------|-------|--------|--------|
-| M0 | Mesh: `Node` observer mode | Mesh prereq | 2–3 d | no |
-| M1 | Mesh: self-sign `AttestationResult` | Mesh prereq | 1–2 d | no |
+| M0 | Mesh: `Node` observer mode | Mesh prereq | ✅ done | no |
+| M1 | Mesh: self-sign `AttestationResult` | Mesh prereq | ✅ done | no |
 | CP1 | Observer ingestion → verify → fleet view | Read | 1–2 wk | M0, M1 |
 | CP2 | Agreement records + drill-down (§17.4) | Read | 1 wk | CP1 |
 | CP3 | Evidence durability + reconstruction check | Read | 1–2 wk | CP1 |
