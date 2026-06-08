@@ -265,6 +265,9 @@ pub struct Node {
     /// evidence it produces so verifiers appraise what ran (C1). Set from the
     /// OS (`/sys/.../ascii_runtime_measurements`); transient (not persisted).
     staged_ima: Option<Vec<u8>>,
+    /// Verified verdicts received over gossip, buffered for a control-plane
+    /// observer to drain (CP1). Only populated in `observer` mode; transient.
+    observed_verdicts: Vec<crate::types::AttestationResult>,
     /// This node's firmware measured-boot log (raw TCG bytes), staged to ship in
     /// evidence and to verify its own `pcr_bound` app measurements (B1). Set from
     /// the OS (`/sys/.../binary_bios_measurements`); transient. When present it
@@ -445,6 +448,7 @@ impl Node {
             runtime_policy: crate::runtime::RuntimePolicy::new(),
             runtime_escalated: HashSet::new(),
             staged_ima: None,
+            observed_verdicts: Vec::new(),
             staged_event_log: None,
             app_results: HashMap::new(),
             app_audit,
@@ -1070,6 +1074,13 @@ impl Node {
     /// membership gossip so peers can pin it for mutual TLS.
     pub fn set_tls_cert(&mut self, cert: Vec<u8>) {
         self.membership.set_my_tls_cert(cert);
+    }
+
+    /// Drain the verified verdicts this (observer) node has received over gossip
+    /// since the last call — the control plane's ingestion feed (CP1). Empty on
+    /// non-observer nodes.
+    pub fn drain_observed_verdicts(&mut self) -> Vec<crate::types::AttestationResult> {
+        std::mem::take(&mut self.observed_verdicts)
     }
 
     /// The pinnable peer roster — `(node, cert DER)` for every peer whose TLS
@@ -2082,6 +2093,11 @@ impl Node {
                     .get(&res.verifier)
                     .is_some_and(|m| res.verify_signature(&m.public_key));
                 if ok {
+                    // A control-plane observer buffers the verified verdict for
+                    // the aggregator to drain (CP1).
+                    if self.config.observer {
+                        self.observed_verdicts.push(res.clone());
+                    }
                     self.record_report(res.subject, res.verifier, res.result);
                     self.aggregate_trust(res.subject);
                 }

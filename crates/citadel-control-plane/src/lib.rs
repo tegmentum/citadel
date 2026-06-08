@@ -17,6 +17,7 @@
 //! envelope-authenticated) `MemberUpdate`s and `AttestationResult`s and it
 //! verifies, stores, and aggregates.
 
+pub mod api;
 mod model;
 mod store;
 
@@ -42,6 +43,18 @@ impl<S: ControlPlaneStore> ControlPlane<S> {
 
     pub fn store(&self) -> &S {
         &self.store
+    }
+
+    /// Pull the current verified state from an observer [`Node`](citadel_mesh::node::Node)
+    /// (M0) — the live ingestion feed (CP1): every known member's facts + every
+    /// verified verdict it has buffered since the last call.
+    pub fn observe(&mut self, node: &mut citadel_mesh::node::Node, tick: u64) {
+        for m in node.membership().iter() {
+            self.ingest_member(&m.update(), tick);
+        }
+        for v in node.drain_observed_verdicts() {
+            self.ingest_verdict(&v);
+        }
     }
 
     /// Ingest a (verified-by-the-observer-envelope) membership update: record

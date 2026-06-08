@@ -10,3 +10,9 @@ citadel-mesh = { path = "../citadel-mesh" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "net"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
