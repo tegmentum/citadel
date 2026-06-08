@@ -8,6 +8,7 @@ pub mod policy;
 pub mod secure_log_signer;
 pub mod service;
 pub mod store;
+pub mod sys;
 pub mod vtpm_credential;
 
 /// Re-export the extracted `secure-log` crate so existing imports of

@@ -33,6 +33,36 @@ fn make_backend() -> Box<dyn TpmBackend> {
     Box::new(MockBackend::new())
 }
 
+/// Read this node's own measured state from securityfs and stage it into the
+/// node's evidence: the firmware measured-boot log (B1) and the IMA runtime list
+/// (C1). Both are shipped in attestation evidence and preserved in the LtHash
+/// log. Logs that are absent (no measured boot / IMA inactive) are skipped; a
+/// genuine read error (e.g. not running as root) is logged and tolerated so the
+/// agent still starts. Paths are overridable via `CITADEL_FIRMWARE_EVENT_LOG` /
+/// `CITADEL_IMA_RUNTIME_LIST` (point them at a captured fixture off a real node).
+fn stage_node_logs(node: &mut citadel_mesh::node::Node) {
+    match tpm_core::sys::read_firmware_event_log() {
+        Ok(Some(bytes)) => {
+            node.stage_event_log(&bytes);
+            match node.ingest_own_event_log(&bytes) {
+                Ok(n) => tracing::info!("staged firmware event log ({n} events)"),
+                Err(e) => tracing::warn!("firmware event log did not parse: {e}"),
+            }
+        }
+        Ok(None) => tracing::info!("no firmware measured-boot log on this node"),
+        Err(e) => tracing::warn!("reading firmware event log: {e}"),
+    }
+    match tpm_core::sys::read_ima_runtime_list() {
+        Ok(Some(ima)) => {
+            node.stage_ima(&ima);
+            let (_violations, ingested) = node.ingest_own_ima(&ima);
+            tracing::info!("staged IMA runtime list ({ingested} entries)");
+        }
+        Ok(None) => tracing::info!("no IMA runtime list on this node (IMA inactive)"),
+        Err(e) => tracing::warn!("reading IMA runtime list: {e}"),
+    }
+}
+
 /// Parse `CITADEL_PEER_CERTS` (JSON `[[seed, "hex-DER"], …]`) into the pinnable
 /// peer roster for mutual TLS — the out-of-band cert distribution for the static
 /// launcher (enrolment/gossip distributes them at runtime otherwise).
@@ -93,6 +123,10 @@ async fn main() -> anyhow::Result<()> {
 
     let (mut node, id) =
         build_node_with_backend(&mesh_id, seed, &role, config, &peers, make_backend());
+
+    // B1/C1: ship this node's real measured state (firmware log + IMA list) read
+    // from its own /sys, so its evidence carries what actually booted and ran.
+    stage_node_logs(&mut node);
 
     // E2: mint a mutual-TLS identity on this node's TPM, if the backend can
     // (the demo MockBackend can't → `None` → plain HTTP). Peers learn our cert

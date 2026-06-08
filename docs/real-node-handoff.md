@@ -51,21 +51,29 @@ built from the real bytes — same loop that hardened A1/A3.
 
 ---
 
-## Task 2 — agent ships its real logs  (small code, then run on the node)
-The mesh paths exist and are tested with *staged* logs; what's missing is the
-agent reading the node's actual `/sys` on startup. Two readers:
+## Task 2 — agent ships its real logs  ✅ (implemented; needs node validation)
+**Done.** The agent now reads the node's own `/sys` on startup and stages both
+logs into its evidence:
 
-* **C1 (IMA):** read `/sys/kernel/security/ima/ascii_runtime_measurements` →
-  `Node::stage_ima(...)` so the agent's evidence carries its real runtime list
-  (verifiers then appraise it via the witness quorum — already wired).
-* **B1 (firmware):** read `/sys/kernel/security/tpm0/binary_bios_measurements`,
-  return it from a `/sys`-backed `read_event_log`, and feed the
-  `MeasurementEvent` stream into `logship::append_event` (fills log-ship §6).
+* **`tpm_core::sys`** — `read_firmware_event_log()` /
+  `read_ima_runtime_list()` read securityfs (paths overridable via
+  `CITADEL_FIRMWARE_EVENT_LOG` / `CITADEL_IMA_RUNTIME_LIST` — point them at a
+  captured fixture to dry-run without a live `/sys`). Absent/empty → `None`.
+* **C1 (IMA):** `citadel-agent` calls `Node::stage_ima` (ships the list in
+  evidence) + `Node::ingest_own_ima` (preserves it in the LtHash log).
+* **B1 (firmware):** new `Node::stage_event_log` (ships the raw log in evidence
+  and binds this node's own `pcr_bound` app measurements against it) +
+  `Node::ingest_own_event_log` (feeds each `MeasurementEvent` into the LtHash
+  log). The agent wires both in `stage_node_logs` at startup.
 
-I can implement both (Linux-gated, ~small); they then need **node validation**:
-run two agents on the node (or two nodes), confirm one distrusts the other when
-a denylisted file is in the real IMA list, and that the firmware log ships +
-replays. Say the word and I'll write them for you to run.
+Unit + integration tests cover the readers (against the committed corpus), the
+ingest, and the staged-log binding; `crates/citadel-mesh/tests/firmware_shipping.rs`.
+
+**Remaining — node validation** (needs a real/VM node, not just CI): run two
+agents, confirm one distrusts the other when a denylisted file is in the *real*
+IMA list, and that the firmware log ships + replays against the quote. The
+`CITADEL_*` env overrides let you stage a captured corpus into a running agent
+to exercise the path end-to-end before bare metal.
 
 ---
 
