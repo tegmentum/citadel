@@ -2318,6 +2318,18 @@ impl Node {
         self.witnesses_for(subject).witnesses
     }
 
+    /// The mesh epoch — the control plane needs it to recompute witness
+    /// assignment (CP2).
+    pub fn mesh_epoch(&self) -> u64 {
+        self.config.mesh_epoch
+    }
+
+    /// Witnesses assigned per subject — the control plane needs it to recompute
+    /// assignment (CP2).
+    pub fn witness_count(&self) -> usize {
+        self.config.witness_count
+    }
+
     /// The witness set assigned to `subject` under the current roster/epoch.
     fn witnesses_for(&self, subject: NodeId) -> witness::WitnessSet {
         witness::assign(

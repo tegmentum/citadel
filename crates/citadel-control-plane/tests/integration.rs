@@ -144,3 +144,95 @@ async fn read_api_serves_health_and_nodes() {
         .unwrap();
     assert_eq!(resp.status(), 200);
 }
+
+#[test]
+fn agreement_recompute_matches_the_mesh_and_flags_dissent() {
+    use std::collections::BTreeSet;
+
+    let mut mesh = Mesh::new("prod-east-1");
+    let cfg = NodeConfig {
+        witness_count: 3,
+        attestation_interval: 3,
+        pcr_selection: vec![0, 7],
+        ..NodeConfig::default()
+    };
+    let workers: Vec<NodeId> = (1..=5)
+        .map(|s| mesh.add_node(s, "worker", cfg.clone()))
+        .collect();
+    let observer = mesh.add_node(
+        6,
+        "control-plane",
+        NodeConfig {
+            observer: true,
+            ..cfg.clone()
+        },
+    );
+    mesh.wire_full_membership();
+    mesh.run(12);
+    let bad = workers[4];
+    mesh.measured_state_change(bad, "sha256", 0, &[0xAA; 32]);
+    mesh.run(16);
+
+    let mut cp = ControlPlane::new(MemStore::new());
+    cp.observe(mesh.node_mut(observer), 28);
+
+    // The CP recomputes the SAME assigned witness set the mesh uses.
+    let bad_agreement = cp.agreement(&bad).unwrap();
+    let cp_assigned: BTreeSet<String> = bad_agreement.assigned.iter().cloned().collect();
+    let mesh_assigned: BTreeSet<String> = mesh
+        .node(observer)
+        .witness_ids_for(bad)
+        .iter()
+        .map(|w| w.to_hex())
+        .collect();
+    assert_eq!(
+        cp_assigned, mesh_assigned,
+        "CP recomputes the mesh's witness assignment"
+    );
+
+    // The tampered node has dissenters, with a reason (expected-vs-observed).
+    assert!(
+        !bad_agreement.dissenters.is_empty(),
+        "tamper produces dissenting witnesses"
+    );
+    assert!(
+        bad_agreement
+            .dissenters
+            .iter()
+            .any(|d| !d.reasons.is_empty()),
+        "dissent carries a reason code"
+    );
+    assert!(bad_agreement.agree < bad_agreement.assigned.len());
+
+    // A healthy worker: its assigned witnesses agree, none dissent.
+    let good = cp.agreement(&workers[0]).unwrap();
+    assert!(good.dissenters.is_empty(), "healthy node has no dissent");
+    assert!(
+        good.agree >= good.quorum_threshold,
+        "quorum of assigned witnesses agree"
+    );
+}
+
+#[tokio::test]
+async fn read_api_serves_agreement() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let (cp, workers, _o) = observed_mesh();
+    let app = api::router(Arc::new(Mutex::new(cp)));
+    let resp = app
+        .oneshot(
+            Request::get(format!("/v1/nodes/{}/agreement", workers[0].to_hex()))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let a: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(a["assigned"].is_array());
+    assert!(a["quorum_threshold"].is_number());
+}

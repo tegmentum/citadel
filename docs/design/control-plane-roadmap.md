@@ -21,7 +21,7 @@ calendar (1 engineer). "Gating" = needs something outside the item itself.
 | M0 | Mesh: `Node` observer mode | Mesh prereq | ✅ done | no |
 | M1 | Mesh: self-sign `AttestationResult` | Mesh prereq | ✅ done | no |
 | CP1 | Observer ingestion → verify → fleet view | Read | ✅ done | M0, M1 |
-| CP2 | Agreement records + drill-down (§17.4) | Read | 1 wk | CP1 |
+| CP2 | Agreement records + drill-down (§17.4) | Read | ✅ done | CP1 |
 | CP3 | Evidence durability + reconstruction check | Read | 1–2 wk | CP1 |
 | CP4 | Forensic timeline + audit-chain verify + change feed | Read | 1–2 wk | CP1, CP2 |
 | CP5 | Operator workflow (signed policy / quarantine) | Write | 1–2 wk | CP1; RVP, quarantine |
@@ -117,6 +117,15 @@ existing signed artifacts.
   tally, names the missing assigned witnesses, and lists dissenters; matches the
   §17.4 example shape.
 * **Effort:** 1 wk. **Gating:** CP1.
+* **Done:** `ControlPlane::agreement(subject) -> AgreementView` — **recomputes**
+  the assigned witness set with the mesh's own `witness::assign` (HRW; mesh
+  params captured by `observe`), then over the latest policy revision reports
+  `agree` / `reported` / `quorum_threshold`, the **silent** assigned witnesses
+  (no report ≠ agreement), and **dissenters** with their reason codes
+  (expected-vs-observed). `GET /v1/nodes/{id}/agreement`. Tested over a real
+  mesh: the CP's recomputed assignment **equals** the mesh's; a tampered node
+  yields dissenters with reasons and `agree < assigned`; a healthy node has a
+  quorum agreeing and no dissent.
 
 ### CP3 — evidence durability + reconstruction check  (read-only)
 * **Goal:** *prove* (not assert) that a record's evidence is reconstructable

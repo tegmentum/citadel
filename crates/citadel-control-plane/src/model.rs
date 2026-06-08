@@ -52,6 +52,35 @@ pub struct FleetHealth {
     pub mesh_health_pct: f32,
 }
 
+/// One verified verdict in an agreement record.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ReportView {
+    pub verifier: String,
+    pub verdict: String,
+    pub reasons: Vec<String>,
+}
+
+/// The agreement record for a subject (`monitoring-control-plane.md` §6.1 /
+/// §17.4) — the central object: which **recomputed assigned witnesses** report
+/// what, agree/total, who's **silent** (assigned but no report ≠ agreement),
+/// and the dissenters' reasons (expected-vs-observed). Never a bare alert.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct AgreementView {
+    pub subject: String,
+    pub policy_revision: u64,
+    /// The assigned witness set, recomputed by the CP (HRW) — not asserted.
+    pub assigned: Vec<String>,
+    pub quorum_threshold: usize,
+    /// Assigned witnesses reporting `Pass`.
+    pub agree: usize,
+    /// Assigned witnesses that reported anything (agree or dissent).
+    pub reported: usize,
+    /// Assigned witnesses with **no** report at this revision (silence).
+    pub silent: Vec<String>,
+    /// Assigned witnesses reporting a non-`Pass` verdict, with their reasons.
+    pub dissenters: Vec<ReportView>,
+}
+
 /// Map a derived [`TrustState`] into the fleet histogram.
 pub(crate) fn bump(h: &mut FleetHealth, trust: TrustState) {
     h.total += 1;
@@ -76,6 +105,16 @@ pub(crate) fn trust_str(t: TrustState) -> &'static str {
         TrustState::Isolated => "isolated",
         TrustState::Retired => "retired",
         TrustState::Unknown => "unknown",
+    }
+}
+
+pub(crate) fn verdict_str(v: citadel_mesh::types::Verdict) -> &'static str {
+    use citadel_mesh::types::Verdict;
+    match v {
+        Verdict::Pass => "pass",
+        Verdict::Warn => "warn",
+        Verdict::Fail => "fail",
+        Verdict::Inconclusive => "inconclusive",
     }
 }
 
