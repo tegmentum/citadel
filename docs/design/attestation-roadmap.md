@@ -25,8 +25,8 @@ harness cannot provide.
 | A2 | X.509 / CA-chain authority validation | Boot appraisal | ✅ done (x509-path crate) | no |
 | A3 | Structured `ArtifactIdentity` extraction from events | Boot appraisal | ✅ done | no |
 | B1 | Real event-log ingestion (vTPM `read_event_log`) | Hardware bring-up | ✅ done (vTPM) | done on vTPM; /sys+HW remain |
-| B2 | Signed reference values from a real RVP | Hardware bring-up | 1 wk | build pipeline |
-| C1 | IMA / runtime measurement (event-log Phase D) | Runtime | ◑ software done | real IMA corpus |
+| B2 | Signed reference values from a real RVP | Hardware bring-up | ✅ done (tooling) | real build pipeline |
+| C1 | IMA / runtime measurement (event-log Phase D) | Runtime | ◑ software loop done | real IMA corpus |
 | D1 | Signed quote-bound checkpoints (log-ship §9–10) | Durability | ✅ done | no |
 | D2 | On-disk persistence (log-ship §17) | Durability | ✅ done | no |
 | D3 | Erasure placement as the default replication | Durability | ✅ done | no |
