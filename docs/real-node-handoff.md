@@ -88,21 +88,37 @@ node before then.
 
 ---
 
-## Task 3 — run the agent against the node's real TPM  (code + run)
-Today `citadel-agent::main::make_backend` returns `MockBackend` (the demo).
-On the node, wire a real backend so the agent attests + does mTLS with a
-hardware-held key:
-* **hardware TPM:** a `/dev/tpm0` backend (the `tpm-hw` path); or
-* **swtpm:** `SwtpmManager` + a socket-driven backend.
+## Task 3 — run the agent against the node's real TPM  ◑ (wiring done; needs an equipped node to run)
+**Done — the wiring.** `citadel-agent::make_backend` now selects the backend from
+`CITADEL_TPM_BACKEND`, falling back to the mock (so the agent always starts):
+* `mock` (default) — the in-process demo (plain HTTP).
+* `tcti` (build `--features tpm-hw`) — a real TPM via tss-esapi. Covers **both**
+  the handoff's options through one TCTI seam: `CITADEL_TPM_TCTI=device:/dev/tpmrm0`
+  (hardware) or `swtpm:path=/run/swtpm.sock` / `swtpm:host=…,port=…` (swtpm).
+* `vtpm` (build `--features vtpm`) — the in-process libtpms vTPM:
+  `TPM_VTPM_COMPONENT=<built .component.wasm>` + `CITADEL_VTPM_STATE=<persisted file>`.
 
-Then run the existing flows against it on the node:
+A real backend signs for real → mutual TLS (E2). Validated on this dev box: the
+mock default + the `vtpm`/`tcti` selectors compile, the fallback path works at
+runtime, and the agent tolerates a real securityfs `Permission denied` (not root)
+and still starts. The `tpm-hw` build itself needs `libtss2-dev`/`tpm2-tss-devel`
+(absent here), and `vtpm` needs a built component — so the *runtime* run is the
+equipped-node step below.
+
+**Remaining — run on an equipped node** (real TPM, or swtpm + the TSS libs, or a
+built vTPM component):
 ```sh
-# with a real component/backend available:
-TPM_VTPM_COMPONENT=... cargo test -p vtpm-backend           # 10 real-TPM tests
-TPM_VTPM_COMPONENT=... cargo test -p citadel-agent --test mtls_transport
+# vTPM (in-process): build the feature, point at a built component + state file
+TPM_VTPM_COMPONENT=… cargo test -p vtpm-backend                              # real-TPM tests
+TPM_VTPM_COMPONENT=… cargo test -p citadel-agent --features vtpm --test mtls_transport
+# Deployed agent against a real/sw TPM:
+CITADEL_TPM_BACKEND=tcti CITADEL_TPM_TCTI=swtpm:path=/run/swtpm.sock \
+  cargo run -p citadel-agent --features tpm-hw   # (+ CITADEL_SEED etc.)
 ```
-and bring up two `citadel-agent` processes (see `crates/citadel-agent/src/main.rs`
-env config) to watch real attestation + mTLS gossip between them.
+Bring up two `citadel-agent` processes (see `crates/citadel-agent/src/main.rs`
+env config) to watch real attestation + mTLS gossip — and this also completes the
+**firmware-ships-and-replays** validation deferred from Task 2 (a real backend's
+quote matches its own measured state).
 
 ---
 

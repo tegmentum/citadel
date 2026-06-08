@@ -3,6 +3,10 @@
 //! real reqwest client (TPM identity, pinning the server) exchange a POST over
 //! TCP; an unpinned client is refused. Runs against the real vTPM (persisted,
 //! so it signs for real); skipped unless TPM_VTPM_COMPONENT is set.
+//!
+//! Requires the `vtpm` feature (which pulls the vtpm-backend dependency):
+//!   TPM_VTPM_COMPONENT=… cargo test -p citadel-agent --features vtpm --test mtls_transport
+#![cfg(feature = "vtpm")]
 
 use std::sync::Arc;
 use std::time::Duration;

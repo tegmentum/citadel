@@ -8,6 +8,8 @@
 //! * `CITADEL_LISTEN`    — HTTP listen address (default `127.0.0.1:7800`)
 //! * `CITADEL_TICK_MS`   — SWIM tick interval in ms (default `500`)
 //! * `CITADEL_PEERS`     — JSON `[[seed, "http://host:port"], ...]` of peers
+//! * `CITADEL_TPM_BACKEND` — `mock` (default) | `tcti` (`--features tpm-hw`) |
+//!   `vtpm` (`--features vtpm`); see [`make_backend`] for the per-backend env.
 //!
 //! Peer ids are derived from their seeds (the same seed-based identity the
 //! mesh harness uses), so the launcher can address peers without a registry.
@@ -25,12 +27,74 @@ use citadel_mesh::node::NodeConfig;
 use citadel_mesh::NodeId;
 use tpm_core::backend::{MockBackend, TpmBackend};
 
-/// Select this agent's TPM backend. The binary owns this choice (generic seam):
-/// the default is the in-process `MockBackend` (the all-mock demo, which can't
-/// sign real TLS handshakes, so the agent runs plain HTTP). A deployment swaps
-/// in a vTPM/hardware backend here to enable mutual TLS (E2).
+/// Select this agent's TPM backend (the binary owns this choice). Chosen by
+/// `CITADEL_TPM_BACKEND`:
+///   * unset / `mock` — in-process `MockBackend` (demo; can't sign real TLS, so
+///     the agent runs plain HTTP).
+///   * `tcti` — a real TPM via tss-esapi (build `--features tpm-hw`): set
+///     `CITADEL_TPM_TCTI`, e.g. `device:/dev/tpmrm0` (hardware) or
+///     `swtpm:path=/run/swtpm.sock` / `swtpm:host=127.0.0.1,port=2321` (swtpm).
+///   * `vtpm` — in-process libtpms vTPM (build `--features vtpm`): set
+///     `TPM_VTPM_COMPONENT` (a built `*.component.wasm`) and `CITADEL_VTPM_STATE`
+///     (a persisted state file — an ephemeral vTPM can't mint/sign).
+///
+/// A real backend signs for real, enabling mutual TLS (E2). A selected backend
+/// that is unavailable (feature off, missing env, init error) logs why and falls
+/// back to the mock, so the agent always starts.
 fn make_backend() -> Box<dyn TpmBackend> {
-    Box::new(MockBackend::new())
+    match std::env::var("CITADEL_TPM_BACKEND").ok().as_deref() {
+        None | Some("") | Some("mock") => Box::new(MockBackend::new()),
+        Some(kind) => make_real_backend(kind).unwrap_or_else(|e| {
+            tracing::warn!("TPM backend '{kind}' unavailable ({e}); falling back to mock");
+            Box::new(MockBackend::new())
+        }),
+    }
+}
+
+/// Build the real backend named by `kind`, or an error explaining why it is
+/// unavailable (so the caller can fall back to the mock).
+fn make_real_backend(kind: &str) -> anyhow::Result<Box<dyn TpmBackend>> {
+    match kind {
+        "tcti" => make_tcti_backend(),
+        "vtpm" => make_vtpm_backend(),
+        other => anyhow::bail!("unknown CITADEL_TPM_BACKEND '{other}' (mock|tcti|vtpm)"),
+    }
+}
+
+#[cfg(feature = "tpm-hw")]
+fn make_tcti_backend() -> anyhow::Result<Box<dyn TpmBackend>> {
+    let tcti = std::env::var("CITADEL_TPM_TCTI")
+        .map_err(|_| anyhow::anyhow!("set CITADEL_TPM_TCTI (e.g. device:/dev/tpmrm0)"))?;
+    let backend = tpm_core::backend::HardwareBackend::new_from_tcti_str(&tcti)?;
+    tracing::info!("TPM backend: tss-esapi via TCTI '{tcti}'");
+    Ok(Box::new(backend))
+}
+
+#[cfg(not(feature = "tpm-hw"))]
+fn make_tcti_backend() -> anyhow::Result<Box<dyn TpmBackend>> {
+    anyhow::bail!("the tcti backend needs a build with --features tpm-hw")
+}
+
+#[cfg(feature = "vtpm")]
+fn make_vtpm_backend() -> anyhow::Result<Box<dyn TpmBackend>> {
+    let component = std::env::var("TPM_VTPM_COMPONENT")
+        .map_err(|_| anyhow::anyhow!("set TPM_VTPM_COMPONENT to a built vTPM *.component.wasm"))?;
+    let state = std::env::var("CITADEL_VTPM_STATE").map_err(|_| {
+        anyhow::anyhow!(
+            "set CITADEL_VTPM_STATE to a persisted state file (an ephemeral vTPM can't sign)"
+        )
+    })?;
+    let backend = vtpm_backend::VtpmBackend::open(
+        std::path::Path::new(&component),
+        Some(std::path::Path::new(&state)),
+    )?;
+    tracing::info!("TPM backend: in-process vTPM (state {state})");
+    Ok(Box::new(backend))
+}
+
+#[cfg(not(feature = "vtpm"))]
+fn make_vtpm_backend() -> anyhow::Result<Box<dyn TpmBackend>> {
+    anyhow::bail!("the vtpm backend needs a build with --features vtpm")
 }
 
 /// Read this node's own measured state from securityfs (firmware log + IMA list)
