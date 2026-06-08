@@ -1,0 +1,12 @@
+[package]
+name = "citadel-control-plane"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Citadel control plane: a verifying aggregator over the attestation mesh (not a root of trust)"
+
+[dependencies]
+citadel-mesh = { path = "../citadel-mesh" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }

@@ -20,7 +20,7 @@ calendar (1 engineer). "Gating" = needs something outside the item itself.
 |---|------|-------|--------|--------|
 | M0 | Mesh: `Node` observer mode | Mesh prereq | ✅ done | no |
 | M1 | Mesh: self-sign `AttestationResult` | Mesh prereq | ✅ done | no |
-| CP1 | Observer ingestion → verify → fleet view | Read | 1–2 wk | M0, M1 |
+| CP1 | Observer ingestion → verify → fleet view | Read | ◑ store + aggregate done; observer-wiring + HTTP API remain | M0, M1 |
 | CP2 | Agreement records + drill-down (§17.4) | Read | 1 wk | CP1 |
 | CP3 | Evidence durability + reconstruction check | Read | 1–2 wk | CP1 |
 | CP4 | Forensic timeline + audit-chain verify + change feed | Read | 1–2 wk | CP1, CP2 |
@@ -90,6 +90,14 @@ existing signed artifacts.
   CP's `/v1/mesh/health` trust histogram matches the mesh's actual trust states,
   and a node going Suspicious shows up after gossip converges.
 * **Effort:** 1–2 wk. **Gating:** M0, M1.
+* **Done so far:** the `citadel-control-plane` crate with a **pluggable
+  `ControlPlaneStore`** (trait + `MemStore`; backend is a deployment choice) and
+  `ControlPlane<S>` — `ingest_member` / `ingest_verdict` (**re-verifies the M1
+  signature**, rejecting forged/unknown-verifier verdicts before they reach the
+  store), CP-**derived** trust, `node_view` / `nodes` / `fleet_health` (§17.1
+  rollup, observers excluded). Tested (store roundtrip, forged-verdict rejection,
+  fleet rollup). **Remaining for CP1:** wire an observer `Node` (M0) as the live
+  feed + the axum read API (`/v1/nodes`, `/v1/mesh/health`).
 
 ### CP2 — agreement records + drill-down  (read-only, the headline)
 * **Goal:** the central object (`monitoring-control-plane.md` §6.1 / §17.4):

@@ -605,6 +605,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "citadel-control-plane"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "citadel-mesh",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "citadel-mesh"
 version = "0.1.0"
 dependencies = [

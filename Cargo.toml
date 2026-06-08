@@ -9,6 +9,7 @@ members = [
     "crates/tpm-tls",
     "crates/citadel-mesh",
     "crates/citadel-agent",
+    "crates/citadel-control-plane",
     "crates/vtpm-backend",
 ]
 
