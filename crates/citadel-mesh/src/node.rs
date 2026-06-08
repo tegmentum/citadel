@@ -255,6 +255,10 @@ pub struct Node {
     /// Policy for appraising the IMA runtime measurement list (C1). Empty =
     /// report-only.
     runtime_policy: crate::runtime::RuntimePolicy,
+    /// This node's current IMA runtime list (ASCII), staged to ship in the
+    /// evidence it produces so verifiers appraise what ran (C1). Set from the
+    /// OS (`/sys/.../ascii_runtime_measurements`); transient (not persisted).
+    staged_ima: Option<Vec<u8>>,
     /// Nodes escalated to distrust by runtime (IMA) policy — a known-bad file
     /// executed. Sticky like [`Self::app_escalated`]: a clean platform quote
     /// must not silently clear a runtime-integrity failure.
@@ -422,6 +426,7 @@ impl Node {
             app_policy: AppPolicy::new(),
             runtime_policy: crate::runtime::RuntimePolicy::new(),
             runtime_escalated: HashSet::new(),
+            staged_ima: None,
             app_results: HashMap::new(),
             app_audit,
             app_scopes: HashMap::new(),
@@ -527,6 +532,12 @@ impl Node {
     /// Set the runtime (IMA) appraisal policy (C1). Empty = report-only.
     pub fn set_runtime_policy(&mut self, policy: crate::runtime::RuntimePolicy) {
         self.runtime_policy = policy;
+    }
+
+    /// Stage this node's current IMA runtime list (ASCII) to ship in the
+    /// evidence it produces, so verifiers appraise what ran after boot (C1).
+    pub fn stage_ima(&mut self, ima_ascii: &str) {
+        self.staged_ima = Some(ima_ascii.as_bytes().to_vec());
     }
 
     /// Appraise a subject's IMA runtime measurement list (the ASCII
@@ -2136,13 +2147,16 @@ impl Node {
         if ch.subject != self.id || now > ch.expires_at_tick {
             return;
         }
-        if let Ok(ev) = self.attestor.produce(
+        if let Ok(mut ev) = self.attestor.produce(
             &ch,
             self.config.policy_revision,
             None,
             self.endorsement.clone(),
             now,
         ) {
+            // Ship the staged IMA runtime list so the verifier appraises what
+            // ran after boot (C1).
+            ev.ima_log = self.staged_ima.clone();
             self.emit(ch.challenger, GossipMessage::AttestEvidence(Box::new(ev)));
         }
     }
@@ -2158,7 +2172,7 @@ impl Node {
         };
         let ch = self.issued_challenges.remove(pos);
         let (accepted, match_policy, retired_action) = self.appraisal_for(ev.subject);
-        let result = self.attestor.verify(
+        let mut result = self.attestor.verify(
             &ch,
             &ev,
             accepted,
@@ -2168,6 +2182,23 @@ impl Node {
             match_policy,
             retired_action,
         );
+        // C1: appraise the shipped IMA runtime list. A known-bad file that ran
+        // escalates the subject locally (sticky, via `runtime_escalated`) *and*
+        // fails the reported verdict, so the witness quorum carries the runtime
+        // failure to every node — not just the witnesses that saw the evidence.
+        if let Some(ima) = &ev.ima_log {
+            let ascii = String::from_utf8_lossy(ima).into_owned();
+            let violations = self.report_runtime(ev.subject, &ascii);
+            if violations
+                .iter()
+                .any(|v| v.reason == crate::runtime::RuntimeReason::Denied)
+            {
+                result.result = Verdict::Fail;
+                if !result.reason_codes.contains(&ReasonCode::ReferenceDenied) {
+                    result.reason_codes.push(ReasonCode::ReferenceDenied);
+                }
+            }
+        }
         let verdict = result.result;
         // Our own direct observation — provisional until (and unless) the
         // assigned-witness quorum decides otherwise in `aggregate_trust`.

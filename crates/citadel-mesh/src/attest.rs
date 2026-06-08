@@ -177,6 +177,9 @@ impl Attestor {
             // Attach the measured-boot event log so a verifier can replay it
             // against the quote (event-log-attestation.md).
             event_log: self.backend.read_event_log().unwrap_or(None),
+            // The IMA runtime log is staged by the node (read from the OS), not
+            // the TPM backend — the node attaches it after `produce` (C1).
+            ima_log: None,
         })
     }
 

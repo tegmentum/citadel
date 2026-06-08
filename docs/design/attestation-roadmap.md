@@ -190,14 +190,22 @@ harness cannot provide.
     (contrast-tested against `Strict` to prove PCR 10 *is* appraised).
   - Tests: `tests/ima_shipping.rs` (LtHash preservation; policy appraisal on
     ingest; Runtime-class skip vs. Strict-distrust contrast).
+  - **Shipped over the attestation path** (`AttestationEvidence.ima_log` +
+    `Node::stage_ima`): an attester ships its IMA list in the evidence it
+    produces; the verifying witness appraises it and, on a known-bad file,
+    **fails the reported verdict** (`REFERENCE_DENIED`) so the witness *quorum*
+    carries the runtime failure to every node — not just the witnesses that saw
+    the evidence — plus the local sticky `runtime_escalated`. Tested in
+    `runtime_escalation.rs` (`a_shipped_ima_log_distrusts_over_the_attestation_path`).
 * **Remaining (real-data only):** validate the parser against a **real** IMA
   list — needs a kernel booted with an IMA policy (e.g. `ima_policy=tcb`; a
   default cloud image emits only `boot_aggregate`), captured via the lab
-  (`docs/a1-capture-handoff.md`). Optional: periodic PCR-10 re-quote cadence and
-  shipping the attester's IMA list inside evidence (today a verifier appraises a
-  list handed to it / a node ships its own).
+  (`docs/a1-capture-handoff.md`); plus an agent-side reader of
+  `/sys/.../ascii_runtime_measurements` to feed `stage_ima`. Optional: a
+  periodic PCR-10 re-quote cadence.
 * **Seam:** `tpm_core::ima`; `citadel_mesh::runtime`; `node::report_runtime` /
-  `ingest_own_ima`; `reference::PcrClass::Runtime`; `logship`.
+  `ingest_own_ima` / `stage_ima`; `reference::PcrClass::Runtime`; `logship`;
+  `AttestationEvidence.ima_log`.
 
 ---
 

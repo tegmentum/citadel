@@ -473,6 +473,12 @@ impl Mesh {
         self.node_mut(verifier).report_runtime(subject, ima_ascii)
     }
 
+    /// Stage a node's IMA runtime list so it ships in the evidence it produces
+    /// (C1) — verifiers then appraise it over the attestation path.
+    pub fn stage_ima(&mut self, node: NodeId, ima_ascii: &str) {
+        self.node_mut(node).stage_ima(ima_ascii);
+    }
+
     /// A node reports an application measurement (appraise → record → gossip).
     /// Returns the signed result the reporter produced.
     pub fn report_app(

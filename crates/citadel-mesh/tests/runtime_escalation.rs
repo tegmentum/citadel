@@ -120,3 +120,31 @@ fn runtime_escalation_survives_a_restart() {
         "the runtime escalation is restored on restart, not silently cleared"
     );
 }
+
+#[test]
+fn a_shipped_ima_log_distrusts_over_the_attestation_path() {
+    // C1 transport: the attester ships its IMA list in the evidence it produces;
+    // assigned witnesses appraise it and a known-bad file distrusts the node —
+    // no out-of-band report_runtime call.
+    let (mut mesh, ids) = mesh_of(6);
+    mesh.run(12);
+    let bad = ids[4];
+
+    // Everyone starts trusted.
+    assert_eq!(mesh.trust_of(ids[0], bad), Some(TrustState::Trusted));
+
+    // Fleet denylist + the bad node stages a runtime list containing it.
+    mesh.set_runtime_policy_all(RuntimePolicy::new().deny("sha256", evil_hash()));
+    mesh.stage_ima(bad, &with_evil());
+    mesh.run(18);
+
+    for &o in &ids {
+        if o != bad {
+            assert_eq!(
+                mesh.trust_of(o, bad),
+                Some(TrustState::Suspicious),
+                "{o} distrusts {bad} after appraising its shipped IMA log"
+            );
+        }
+    }
+}

@@ -172,6 +172,11 @@ pub struct AttestationEvidence {
     /// when the backend has no log.
     #[serde(default)]
     pub event_log: Option<Vec<u8>>,
+    /// The node's IMA runtime measurement list (ASCII `ascii_runtime_
+    /// measurements`), so a verifier appraises what *ran* after boot, not just
+    /// what booted (C1). `None` when the node has no runtime log to ship.
+    #[serde(default)]
+    pub ima_log: Option<Vec<u8>>,
 }
 
 /// An endorsement binding a node's attestation key to a trust root: an
