@@ -26,7 +26,7 @@ harness cannot provide.
 | A3 | Structured `ArtifactIdentity` extraction from events | Boot appraisal | ✅ done | no |
 | B1 | Real event-log ingestion (vTPM `read_event_log`) | Hardware bring-up | ✅ done (vTPM) | done on vTPM; /sys+HW remain |
 | B2 | Signed reference values from a real RVP | Hardware bring-up | ✅ done (tooling) | real build pipeline |
-| C1 | IMA / runtime measurement (event-log Phase D) | Runtime | ◑ software loop done | real IMA corpus |
+| C1 | IMA / runtime measurement (event-log Phase D) | Runtime | ✅ corpus validated | agent /sys reader |
 | D1 | Signed quote-bound checkpoints (log-ship §9–10) | Durability | ✅ done | no |
 | D2 | On-disk persistence (log-ship §17) | Durability | ✅ done | no |
 | D3 | Erasure placement as the default replication | Durability | ✅ done | no |
@@ -162,7 +162,13 @@ harness cannot provide.
 
 ## Track C — runtime measurement (new domain)
 
-### C1 — IMA / runtime (event-log Phase D) — ◑ parser + policy built; real corpus + shipping pending
+### C1 — IMA / runtime (event-log Phase D) — ✅ corpus validated; agent `/sys` reader remains
+*Validated against a real kernel list: `tpm-core/tests/fixtures/ima/ubuntu-24.04-tcb-amd64.ascii`
+— 3619 `ima-ng`/sha256 entries (PCR 10), captured under `ima_policy=tcb`. The
+parser handles them with 0 skips (incl. SHA-1 template hashes alongside sha256
+file hashes); `RuntimePolicy` flags a denied real file (`/init`) with no false
+positives across all 3619. Remaining: an agent-side reader of
+`/sys/.../ascii_runtime_measurements` feeding `Node::stage_ima`.*
 * **Goal:** attest measurements that happen *after* boot — file/exec integrity
   via Linux IMA (PCR 10), ongoing rather than one-shot.
 * **Built:**
