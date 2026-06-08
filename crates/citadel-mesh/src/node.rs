@@ -259,6 +259,12 @@ pub struct Node {
     /// evidence it produces so verifiers appraise what ran (C1). Set from the
     /// OS (`/sys/.../ascii_runtime_measurements`); transient (not persisted).
     staged_ima: Option<Vec<u8>>,
+    /// This node's firmware measured-boot log (raw TCG bytes), staged to ship in
+    /// evidence and to verify its own `pcr_bound` app measurements (B1). Set from
+    /// the OS (`/sys/.../binary_bios_measurements`); transient. When present it
+    /// overrides the backend's synthesized log — a real node ships exactly what
+    /// its firmware measured.
+    staged_event_log: Option<Vec<u8>>,
     /// Nodes escalated to distrust by runtime (IMA) policy — a known-bad file
     /// executed. Sticky like [`Self::app_escalated`]: a clean platform quote
     /// must not silently clear a runtime-integrity failure.
@@ -427,6 +433,7 @@ impl Node {
             runtime_policy: crate::runtime::RuntimePolicy::new(),
             runtime_escalated: HashSet::new(),
             staged_ima: None,
+            staged_event_log: None,
             app_results: HashMap::new(),
             app_audit,
             app_scopes: HashMap::new(),
@@ -540,6 +547,15 @@ impl Node {
         self.staged_ima = Some(ima_ascii.as_bytes().to_vec());
     }
 
+    /// Stage this node's firmware measured-boot log (raw TCG
+    /// `binary_bios_measurements` bytes) to ship in the evidence it produces, so
+    /// a verifier replays it against the quote (B1). It also becomes the log this
+    /// node verifies its own `pcr_bound` app measurements against. Read from the
+    /// OS (`/sys/.../binary_bios_measurements`); transient.
+    pub fn stage_event_log(&mut self, event_log: &[u8]) {
+        self.staged_event_log = Some(event_log.to_vec());
+    }
+
     /// Appraise a subject's IMA runtime measurement list (the ASCII
     /// `ascii_runtime_measurements`) against the runtime policy and act on it
     /// (C1). Returns the violating files. A **denied** (known-bad) file that
@@ -577,12 +593,13 @@ impl Node {
         if !measurement.pcr_bound {
             return measurement.clone();
         }
-        let bound = self
-            .attestor
-            .backend()
-            .read_event_log()
-            .ok()
-            .flatten()
+        // Prefer the firmware log this node staged from its own /sys (B1) — what
+        // its firmware actually measured — falling back to the backend's log.
+        let log_bytes = match &self.staged_event_log {
+            Some(bytes) => Some(bytes.clone()),
+            None => self.attestor.backend().read_event_log().ok().flatten(),
+        };
+        let bound = log_bytes
             .and_then(|bytes| BootEventLog::from_bytes(&bytes).ok())
             .is_some_and(|log| {
                 log.contains_measurement(IMA_PCR, &measurement.digest, &self.config.pcr_bank)
@@ -1100,6 +1117,35 @@ impl Node {
         }
         let violations = self.runtime_policy.appraise(&log);
         (violations, log.entries.len())
+    }
+
+    /// Ingest this node's own firmware measured-boot log (B1): preserve every
+    /// measured-boot event in the LtHash log — so firmware evidence is shipped,
+    /// reconciled, and held across the mesh exactly like the IMA list and boot
+    /// quote — parsing the raw TCG `binary_bios_measurements` (or the Citadel
+    /// JSON form). Returns the number of events ingested. Pairs with
+    /// [`Self::stage_event_log`], which ships the raw log in evidence.
+    pub fn ingest_own_event_log(&mut self, event_log: &[u8]) -> anyhow::Result<usize> {
+        let log = BootEventLog::from_bytes(event_log)?;
+        let bank = self.config.pcr_bank.clone();
+        for ev in &log.events {
+            // A canonical per-event element binding the PCR, TCG event type, and
+            // the measured digest for this bank — stable across nodes for
+            // reconciliation (the digest is the PCR-bound part of the event).
+            let mut buf = Vec::new();
+            buf.extend_from_slice(&ev.pcr.to_le_bytes());
+            buf.extend_from_slice(&ev.tcg_type().unwrap_or(0).to_le_bytes());
+            if let Some(digest) = ev.measured_digest(&bank) {
+                buf.extend_from_slice(digest);
+            }
+            let element = tpm_core::backend::hash_for_bank("sha256", &buf).unwrap_or_default();
+            if element.len() >= 32 {
+                let mut payload = [0u8; 32];
+                payload.copy_from_slice(&element[..32]);
+                self.append_event(payload);
+            }
+        }
+        Ok(log.events.len())
     }
 
     /// Overwrite an existing event's payload — models a node *forking its own
@@ -2157,6 +2203,12 @@ impl Node {
             // Ship the staged IMA runtime list so the verifier appraises what
             // ran after boot (C1).
             ev.ima_log = self.staged_ima.clone();
+            // Ship the node's real firmware measured-boot log if staged from its
+            // own /sys (B1), so the verifier replays exactly what its firmware
+            // measured rather than the backend's synthesized log.
+            if self.staged_event_log.is_some() {
+                ev.event_log = self.staged_event_log.clone();
+            }
             self.emit(ch.challenger, GossipMessage::AttestEvidence(Box::new(ev)));
         }
     }
