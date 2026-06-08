@@ -21,8 +21,15 @@ pub mod api;
 mod model;
 mod store;
 
-pub use model::{AgreementView, FleetHealth, NodeRecord, NodeView, ReportView};
+pub use model::{
+    AgreementView, DurabilityRecord, EvidenceDurabilityView, FleetHealth, NodeRecord, NodeView,
+    ReportView,
+};
 pub use store::{ControlPlaneStore, MemStore};
+
+fn hex32(b: &[u8; 32]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
 
 use std::collections::HashMap;
 
@@ -73,6 +80,47 @@ impl<S: ControlPlaneStore> ControlPlane<S> {
         for v in node.drain_observed_verdicts() {
             self.ingest_verdict(&v);
         }
+    }
+
+    /// Poll a node's evidence durability (CP3) — its own view of how many
+    /// holders returned a verified receipt per sealed record. Durability is
+    /// owner-centric (receipts flow owner↔holder, not by broadcast), so this is
+    /// a per-node pull, not the gossip observer feed.
+    pub fn poll_durability(&mut self, node: &citadel_mesh::node::Node) {
+        self.store
+            .upsert_durability(node.id(), node.evidence_durability());
+    }
+
+    /// A node's evidence-durability view (§17.3): each record is
+    /// `reconstructable` only when ≥ threshold holders acknowledged.
+    pub fn evidence_view(&self, owner: &NodeId) -> Option<EvidenceDurabilityView> {
+        let _ = self.store.get_node(owner)?;
+        let records: Vec<DurabilityRecord> = self
+            .store
+            .durability(owner)
+            .into_iter()
+            .map(|d| DurabilityRecord {
+                record_id: hex32(&d.record_id),
+                threshold: d.threshold,
+                total: d.total,
+                holders_acked: d.holders_acked,
+                reconstructable: d.holders_acked >= d.threshold,
+            })
+            .collect();
+        let records_total = records.len();
+        let records_durable = records.iter().filter(|r| r.reconstructable).count();
+        let durability_pct = if records_total == 0 {
+            100.0
+        } else {
+            records_durable as f32 * 100.0 / records_total as f32
+        };
+        Some(EvidenceDurabilityView {
+            node: owner.to_hex(),
+            records,
+            records_total,
+            records_durable,
+            durability_pct,
+        })
     }
 
     /// The roster the mesh assigns witnesses over: known non-observer members.
@@ -270,20 +318,33 @@ impl<S: ControlPlaneStore> ControlPlane<S> {
             .collect()
     }
 
-    /// Fleet rollup (§17.1) over non-observer nodes' derived trust.
+    /// Fleet rollup (§17.1) over non-observer nodes' derived trust + evidence
+    /// durability.
     pub fn fleet_health(&self) -> FleetHealth {
         let mut h = FleetHealth::default();
+        let (mut records_total, mut records_durable) = (0usize, 0usize);
         for n in self.store.all_nodes() {
             if n.observer {
                 continue;
             }
             let (trust, _, _) = self.derived_trust(&n.id);
             model::bump(&mut h, trust);
+            for d in self.store.durability(&n.id) {
+                records_total += 1;
+                if d.holders_acked >= d.threshold {
+                    records_durable += 1;
+                }
+            }
         }
         h.mesh_health_pct = if h.total == 0 {
             100.0
         } else {
             h.trusted as f32 * 100.0 / h.total as f32
+        };
+        h.evidence_durability_pct = if records_total == 0 {
+            100.0
+        } else {
+            records_durable as f32 * 100.0 / records_total as f32
         };
         h
     }
@@ -365,6 +426,55 @@ mod tests {
         forged.verifier = NodeId(real.public().fingerprint());
         assert!(!cp.ingest_verdict(&forged), "forged verdict rejected");
         assert!(cp.store().verdicts_for(&subject).is_empty());
+    }
+
+    #[test]
+    fn durability_needs_threshold_holders_to_be_reconstructable() {
+        use citadel_mesh::evidence::EvidenceDurability;
+        let mut cp = ControlPlane::new(MemStore::new());
+        let owner_kp = MeshKeypair::from_seed([1; 32]);
+        let owner = NodeId(owner_kp.public().fingerprint());
+        cp.ingest_member(&member(&owner_kp, false), 1);
+
+        // 2 of 3 required → NOT reconstructable; 3 of 3 → reconstructable.
+        cp.store.upsert_durability(
+            owner,
+            vec![
+                EvidenceDurability {
+                    record_id: [1; 32],
+                    threshold: 3,
+                    total: 5,
+                    holders_acked: 2,
+                },
+                EvidenceDurability {
+                    record_id: [2; 32],
+                    threshold: 3,
+                    total: 5,
+                    holders_acked: 3,
+                },
+            ],
+        );
+        let v = cp.evidence_view(&owner).unwrap();
+        assert_eq!(v.records_total, 2);
+        assert_eq!(
+            v.records_durable, 1,
+            "only the record with ≥ threshold acks is durable"
+        );
+        assert!(
+            !v.records
+                .iter()
+                .find(|r| r.holders_acked == 2)
+                .unwrap()
+                .reconstructable
+        );
+        assert!(
+            v.records
+                .iter()
+                .find(|r| r.holders_acked == 3)
+                .unwrap()
+                .reconstructable
+        );
+        assert!((v.durability_pct - 50.0).abs() < 0.01);
     }
 
     #[test]

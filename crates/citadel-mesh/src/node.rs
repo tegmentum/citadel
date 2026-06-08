@@ -1112,6 +1112,23 @@ impl Node {
         self.own_log.root()
     }
 
+    /// This node's view of how durable its sealed evidence is (CP3): per placed
+    /// window, the erasure threshold/total and how many holders have returned a
+    /// **signature-verified** receipt (the `acked` set; receipts are verified in
+    /// `on_fragment_ack` before they count). The control plane polls this to
+    /// prove reconstructability per record.
+    pub fn evidence_durability(&self) -> Vec<crate::evidence::EvidenceDurability> {
+        self.shipped_windows
+            .values()
+            .map(|sw| crate::evidence::EvidenceDurability {
+                record_id: sw.record_id,
+                threshold: sw.scheme.data,
+                total: sw.scheme.total(),
+                holders_acked: sw.acked.len(),
+            })
+            .collect()
+    }
+
     /// Ingest this node's **own** IMA runtime measurement list (C1): preserve
     /// every measured file in the LtHash log — so runtime evidence is shipped,
     /// reconciled, and held across the mesh exactly like boot evidence — and

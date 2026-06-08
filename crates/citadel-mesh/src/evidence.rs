@@ -491,3 +491,16 @@ mod tests {
         assert_ne!(a, c);
     }
 }
+
+/// A record owner's view of how durable its sealed evidence is: of `total`
+/// erasure fragments, `holders_acked` distinct holders have returned a
+/// **signature-verified** receipt, and any `threshold` of them reconstruct the
+/// record. `holders_acked >= threshold` ⇒ reconstructable. Exposed for the
+/// control plane to report evidence durability (CP3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvidenceDurability {
+    pub record_id: [u8; 32],
+    pub threshold: usize,
+    pub total: usize,
+    pub holders_acked: usize,
+}

@@ -22,7 +22,7 @@ calendar (1 engineer). "Gating" = needs something outside the item itself.
 | M1 | Mesh: self-sign `AttestationResult` | Mesh prereq | ✅ done | no |
 | CP1 | Observer ingestion → verify → fleet view | Read | ✅ done | M0, M1 |
 | CP2 | Agreement records + drill-down (§17.4) | Read | ✅ done | CP1 |
-| CP3 | Evidence durability + reconstruction check | Read | 1–2 wk | CP1 |
+| CP3 | Evidence durability + reconstruction check | Read | ✅ done | CP1 |
 | CP4 | Forensic timeline + audit-chain verify + change feed | Read | 1–2 wk | CP1, CP2 |
 | CP5 | Operator workflow (signed policy / quarantine) | Write | 1–2 wk | CP1; RVP, quarantine |
 | CP6 | Web dashboard SPA (all §16.3 views) | UI | 3–5 wk | CP1–CP5 view API |
@@ -139,6 +139,7 @@ existing signed artifacts.
 * **Test:** with k-of-n fragments present the view says PASS + reconstructs;
   drop below threshold → it reports the shortfall, not a false PASS.
 * **Effort:** 1–2 wk. **Gating:** CP1.
+* **Done:** owner-centric durability — `Node::evidence_durability()` exposes per sealed window the erasure `threshold`/`total` + how many holders returned a **signature-verified** receipt (`acked`, verified in `on_fragment_ack`); `ControlPlane::poll_durability(node)` pulls it (receipts flow owner↔holder, so this is a per-node poll, not the observer feed), `evidence_view` marks each record `reconstructable` iff `holders_acked >= threshold`, and `fleet_health` rolls up `evidence_durability_pct` (§17.1). `GET /v1/nodes/{id}/evidence`. Tested: a real seal+ship mesh proves a 3-of-5 record reconstructable from holder receipts; a sub-threshold record is **not** durable (no false PASS).
 
 ### CP4 — forensic timeline + audit verification + change feed  (read-only)
 * **Goal:** "what changed", per subject, every entry linked to the signed

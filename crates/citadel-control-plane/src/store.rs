@@ -8,6 +8,7 @@
 //! (so a backend can never be the thing that decides what's trustworthy) and
 //! derives rollups on the way out.
 
+use citadel_mesh::evidence::EvidenceDurability;
 use citadel_mesh::types::AttestationResult;
 use citadel_mesh::NodeId;
 
@@ -27,6 +28,10 @@ pub trait ControlPlaneStore: Send + Sync {
     fn append_verdict(&mut self, verdict: AttestationResult);
     /// All verified verdicts recorded about `subject`, in arrival order.
     fn verdicts_for(&self, subject: &NodeId) -> Vec<AttestationResult>;
+    /// Replace a node's evidence-durability records (latest poll wins).
+    fn upsert_durability(&mut self, owner: NodeId, records: Vec<EvidenceDurability>);
+    /// A node's last-polled evidence-durability records.
+    fn durability(&self, owner: &NodeId) -> Vec<EvidenceDurability>;
 }
 
 /// In-memory store — the default backend (tests, small fleets, the read-replica
@@ -35,6 +40,7 @@ pub trait ControlPlaneStore: Send + Sync {
 pub struct MemStore {
     nodes: std::collections::HashMap<NodeId, NodeRecord>,
     verdicts: std::collections::HashMap<NodeId, Vec<AttestationResult>>,
+    durability: std::collections::HashMap<NodeId, Vec<EvidenceDurability>>,
 }
 
 impl MemStore {
@@ -61,5 +67,11 @@ impl ControlPlaneStore for MemStore {
     }
     fn verdicts_for(&self, subject: &NodeId) -> Vec<AttestationResult> {
         self.verdicts.get(subject).cloned().unwrap_or_default()
+    }
+    fn upsert_durability(&mut self, owner: NodeId, records: Vec<EvidenceDurability>) {
+        self.durability.insert(owner, records);
+    }
+    fn durability(&self, owner: &NodeId) -> Vec<EvidenceDurability> {
+        self.durability.get(owner).cloned().unwrap_or_default()
     }
 }

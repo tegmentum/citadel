@@ -11,7 +11,9 @@ use axum::routing::get;
 use axum::{Json, Router};
 use citadel_mesh::NodeId;
 
-use crate::{AgreementView, ControlPlane, ControlPlaneStore, FleetHealth, NodeView};
+use crate::{
+    AgreementView, ControlPlane, ControlPlaneStore, EvidenceDurabilityView, FleetHealth, NodeView,
+};
 
 /// A shared, lockable control plane to serve from. The lock is held only for
 /// the synchronous read; no `.await` happens under it.
@@ -24,6 +26,7 @@ pub fn router<S: ControlPlaneStore + 'static>(cp: Shared<S>) -> Router {
         .route("/v1/nodes", get(nodes::<S>))
         .route("/v1/nodes/{id}", get(node::<S>))
         .route("/v1/nodes/{id}/agreement", get(agreement::<S>))
+        .route("/v1/nodes/{id}/evidence", get(evidence::<S>))
         .with_state(cp)
 }
 
@@ -57,6 +60,18 @@ async fn agreement<S: ControlPlaneStore + 'static>(
     cp.lock()
         .unwrap()
         .agreement(&nid)
+        .map(Json)
+        .ok_or(StatusCode::NOT_FOUND)
+}
+
+async fn evidence<S: ControlPlaneStore + 'static>(
+    State(cp): State<Shared<S>>,
+    Path(id): Path<String>,
+) -> Result<Json<EvidenceDurabilityView>, StatusCode> {
+    let nid = NodeId::from_hex(&id).ok_or(StatusCode::BAD_REQUEST)?;
+    cp.lock()
+        .unwrap()
+        .evidence_view(&nid)
         .map(Json)
         .ok_or(StatusCode::NOT_FOUND)
 }

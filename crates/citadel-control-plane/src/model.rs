@@ -50,6 +50,9 @@ pub struct FleetHealth {
     pub unknown: usize,
     /// Percentage of (non-observer) nodes currently `Trusted`.
     pub mesh_health_pct: f32,
+    /// Percentage of evidence records across the fleet that are reconstructable
+    /// (§17.1 "Evidence durability"). `100` when no evidence has been polled.
+    pub evidence_durability_pct: f32,
 }
 
 /// One verified verdict in an agreement record.
@@ -79,6 +82,29 @@ pub struct AgreementView {
     pub silent: Vec<String>,
     /// Assigned witnesses reporting a non-`Pass` verdict, with their reasons.
     pub dissenters: Vec<ReportView>,
+}
+
+/// One evidence record's durability (§17.3): of `total` erasure fragments,
+/// `holders_acked` distinct holders returned a verified receipt; `reconstructable`
+/// iff that meets the `threshold`.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct DurabilityRecord {
+    pub record_id: String,
+    pub threshold: usize,
+    pub total: usize,
+    pub holders_acked: usize,
+    pub reconstructable: bool,
+}
+
+/// A node's evidence durability (§17.3) — proven, not asserted: each record is
+/// `reconstructable` only when ≥ threshold holders returned a verified receipt.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct EvidenceDurabilityView {
+    pub node: String,
+    pub records: Vec<DurabilityRecord>,
+    pub records_total: usize,
+    pub records_durable: usize,
+    pub durability_pct: f32,
 }
 
 /// Map a derived [`TrustState`] into the fleet histogram.

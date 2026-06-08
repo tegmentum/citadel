@@ -236,3 +236,107 @@ async fn read_api_serves_agreement() {
     assert!(a["assigned"].is_array());
     assert!(a["quorum_threshold"].is_number());
 }
+
+#[test]
+fn evidence_durability_is_proven_from_holder_receipts() {
+    use citadel_mesh::evidence::payload_hash;
+
+    let mut mesh = Mesh::new("prod-east-1");
+    let cfg = NodeConfig {
+        witness_count: 3,
+        attestation_interval: 3,
+        log_window_size: 8,
+        evidence_replication: true,
+        evidence_data_shards: 3,
+        evidence_parity_shards: 2,
+        ..NodeConfig::default()
+    };
+    let workers: Vec<NodeId> = (1..=5)
+        .map(|s| mesh.add_node(s, "worker", cfg.clone()))
+        .collect();
+    let observer = mesh.add_node(
+        6,
+        "control-plane",
+        NodeConfig {
+            observer: true,
+            ..cfg.clone()
+        },
+    );
+    mesh.wire_full_membership();
+
+    // Seal + ship a window on one worker; holders return signed receipts.
+    let origin = workers[0];
+    for i in 0..12u64 {
+        mesh.node_mut(origin)
+            .append_event(payload_hash(format!("event-{i}").as_bytes()));
+    }
+    mesh.run(20);
+
+    let mut cp = ControlPlane::new(MemStore::new());
+    cp.observe(mesh.node_mut(observer), 20);
+    cp.poll_durability(mesh.node(origin));
+
+    let v = cp.evidence_view(&origin).unwrap();
+    assert!(v.records_total >= 1, "the sealed window is tracked");
+    let r = &v.records[0];
+    assert_eq!(r.threshold, 3, "3 data shards");
+    assert_eq!(r.total, 5, "3+2 = 5 fragments");
+    assert!(r.holders_acked >= 3, "≥ threshold holders acknowledged");
+    assert!(r.reconstructable, "≥ threshold acks → reconstructable");
+    assert!((v.durability_pct - 100.0).abs() < 0.01);
+    assert!((cp.fleet_health().evidence_durability_pct - 100.0).abs() < 0.01);
+}
+
+#[tokio::test]
+async fn read_api_serves_evidence() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use citadel_mesh::evidence::payload_hash;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let mut mesh = Mesh::new("prod-east-1");
+    let cfg = NodeConfig {
+        log_window_size: 8,
+        evidence_replication: true,
+        evidence_data_shards: 3,
+        evidence_parity_shards: 2,
+        ..NodeConfig::default()
+    };
+    let workers: Vec<NodeId> = (1..=5)
+        .map(|s| mesh.add_node(s, "worker", cfg.clone()))
+        .collect();
+    let observer = mesh.add_node(
+        6,
+        "control-plane",
+        NodeConfig {
+            observer: true,
+            ..cfg.clone()
+        },
+    );
+    mesh.wire_full_membership();
+    let origin = workers[0];
+    for i in 0..12u64 {
+        mesh.node_mut(origin)
+            .append_event(payload_hash(format!("e-{i}").as_bytes()));
+    }
+    mesh.run(20);
+    let mut cp = ControlPlane::new(MemStore::new());
+    cp.observe(mesh.node_mut(observer), 20);
+    cp.poll_durability(mesh.node(origin));
+
+    let app = api::router(Arc::new(Mutex::new(cp)));
+    let resp = app
+        .oneshot(
+            Request::get(format!("/v1/nodes/{}/evidence", origin.to_hex()))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let e: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(e["records"].is_array());
+    assert!(e["records_total"].as_u64().unwrap() >= 1);
+}
