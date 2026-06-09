@@ -687,6 +687,23 @@ impl<S: ControlPlaneStore> ControlPlane<S> {
         (trust, pass, total)
     }
 
+    /// Aggregate verified-verdict counts across all subjects `(pass, fail, warn)`
+    /// — the basis for the attestation success/failure metrics (OBS2). Counts the
+    /// verdicts the CP has verified and stored.
+    pub fn verdict_totals(&self) -> (u64, u64, u64) {
+        let (mut pass, mut fail, mut warn) = (0u64, 0u64, 0u64);
+        for n in self.store.all_nodes() {
+            for v in self.store.verdicts_for(&n.id) {
+                match v.result {
+                    Verdict::Pass => pass += 1,
+                    Verdict::Fail => fail += 1,
+                    _ => warn += 1,
+                }
+            }
+        }
+        (pass, fail, warn)
+    }
+
     /// This node's verified mesh state for SPIFFE selector derivation (SP4): the
     /// trust level, the witness agreement behind it, and the appraised IMA policy
     /// revision — all from the verified verdicts, never node-asserted.

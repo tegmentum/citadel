@@ -750,6 +750,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "citadel-metrics-exporter"
+version = "0.1.0"
+dependencies = [
+ "citadel-control-plane",
+ "citadel-mesh",
+ "citadel-otel-schema",
+]
+
+[[package]]
 name = "citadel-mss"
 version = "0.1.0"
 dependencies = [
@@ -763,6 +772,13 @@ dependencies = [
  "sharks",
  "tpm-core",
  "vsss-rs",
+]
+
+[[package]]
+name = "citadel-otel-schema"
+version = "0.1.0"
+dependencies = [
+ "citadel-mesh",
 ]
 
 [[package]]

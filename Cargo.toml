@@ -12,6 +12,8 @@ members = [
     "crates/citadel-control-plane",
     "crates/citadel-mss",
     "crates/citadel-spiffe",
+    "crates/citadel-otel-schema",
+    "crates/citadel-metrics-exporter",
     "crates/citadel-spire-plugin",
     "crates/citadel-spire-controller",
     "crates/citadel-trust-sync",
