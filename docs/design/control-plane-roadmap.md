@@ -27,7 +27,7 @@ calendar (1 engineer). "Gating" = needs something outside the item itself.
 | M2 | Mesh: gossip-wire quarantine (proposal/vote/operator-approval) | Mesh prereq | ✅ done | no |
 | CP5 | Operator workflow (signed policy + quarantine) | Write | ✅ done | CP1; RVP, quarantine, M2 |
 | CP6 | Web dashboard SPA (agreement-first) | UI | ✅ done (dependency-free SPA) | CP1–CP5 view API |
-| CP7 | Scale / HA (sharded observers, replica API) | Scale | 2–3 wk | CP1–CP5 |
+| CP7 | Scale / HA (sharded observers, rollup, retention) | Scale | ✅ done (sharding + rollup + retention; load-rig benchmark remains) | CP1–CP5 |
 
 The first useful product is **M0 + M1 + CP1 + CP2** — a verifiable fleet view
 with the agreement-first node drill-down, read-only, ~3–4 weeks.
@@ -250,6 +250,22 @@ existing signed artifacts.
 * **Test:** a synthetic 10k-node verdict stream sustains ingestion within budget;
   losing an observer shard self-heals via anti-entropy.
 * **Effort:** 2–3 wk. **Gating:** CP1–CP5.
+* **Done (scale-out):** **HRW observer sharding** (`shard.rs`) — a subject's
+  history is owned by the top-`replication` shards by the same rendezvous hashing
+  the mesh uses for witnesses; `ControlPlane::set_shard`/`set_shards` +
+  `responsible_for` gate verdict/event/durability ingestion (membership stays
+  replicated to every shard for keys + roster). Tested: ownership is balanced and
+  removing a shard reassigns only its subjects; two shards partition a live
+  mesh's subject space with no overlap and full coverage; a surviving shard takes
+  over a lost shard's subjects. **Steady-state rollup** (`rollup_verdicts`)
+  compacts each subject's verdict history keeping full fidelity for transitions
+  (first/last/changes per verifier) — derived trust + agreement unchanged.
+  **Retention** (`retain_events`) prunes old timeline events; the audit chain is
+  never pruned. **Load smoke:** 600 subjects × 4 verifiers ingest + aggregate
+  correctly. Store ops `replace_verdicts`/`prune_events` added to all three
+  backends. **Remaining:** the scaled read API is just stateless `api::router`
+  replicas over a shared `PgStore` (deployment); a true 10k-node benchmark is a
+  load-rig task, not a unit test.
 * **Done (durable store backends):** the `ControlPlaneStore` trait now has two
   durable impls beside `MemStore`. **`RedbStore`** — embedded, pure-Rust ACID KV
   ([redb]); default-built + tested (round-trips the verified facts, survives a

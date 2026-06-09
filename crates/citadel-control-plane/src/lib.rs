@@ -21,6 +21,7 @@ pub mod api;
 mod model;
 pub mod operator;
 mod redb_store;
+pub mod shard;
 mod store;
 
 #[cfg(feature = "postgres-store")]
@@ -39,6 +40,29 @@ pub use store::{ControlPlaneStore, MemStore};
 
 fn hex32(b: &[u8; 32]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// Compact a subject's verdicts (CP7 rollup): per verifier, keep the first, the
+/// last, and every verdict whose result differs from the previous — collapsing
+/// runs of identical ballots while preserving transitions and the current value.
+fn compact_verdicts(verdicts: Vec<AttestationResult>) -> Vec<AttestationResult> {
+    let mut by_verifier: std::collections::BTreeMap<NodeId, Vec<AttestationResult>> =
+        std::collections::BTreeMap::new();
+    for v in verdicts {
+        by_verifier.entry(v.verifier).or_default().push(v);
+    }
+    let mut out = Vec::new();
+    for (_, mut group) in by_verifier {
+        group.sort_by_key(|v| v.timestamp_tick);
+        let n = group.len();
+        for i in 0..n {
+            let keep = i == 0 || i == n - 1 || group[i].result != group[i - 1].result;
+            if keep {
+                out.push(group[i].clone());
+            }
+        }
+    }
+    out
 }
 
 fn from_hex32(s: &str) -> [u8; 32] {
@@ -81,6 +105,9 @@ pub struct ControlPlane<S: ControlPlaneStore> {
     /// Latest mesh tick the CP has observed — stamped onto operator audit
     /// entries created by the (tick-less) HTTP path.
     last_tick: u64,
+    /// Shard identity for CP7 sharding: `(me, shards, replication)`. `None` = a
+    /// single CP that owns the whole subject space.
+    shard: Option<(shard::ShardId, Vec<shard::ShardId>, usize)>,
 }
 
 impl<S: ControlPlaneStore> ControlPlane<S> {
@@ -93,6 +120,37 @@ impl<S: ControlPlaneStore> ControlPlane<S> {
             pending_manifests: Vec::new(),
             pending_quarantine_approvals: Vec::new(),
             last_tick: 0,
+            shard: None,
+        }
+    }
+
+    /// Make this a CP7 shard: it ingests verdict/event/durability history only
+    /// for subjects it owns under HRW (`shard::owns`), partitioning the subject
+    /// space across shards. Membership is still ingested for every node (keys +
+    /// roster). `replication` > 1 keeps hot-standby replicas.
+    pub fn set_shard(
+        &mut self,
+        me: shard::ShardId,
+        shards: Vec<shard::ShardId>,
+        replication: usize,
+    ) {
+        self.shard = Some((me, shards, replication));
+    }
+
+    /// Update the shard set (e.g. after a shard joins or is lost) — the survivor
+    /// expands to cover the departed shard's subjects on the next ingest, and
+    /// backfills them from the shared store (CP7 self-heal).
+    pub fn set_shards(&mut self, shards: Vec<shard::ShardId>) {
+        if let Some((_, s, _)) = &mut self.shard {
+            *s = shards;
+        }
+    }
+
+    /// Whether this shard owns `subject` (always true for an un-sharded CP).
+    pub fn responsible_for(&self, subject: &NodeId) -> bool {
+        match &self.shard {
+            None => true,
+            Some((me, shards, replication)) => shard::owns(*me, *subject, shards, *replication),
         }
     }
 
@@ -296,6 +354,9 @@ impl<S: ControlPlaneStore> ControlPlane<S> {
     /// owner-centric (receipts flow owner↔holder, not by broadcast), so this is
     /// a per-node pull, not the gossip observer feed.
     pub fn poll_durability(&mut self, node: &citadel_mesh::node::Node) {
+        if !self.responsible_for(&node.id()) {
+            return; // another shard owns this subject's evidence
+        }
         self.store
             .upsert_durability(node.id(), node.evidence_durability());
     }
@@ -330,6 +391,32 @@ impl<S: ControlPlaneStore> ControlPlane<S> {
             records_durable,
             durability_pct,
         })
+    }
+
+    /// Steady-state rollup (CP7): compact each subject's verdict history,
+    /// keeping **full fidelity for transitions** — per verifier, the first and
+    /// last verdict plus every one whose result differs from the previous — and
+    /// collapsing runs of identical ballots. The latest verdict per verifier is
+    /// always kept, so derived trust and agreement are unchanged; only redundant
+    /// steady-state repeats are dropped. Returns the number of verdicts removed.
+    pub fn rollup_verdicts(&mut self) -> usize {
+        let mut removed = 0;
+        for n in self.store.all_nodes() {
+            let cur = self.store.verdicts_for(&n.id);
+            let before = cur.len();
+            let compacted = compact_verdicts(cur);
+            if compacted.len() < before {
+                removed += before - compacted.len();
+                self.store.replace_verdicts(&n.id, compacted);
+            }
+        }
+        removed
+    }
+
+    /// Retention (CP7): drop timeline events older than `keep_from_tick`. The
+    /// operator audit chain is immutable and never pruned.
+    pub fn retain_events(&mut self, keep_from_tick: u64) {
+        self.store.prune_events(keep_from_tick);
     }
 
     /// The roster the mesh assigns witnesses over: known non-observer members.
@@ -480,6 +567,10 @@ impl<S: ControlPlaneStore> ControlPlane<S> {
     /// rejected (`false`) and never stored — so the CP's agreement can't be
     /// forged. Returns whether the verdict was accepted.
     pub fn ingest_verdict(&mut self, v: &AttestationResult) -> bool {
+        // CP7 sharding: a shard only ingests history for subjects it owns.
+        if !self.responsible_for(&v.subject) {
+            return false;
+        }
         let Some(verifier) = self.store.get_node(&v.verifier) else {
             return false; // verifier not (yet) known — can't authenticate it
         };

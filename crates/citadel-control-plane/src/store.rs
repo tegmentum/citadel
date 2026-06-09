@@ -29,6 +29,10 @@ pub trait ControlPlaneStore: Send + Sync {
     fn append_verdict(&mut self, verdict: AttestationResult);
     /// All verified verdicts recorded about `subject`, in arrival order.
     fn verdicts_for(&self, subject: &NodeId) -> Vec<AttestationResult>;
+    /// Replace a subject's verdict history (CP7 steady-state rollup compaction).
+    fn replace_verdicts(&mut self, subject: &NodeId, verdicts: Vec<AttestationResult>);
+    /// Drop timeline events older than `before_tick` (CP7 retention).
+    fn prune_events(&mut self, before_tick: u64);
     /// Replace a node's evidence-durability records (latest poll wins).
     fn upsert_durability(&mut self, owner: NodeId, records: Vec<EvidenceDurability>);
     /// A node's last-polled evidence-durability records.
@@ -80,6 +84,16 @@ impl ControlPlaneStore for MemStore {
     }
     fn verdicts_for(&self, subject: &NodeId) -> Vec<AttestationResult> {
         self.verdicts.get(subject).cloned().unwrap_or_default()
+    }
+    fn replace_verdicts(&mut self, subject: &NodeId, verdicts: Vec<AttestationResult>) {
+        if verdicts.is_empty() {
+            self.verdicts.remove(subject);
+        } else {
+            self.verdicts.insert(*subject, verdicts);
+        }
+    }
+    fn prune_events(&mut self, before_tick: u64) {
+        self.events.retain(|e| e.tick >= before_tick);
     }
     fn upsert_durability(&mut self, owner: NodeId, records: Vec<EvidenceDurability>) {
         self.durability.insert(owner, records);

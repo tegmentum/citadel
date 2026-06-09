@@ -114,6 +114,29 @@ impl ControlPlaneStore for RedbStore {
         self.get_bytes(VERDICTS, subject.0.as_slice())
             .unwrap_or_default()
     }
+    fn replace_verdicts(&mut self, subject: &NodeId, verdicts: Vec<AttestationResult>) {
+        let bytes = enc(&verdicts);
+        self.put_bytes(VERDICTS, subject.0.as_slice(), &bytes);
+    }
+    fn prune_events(&mut self, before_tick: u64) {
+        let w = self.db.begin_write().expect("redb write");
+        {
+            let mut t = w.open_table(EVENTS).expect("redb table");
+            let remove: Vec<u64> = t
+                .iter()
+                .expect("redb iter")
+                .filter_map(|row| {
+                    let (k, v) = row.expect("redb row");
+                    let e: TimelineEvent = dec(v.value());
+                    (e.tick < before_tick).then_some(k.value())
+                })
+                .collect();
+            for k in remove {
+                t.remove(k).expect("redb remove");
+            }
+        }
+        w.commit().expect("redb commit");
+    }
     fn upsert_durability(&mut self, owner: NodeId, records: Vec<EvidenceDurability>) {
         let bytes = enc(&records);
         self.put_bytes(DURABILITY, owner.0.as_slice(), &bytes);

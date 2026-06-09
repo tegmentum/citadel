@@ -114,6 +114,29 @@ impl ControlPlaneStore for PgStore {
             &[&&subject.0[..]],
         )
     }
+    fn replace_verdicts(&mut self, subject: &NodeId, verdicts: Vec<AttestationResult>) {
+        let mut c = self.client.lock().unwrap();
+        let mut tx = c.transaction().expect("pg tx");
+        tx.execute(
+            "DELETE FROM verdicts WHERE subject = $1",
+            &[&&subject.0[..]],
+        )
+        .expect("pg delete");
+        for v in &verdicts {
+            tx.execute(
+                "INSERT INTO verdicts (subject, data) VALUES ($1, $2)",
+                &[&&subject.0[..], &enc(v)],
+            )
+            .expect("pg insert");
+        }
+        tx.commit().expect("pg commit");
+    }
+    fn prune_events(&mut self, before_tick: u64) {
+        self.exec(
+            "DELETE FROM events WHERE tick < $1",
+            &[&(before_tick as i64)],
+        );
+    }
     fn upsert_durability(&mut self, owner: NodeId, records: Vec<EvidenceDurability>) {
         self.exec(
             "INSERT INTO durability (owner, data) VALUES ($1, $2)
