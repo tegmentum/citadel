@@ -1,0 +1,18 @@
+[package]
+name = "citadel-trust-sync"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Citadel trust synchronizer: continuously push mesh trust into SPIRE (SP4)"
+
+[dependencies]
+citadel-spire-controller = { path = "../citadel-spire-controller" }
+citadel-spiffe = { path = "../citadel-spiffe" }
+citadel-mesh = { path = "../citadel-mesh" }
+tonic = "0.12"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net"] }
