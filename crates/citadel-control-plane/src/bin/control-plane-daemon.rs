@@ -1,23 +1,28 @@
 //! The combined CP7 observer-ingestion daemon: runs a non-voting **observer
-//! node** in the mesh (over the agent's HTTP transport), feeds its verified
-//! gossip into a [`ControlPlane`], and serves the dashboard + API — one process
-//! that both ingests and serves. Requires the `daemon` feature.
+//! node** in the mesh (over the agent's HTTP / mutual-TLS transport, with the
+//! agent's TPM backend), feeds its verified gossip into a [`ControlPlane`], and
+//! serves the dashboard + API — one process that both ingests and serves.
+//! Requires the `daemon` feature.
 //!
-//! Config (env): `CITADEL_MESH` (mesh id), `CITADEL_SEED` (this observer's seed),
-//! `CITADEL_PEERS` (JSON `[[seed,"url"],…]`), `CITADEL_MESH_LISTEN` (inbound
-//! gossip, default `0.0.0.0:8090`), `CITADEL_CP_ADDR` (dashboard/API, default
-//! `0.0.0.0:8088`), `CITADEL_WITNESS_COUNT`, `CITADEL_TICK_MS`, plus the store +
-//! shard vars from `control-plane` (see `docs/deploy/control-plane.md`). This
-//! shell uses the mock backend + plain HTTP; a production deploy wires the same
-//! TPM backend + mutual-TLS the agent uses.
+//! Config (env): `CITADEL_MESH`, `CITADEL_SEED`, `CITADEL_PEERS`
+//! (`[[seed,"url"],…]`), `CITADEL_MESH_LISTEN` (inbound gossip, default
+//! `0.0.0.0:8090`), `CITADEL_CP_ADDR` (dashboard/API, default `0.0.0.0:8088`),
+//! `CITADEL_WITNESS_COUNT`, `CITADEL_TICK_MS`; the TPM backend
+//! (`CITADEL_TPM_BACKEND` + `CITADEL_PEER_CERTS` for mutual TLS) is selected
+//! exactly as for `citadel-agent`; plus the store + shard vars (see
+//! `docs/deploy/control-plane.md`). With a real backend + peer certs the observer
+//! runs mutual TLS; otherwise plain HTTP with the mock backend.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use citadel_agent::http::{router, HttpTransport};
-use citadel_agent::{build_node, peer_id, peer_public_key, spawn_node, AgentHandle};
+use citadel_agent::http::{mtls_client, router, serve_mtls, HttpTransport};
+use citadel_agent::{
+    build_node_with_backend, make_backend, mint_tls_identity, parse_peer_certs, peer_id,
+    peer_public_key, spawn_node, AgentHandle, Transport,
+};
 use citadel_control_plane::daemon::run_observer_daemon;
 use citadel_control_plane::shard::ShardId;
 use citadel_control_plane::{api, ControlPlane, ControlPlaneStore, MemStore, RedbStore};
@@ -77,7 +82,7 @@ async fn main() -> anyhow::Result<()> {
     let epoch = 1u64;
     let seed: u8 = env_or("CITADEL_SEED", "9").parse()?;
     let peers_cfg: Vec<(u8, String)> = serde_json::from_str(&env_or("CITADEL_PEERS", "[]"))?;
-    let mesh_listen = env_or("CITADEL_MESH_LISTEN", "0.0.0.0:8090");
+    let mesh_addr: SocketAddr = env_or("CITADEL_MESH_LISTEN", "0.0.0.0:8090").parse()?;
     let cp_addr: SocketAddr = env_or("CITADEL_CP_ADDR", "0.0.0.0:8088").parse()?;
     let witness_count = env_or("CITADEL_WITNESS_COUNT", "3").parse().unwrap_or(3);
     let tick_ms = env_or("CITADEL_TICK_MS", "200").parse().unwrap_or(200);
@@ -97,17 +102,53 @@ async fn main() -> anyhow::Result<()> {
         .map(|(s, url)| (peer_id(&mesh_id, epoch, *s), url.clone()))
         .collect();
 
-    let (node, _id) = build_node(&mesh_id, seed, "control-plane", config, &peers);
-    let transport = Arc::new(HttpTransport::new(url_map));
+    // The observer node, with the agent's selected TPM backend, joining the mesh
+    // exactly like a worker but non-voting (it ships no evidence of its own).
+    let (mut node, id) = build_node_with_backend(
+        &mesh_id,
+        seed,
+        "control-plane",
+        config,
+        &peers,
+        make_backend(),
+    );
+
+    // Mutual TLS (E2) when a real backend can mint a cert + peers are pinned.
+    let tls_identity = mint_tls_identity(&mut node, &id.to_string());
+    let peer_certs = parse_peer_certs(&mesh_id, epoch);
+    let mtls = tls_identity.filter(|_| !peer_certs.is_empty());
+
+    let transport: Arc<dyn Transport> = match &mtls {
+        Some(identity) => {
+            println!("citadel control-plane daemon: mutual-TLS observer on {mesh_addr}");
+            Arc::new(HttpTransport::with_client(
+                url_map,
+                mtls_client(identity, peer_certs.clone())?,
+            ))
+        }
+        None => {
+            println!("citadel control-plane daemon: plain-HTTP observer on {mesh_addr}");
+            Arc::new(HttpTransport::new(url_map))
+        }
+    };
     let observer = spawn_node(node, transport, Duration::from_millis(tick_ms));
 
-    // Peers reach the observer's gossip endpoint here.
+    // Serve the observer's inbound gossip endpoint (peers reach it here).
     let gossip_app = router(observer.clone());
-    let mesh_listener = tokio::net::TcpListener::bind(&mesh_listen).await?;
-    tokio::spawn(async move {
-        let _ = axum::serve(mesh_listener, gossip_app).await;
-    });
-    println!("citadel control-plane daemon: observer node gossip on http://{mesh_listen}");
+    match mtls {
+        Some(identity) => {
+            let pc = peer_certs.clone();
+            tokio::spawn(async move {
+                let _ = serve_mtls(gossip_app, mesh_addr, &identity, pc).await;
+            });
+        }
+        None => {
+            let listener = tokio::net::TcpListener::bind(mesh_addr).await?;
+            tokio::spawn(async move {
+                let _ = axum::serve(listener, gossip_app).await;
+            });
+        }
+    }
 
     match env_or("CITADEL_CP_STORE", "mem").as_str() {
         "mem" => run(MemStore::new(), cp_addr, observer).await,

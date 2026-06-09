@@ -24,6 +24,9 @@ postgres-store = ["dep:postgres"]
 # The combined observer-ingestion daemon (CP7): runs an observer node via
 # citadel-agent and feeds its verified gossip into the control plane.
 daemon = ["dep:citadel-agent"]
+# Real TPM backends for the daemon's observer node (forward to citadel-agent).
+daemon-tpm-hw = ["daemon", "citadel-agent/tpm-hw"]
+daemon-vtpm = ["daemon", "citadel-agent/vtpm"]
 
 [[bin]]
 name = "control-plane-daemon"

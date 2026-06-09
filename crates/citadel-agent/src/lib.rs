@@ -487,3 +487,80 @@ pub fn mint_tls_identity(node: &mut Node, common_name: &str) -> Option<tpm_tls::
 pub fn peer_public_key(seed: u8) -> citadel_mesh::crypto::MeshPublicKey {
     MeshKeypair::from_seed([seed; 32]).public()
 }
+
+/// Select this node's TPM backend from `CITADEL_TPM_BACKEND`
+/// (`mock` | `tcti` | `vtpm`), falling back to the in-process mock if a real
+/// backend is unavailable. Shared by the agent and the control-plane daemon.
+pub fn make_backend() -> Box<dyn TpmBackend> {
+    match std::env::var("CITADEL_TPM_BACKEND").ok().as_deref() {
+        None | Some("") | Some("mock") => Box::new(MockBackend::new()),
+        Some(kind) => make_real_backend(kind).unwrap_or_else(|e| {
+            tracing::warn!("TPM backend '{kind}' unavailable ({e}); falling back to mock");
+            Box::new(MockBackend::new())
+        }),
+    }
+}
+
+/// Build the real backend named by `kind`, or an error explaining why it is
+/// unavailable (so the caller can fall back to the mock).
+fn make_real_backend(kind: &str) -> anyhow::Result<Box<dyn TpmBackend>> {
+    match kind {
+        "tcti" => make_tcti_backend(),
+        "vtpm" => make_vtpm_backend(),
+        other => anyhow::bail!("unknown CITADEL_TPM_BACKEND '{other}' (mock|tcti|vtpm)"),
+    }
+}
+
+#[cfg(feature = "tpm-hw")]
+fn make_tcti_backend() -> anyhow::Result<Box<dyn TpmBackend>> {
+    let tcti = std::env::var("CITADEL_TPM_TCTI")
+        .map_err(|_| anyhow::anyhow!("set CITADEL_TPM_TCTI (e.g. device:/dev/tpmrm0)"))?;
+    let backend = tpm_core::backend::HardwareBackend::new_from_tcti_str(&tcti)?;
+    tracing::info!("TPM backend: tss-esapi via TCTI '{tcti}'");
+    Ok(Box::new(backend))
+}
+
+#[cfg(not(feature = "tpm-hw"))]
+fn make_tcti_backend() -> anyhow::Result<Box<dyn TpmBackend>> {
+    anyhow::bail!("the tcti backend needs a build with --features tpm-hw")
+}
+
+#[cfg(feature = "vtpm")]
+fn make_vtpm_backend() -> anyhow::Result<Box<dyn TpmBackend>> {
+    let component = std::env::var("TPM_VTPM_COMPONENT")
+        .map_err(|_| anyhow::anyhow!("set TPM_VTPM_COMPONENT to a built vTPM *.component.wasm"))?;
+    let state = std::env::var("CITADEL_VTPM_STATE").map_err(|_| {
+        anyhow::anyhow!(
+            "set CITADEL_VTPM_STATE to a persisted state file (an ephemeral vTPM can't sign)"
+        )
+    })?;
+    let backend = vtpm_backend::VtpmBackend::open(
+        std::path::Path::new(&component),
+        Some(std::path::Path::new(&state)),
+    )?;
+    tracing::info!("TPM backend: in-process vTPM (state {state})");
+    Ok(Box::new(backend))
+}
+
+#[cfg(not(feature = "vtpm"))]
+fn make_vtpm_backend() -> anyhow::Result<Box<dyn TpmBackend>> {
+    anyhow::bail!("the vtpm backend needs a build with --features vtpm")
+}
+
+/// Parse peer mutual-TLS certificates from `CITADEL_PEER_CERTS`
+/// (JSON `[[seed,"<DER hex>"],…]`) for pinning. Shared by the agent + daemon.
+pub fn parse_peer_certs(mesh_id: &MeshId, epoch: u64) -> Vec<tpm_tls::CertificateDer<'static>> {
+    let raw = std::env::var("CITADEL_PEER_CERTS").unwrap_or_else(|_| "[]".into());
+    let entries: Vec<(u8, String)> = serde_json::from_str(&raw).unwrap_or_default();
+    entries
+        .iter()
+        .filter_map(|(seed, hex)| {
+            let _ = peer_id(mesh_id, epoch, *seed); // validate addressable
+            let der = (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok())
+                .collect::<Option<Vec<u8>>>()?;
+            Some(tpm_tls::CertificateDer::from(der))
+        })
+        .collect()
+}

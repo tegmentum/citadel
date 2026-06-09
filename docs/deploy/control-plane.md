@@ -124,10 +124,13 @@ control-plane-daemon
 
 The daemon path (observer agent → `observer_feed` → `ingest_observer_feed` →
 fleet view) is covered by `tests/cp7_daemon.rs` over the in-process actor
-transport. The shipped binary uses the mock backend + plain HTTP; a production
-deploy wires the same TPM backend (`CITADEL_TPM_BACKEND`) + mutual-TLS
-(`serve_mtls`/`mtls_client`) the agent uses, and registers operator keys via
-`cp.authorize_operator`.
+transport. The binary selects the **same TPM backend** as `citadel-agent`
+(`CITADEL_TPM_BACKEND` = `mock`/`tcti`/`vtpm`; build with `--features daemon`,
+or `daemon-tpm-hw` / `daemon-vtpm` for a real backend) and runs **mutual TLS**
+automatically when a real backend can mint a cert and `CITADEL_PEER_CERTS` pins
+peers (otherwise plain HTTP with the mock backend, for demos). The dashboard/API
+port stays plain behind an auth proxy. Register operator keys via
+`cp.authorize_operator` (or a future config endpoint) to accept writes.
 
 ## Maintenance jobs
 

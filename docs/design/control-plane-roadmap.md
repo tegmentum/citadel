@@ -278,8 +278,12 @@ existing signed artifacts.
   observer node + gossip endpoint + CP API + ingestion loop in one process.
   Tested over the in-process actor transport (`tests/cp7_daemon.rs`): a live
   observer agent's feed converges the CP's fleet view to the mesh's trust. The
-  shipped binary uses the mock backend + plain HTTP; production wires the agent's
-  TPM backend + mutual-TLS.
+  binary is **production-wired**: it selects the agent's TPM backend
+  (`make_backend`, features `daemon-tpm-hw`/`daemon-vtpm`) and runs **mutual TLS**
+  (`serve_mtls`/`mtls_client`) when a real backend + pinned peer certs are present
+  (`make_backend`/`parse_peer_certs` lifted into the agent lib, shared with the
+  agent binary). Runtime-smoke-verified end to end (dashboard + API + observer
+  gossip endpoint serve).
 * **Done (durable store backends):** the `ControlPlaneStore` trait now has two
   durable impls beside `MemStore`. **`RedbStore`** — embedded, pure-Rust ACID KV
   ([redb]); default-built + tested (round-trips the verified facts, survives a
