@@ -557,7 +557,7 @@ mod tests {
         for (_, s) in &sealed {
             let bytes = backend.unseal(s).unwrap();
             let share: threshold::Share = serde_json::from_slice(&bytes).unwrap();
-            assert_ne!(share.ys, secret.to_vec());
+            assert_ne!(share.bytes, secret.to_vec());
         }
 
         // Any 3 holders reconstruct it; 2 do not.

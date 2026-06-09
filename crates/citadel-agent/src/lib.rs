@@ -53,6 +53,8 @@ enum Cmd {
     TrustOf(NodeId, oneshot::Sender<Option<String>>),
     ObserverFeed(oneshot::Sender<ObserverFeed>),
     RelayQuarantineApproval(Box<OperatorQuarantineApproval>),
+    BroadcastApp([u8; 32], Vec<u8>),
+    DrainApp([u8; 32], oneshot::Sender<Vec<Vec<u8>>>),
 }
 
 /// One pull of an observer node's verified state for the control plane (CP7
@@ -116,6 +118,22 @@ impl AgentHandle {
             rx.await.unwrap_or_default()
         } else {
             ObserverFeed::default()
+        }
+    }
+
+    /// Broadcast an app-layer relay message on `topic` (e.g. an MSS threshold-
+    /// signing round message), opaque to the mesh.
+    pub async fn broadcast_app(&self, topic: [u8; 32], payload: Vec<u8>) {
+        let _ = self.cmd.send(Cmd::BroadcastApp(topic, payload)).await;
+    }
+
+    /// Drain the app-relay payloads received on `topic` since the last call.
+    pub async fn drain_app(&self, topic: [u8; 32]) -> Vec<Vec<u8>> {
+        let (tx, rx) = oneshot::channel();
+        if self.cmd.send(Cmd::DrainApp(topic, tx)).await.is_ok() {
+            rx.await.unwrap_or_default()
+        } else {
+            Vec::new()
         }
     }
 
@@ -292,6 +310,13 @@ pub fn spawn_node(
                 Cmd::RelayQuarantineApproval(approval) => {
                     node.relay_quarantine_approval(*approval);
                     drain_outbox(&mut node, &transport);
+                }
+                Cmd::BroadcastApp(topic, payload) => {
+                    node.broadcast_app(topic, payload);
+                    drain_outbox(&mut node, &transport);
+                }
+                Cmd::DrainApp(topic, reply) => {
+                    let _ = reply.send(node.drain_app(topic));
                 }
             }
         }

@@ -39,3 +39,4 @@ vtpm-backend = { path = "../vtpm-backend", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+citadel-mss = { path = "../citadel-mss" }
