@@ -16,7 +16,7 @@
 use citadel_mesh::crypto::MeshPublicKey;
 use citadel_mesh::id::Epoch;
 use citadel_mesh::{witness, NodeId};
-use tpm_core::backend::{SealedData, TpmBackend};
+use tpm_core::backend::{KeyHandle, SealedData, TpmBackend};
 
 pub use citadel_mesh::release::{ReleaseAuthorization, ReleaseRequest, ReleaseVote};
 
@@ -99,11 +99,53 @@ pub fn open(
     backend.unseal(&secret.sealed)
 }
 
+// -- Real-TPM binding (roadmap S0) ------------------------------------------
+//
+// The application-layer `open` above checks the mesh quorum then plain-unseals;
+// a misbehaving node could bypass it by calling `backend.unseal` directly. The
+// functions below bind release to the **TPM**: the secret is sealed under its
+// policy digest, and the TPM unseals only with an authority approval over that
+// policy (S0's `unseal_authorized`). The authority is the mesh's release
+// authority — a single key here (the MVP); distributing it across the quorum
+// without any node holding it is threshold mode (MSS6).
+
+/// As the release authority, approve a secret's policy (after the mesh quorum
+/// authorizes) — produces the approval the TPM requires to unseal. `policy_ref`
+/// binds freshness (e.g. the request nonce), so an approval is single-use.
+pub fn approve_release(
+    backend: &dyn TpmBackend,
+    authority: &KeyHandle,
+    secret: &MeshSealedSecret,
+    policy_ref: &[u8],
+) -> anyhow::Result<Vec<u8>> {
+    backend.approve_policy(authority, &policy_digest(&secret.policy), policy_ref)
+}
+
+/// Open a secret via the TPM's authority-approved unseal (S0): the TPM refuses
+/// unless the blob was sealed under this policy **and** the authority signed the
+/// approval — so holding the blob is not enough; a live approval is required.
+pub fn open_authorized(
+    backend: &dyn TpmBackend,
+    secret: &MeshSealedSecret,
+    authority_pub: &[u8],
+    policy_ref: &[u8],
+    approval_sig: &[u8],
+) -> anyhow::Result<Vec<u8>> {
+    backend.unseal_authorized(
+        &secret.sealed,
+        authority_pub,
+        &policy_digest(&secret.policy),
+        policy_ref,
+        approval_sig,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use citadel_mesh::crypto::MeshKeypair;
     use tpm_core::backend::MockBackend;
+    use tpm_core::model::{Algorithm, ObjectPath};
 
     fn id(n: u8) -> NodeId {
         NodeId(MeshKeypair::from_seed([n; 32]).public().fingerprint())
@@ -252,5 +294,33 @@ mod tests {
             "only genuine eligible approvals count"
         );
         assert!(open(&backend, &secret, &auth, &eligible).is_err());
+    }
+
+    #[test]
+    fn tpm_enforces_the_authority_approval_on_unseal() {
+        let backend = MockBackend::new();
+        let (_, _, policy) = fixture();
+        let secret = seal(&backend, b"db-prod-password", policy).unwrap();
+        let nonce = b"request-nonce";
+
+        // The release authority (gated by the mesh quorum) approves the policy.
+        let authority = backend
+            .create_key(
+                Algorithm::EccP256,
+                &ObjectPath::new("mss/release-authority").unwrap(),
+            )
+            .unwrap();
+        let approval = approve_release(&backend, &authority, &secret, nonce).unwrap();
+
+        // With the approval the TPM unseals; holding the blob alone does not.
+        assert_eq!(
+            open_authorized(&backend, &secret, &authority.id, nonce, &approval).unwrap(),
+            b"db-prod-password"
+        );
+        assert!(open_authorized(&backend, &secret, &authority.id, nonce, b"forged").is_err());
+        // The approval is nonce-bound: it doesn't open under a different nonce.
+        assert!(
+            open_authorized(&backend, &secret, &authority.id, b"other-nonce", &approval).is_err()
+        );
     }
 }

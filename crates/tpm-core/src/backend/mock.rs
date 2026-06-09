@@ -252,6 +252,30 @@ impl TpmBackend for MockBackend {
         Ok(sealed.blob.iter().map(|b| b ^ 0xAA).collect())
     }
 
+    fn unseal_authorized(
+        &self,
+        sealed: &SealedData,
+        authority_pub: &[u8],
+        approved_policy: &[u8],
+        policy_ref: &[u8],
+        approval_sig: &[u8],
+    ) -> anyhow::Result<Vec<u8>> {
+        // The blob must have been sealed under the approved policy.
+        if sealed.policy_digest.as_deref() != Some(approved_policy) {
+            anyhow::bail!("sealed policy does not match the approved policy");
+        }
+        // The authority must have signed the approval.
+        let ahash = approval_ahash(approved_policy, policy_ref);
+        let authority = KeyHandle {
+            id: authority_pub.to_vec(),
+            path: String::new(),
+        };
+        if !self.verify_signature(&authority, &ahash, approval_sig)? {
+            anyhow::bail!("approval signature does not verify");
+        }
+        self.unseal(sealed)
+    }
+
     fn pcr_read(&self, bank: &str, indices: &[u32]) -> anyhow::Result<Vec<PcrValue>> {
         let pcrs = self.pcrs.lock().unwrap();
         Ok(indices
@@ -538,6 +562,42 @@ mod tests {
 
     fn d(byte: u8) -> Vec<u8> {
         vec![byte; 32]
+    }
+
+    #[test]
+    fn unseal_authorized_requires_the_authority_approval() {
+        use crate::model::{Algorithm, ObjectPath};
+        let tpm = MockBackend::new();
+        let policy = d(0x5e); // the secret's release policy digest
+        let policy_ref = b"nonce-abc";
+        let sealed = tpm.seal(b"db-prod-password", Some(&policy)).unwrap();
+
+        // The release authority approves this policy.
+        let authority = tpm
+            .create_key(
+                Algorithm::EccP256,
+                &ObjectPath::new("mss/authority").unwrap(),
+            )
+            .unwrap();
+        let approval = tpm.approve_policy(&authority, &policy, policy_ref).unwrap();
+
+        // With the approval, the blob unseals.
+        assert_eq!(
+            tpm.unseal_authorized(&sealed, &authority.id, &policy, policy_ref, &approval)
+                .unwrap(),
+            b"db-prod-password"
+        );
+
+        // A wrong/missing approval is refused...
+        assert!(tpm
+            .unseal_authorized(&sealed, &authority.id, &policy, policy_ref, b"forged")
+            .is_err());
+        // ...as is an approval over a different policy than the blob was sealed under.
+        let other = d(0x99);
+        let approval2 = tpm.approve_policy(&authority, &other, policy_ref).unwrap();
+        assert!(tpm
+            .unseal_authorized(&sealed, &authority.id, &other, policy_ref, &approval2)
+            .is_err());
     }
 
     #[test]

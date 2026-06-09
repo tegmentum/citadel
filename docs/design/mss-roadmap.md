@@ -102,7 +102,7 @@ earned over the existing probation window (reuse `promotion`).
 
 | # | Item | Track | Effort | Gating |
 |---|------|-------|--------|--------|
-| S0 | tpm-core: `unseal_authorized` (quorum PolicyAuthorize for sealing) | TPM prereq | 2–3 d | no |
+| S0 | tpm-core: `unseal_authorized` (PolicyAuthorize for sealing) | TPM prereq | ✅ done (mock; hardware via tss-esapi later) | no |
 | MSS1 | Secret authority + release protocol | Core | ✅ done (mock-backed; real-TPM bind = S0) | — |
 | MSS2 | Leases + revocation | Core | ✅ done | MSS1 |
 | MSS3 | Gossip-wire the release protocol into `Node` | Mesh | ✅ done | MSS1 |

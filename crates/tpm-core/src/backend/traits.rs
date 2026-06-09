@@ -130,6 +130,23 @@ pub trait TpmBackend: Send + Sync {
     /// Unseal previously sealed data.
     fn unseal(&self, sealed: &SealedData) -> anyhow::Result<Vec<u8>>;
 
+    /// Unseal under an **authority-approved policy** (the Mesh-Sealed-Secrets
+    /// binding, `mss-roadmap.md` S0): the blob must have been sealed under
+    /// `approved_policy`, and the authority must have signed
+    /// `H(approved_policy ‖ policy_ref)`. The TPM refuses to unseal otherwise —
+    /// so a node that physically holds the blob still can't open it without a
+    /// live authority approval (a mesh quorum). Default: not supported.
+    fn unseal_authorized(
+        &self,
+        _sealed: &SealedData,
+        _authority_pub: &[u8],
+        _approved_policy: &[u8],
+        _policy_ref: &[u8],
+        _approval_sig: &[u8],
+    ) -> anyhow::Result<Vec<u8>> {
+        anyhow::bail!("policy-authorize is not supported by this backend")
+    }
+
     /// Read PCR values for the given bank and indices.
     fn pcr_read(&self, bank: &str, indices: &[u32]) -> anyhow::Result<Vec<PcrValue>>;
 
