@@ -51,15 +51,19 @@ client cert) on the project's rustls/aws-lc provider, and advertises the base64
 `tests/go_plugin_automtls.rs`, which emulates the go-plugin host: it presents a
 client cert, reads the advertised server cert, connects over mTLS, and Attests.
 
-## Honest integration boundary
+## The attestation pair — both halves built
 
-One piece remains for a *full* live attestation flow:
+A SPIRE NodeAttestor is a *pair*. Both are here:
 
-- **Agent-side plugin.** A SPIRE NodeAttestor is a *pair*: the agent produces the
-  attestation payload, the server (this plugin) verifies it. A matching
-  agent-side plugin (or reuse of an existing attestor's payload) completes
-  end-to-end node attestation. The server plugin + trust gate + AutoMTLS are built
-  here.
+- **Server** (`src/main.rs`, `citadel-spire-plugin`): verifies the payload against
+  mesh trust, returns the identity + selectors only when Verified.
+- **Agent** (`src/bin/agent_plugin.rs`, `citadel-spire-agent-plugin`): emits this
+  node's payload (`CITADEL_NODE_ID`). Config in `deploy/agent.conf`.
+
+`tests/attestation_pair.rs` runs both: the agent emits the payload, the server
+verifies it and issues `spiffe://citadel.local/node/<id>` for a Verified node.
+With AutoMTLS + both plugins, only a live SPIRE server/agent deployment (the SP5
+hardware demo) remains.
 
 The trust source is a `TrustView`: a JSON file (`CITADEL_TRUST_FILE`) for
 standalone/demo runs; production points it at the control plane.

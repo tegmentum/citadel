@@ -12,6 +12,10 @@ path = "src/lib.rs"
 name = "citadel-spire-plugin"
 path = "src/main.rs"
 
+[[bin]]
+name = "citadel-spire-agent-plugin"
+path = "src/bin/agent_plugin.rs"
+
 [dependencies]
 citadel-spiffe = { path = "../citadel-spiffe" }
 citadel-mesh = { path = "../citadel-mesh" }

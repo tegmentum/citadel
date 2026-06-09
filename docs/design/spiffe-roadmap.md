@@ -46,7 +46,7 @@ earned." This roadmap records the design calls and the phased build.
 | Phase | Component | Scope | Status |
 |-------|-----------|-------|--------|
 | SP1 | `citadel-spiffe` | SPIFFE IDs, trust-level mapping, issuance/renewal/revocation decision, derived selectors, `TrustProvider` trait + control-plane impl. The trust→identity core, unit-tested. | ✅ done |
-| SP2 | `citadel-spire-plugin` | gRPC NodeAttestor + Config (real protos) over the SP1 core; go-plugin handshake binary; Docker harness (config validates against spire-server 1.9.6). AutoMTLS done (mTLS, verified via host emulation); agent-side plugin = remaining. | ✅ done |
+| SP2 | `citadel-spire-plugin` | gRPC NodeAttestor + Config (real protos) over the SP1 core; go-plugin handshake binary; Docker harness (config validates against spire-server 1.9.6). AutoMTLS + agent-side plugin done; the attestation pair runs end to end (agent emits payload → server verifies → identity). Only a live SPIRE deploy (SP5) remains. | ✅ done |
 | SP3 | `citadel-spire-controller` | Create/delete SPIRE registration entries from mesh trust via the Entry API. Verified live against spire-server 1.9.6 (entry created when Verified, deleted on quarantine). | ✅ done |
 | SP4 | `citadel-trust-sync` | Continuous loop: read mesh trust, reconcile SPIRE, report revocations. Verified live against spire-server 1.9.6 (admit Verified workload, revoke on quarantine). | ✅ done |
 | SP5 | demo | 3-node OptiPlex cluster: attest → issue SVID → mTLS → degrade trust → deny renewal → revoke → quarantine. | planned |

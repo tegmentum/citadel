@@ -12,6 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .compile_protos(
             &[
                 "proto/spire/plugin/server/nodeattestor/v1/nodeattestor.proto",
+                "proto/spire/plugin/agent/nodeattestor/v1/nodeattestor.proto",
                 "proto/spire/service/common/config/v1/config.proto",
             ],
             &["proto"],

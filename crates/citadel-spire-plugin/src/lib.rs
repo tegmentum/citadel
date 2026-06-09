@@ -13,7 +13,11 @@
 
 // tonic's Status Err is intentionally large; the vendored protos' doc comments
 // use deeper list indentation than clippy prefers — both are noise here.
-#![allow(clippy::result_large_err, clippy::doc_overindented_list_items)]
+#![allow(
+    clippy::result_large_err,
+    clippy::doc_overindented_list_items,
+    clippy::doc_lazy_continuation
+)]
 
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -23,7 +27,9 @@ use citadel_spiffe::{IssuanceDecision, NodeTrustView, SpiffeId, TrustDomain};
 use tokio_stream::Stream;
 use tonic::{Request, Response, Status, Streaming};
 
+pub mod agent;
 pub mod mtls;
+pub mod runtime;
 
 /// The compiled proto file-descriptor set, for gRPC reflection (SPIRE discovers
 /// a plugin's services via reflection).
