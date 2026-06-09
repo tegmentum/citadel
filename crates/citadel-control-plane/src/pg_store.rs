@@ -227,6 +227,7 @@ mod tests {
             liveness: LivenessState::Alive,
             observer: false,
             last_seen_tick: 1,
+            tpm_spec: None,
         });
         assert_eq!(s.all_nodes().len(), 1);
         assert!(s.get_node(&id).is_some());
