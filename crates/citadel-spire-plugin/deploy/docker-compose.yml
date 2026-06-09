@@ -1,0 +1,16 @@
+# Bring up a SPIRE server (official image) that loads the Citadel NodeAttestor
+# external plugin. Build a Linux plugin binary first (see README.md), then:
+#   docker compose -f deploy/docker-compose.yml up
+services:
+  spire-server:
+    image: ghcr.io/spiffe/spire-server:1.9.6
+    command: ["run", "-config", "/opt/spire/conf/server.conf"]
+    volumes:
+      - ./server.conf:/opt/spire/conf/server.conf:ro
+      # A Linux build of the plugin (cargo build --release for the container's arch):
+      - ../../../target/release/citadel-spire-plugin:/opt/citadel/citadel-spire-plugin:ro
+      - ./trust.json:/opt/citadel/trust.json:ro
+    environment:
+      CITADEL_TRUST_FILE: /opt/citadel/trust.json
+    ports:
+      - "8081:8081"

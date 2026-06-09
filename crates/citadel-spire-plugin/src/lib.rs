@@ -23,6 +23,16 @@ use citadel_spiffe::{IssuanceDecision, NodeTrustView, SpiffeId, TrustDomain};
 use tokio_stream::Stream;
 use tonic::{Request, Response, Status, Streaming};
 
+/// The compiled proto file-descriptor set, for gRPC reflection (SPIRE discovers
+/// a plugin's services via reflection).
+pub const FILE_DESCRIPTOR_SET: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/citadel_spire_descriptor.bin"));
+
+/// The go-plugin handshake magic cookie for a SPIRE NodeAttestor: the env var key
+/// and value are both the plugin type name (`internal.ServerHandshakeConfig`).
+pub const MAGIC_COOKIE_KEY: &str = "NodeAttestor";
+pub const MAGIC_COOKIE_VALUE: &str = "NodeAttestor";
+
 /// Generated upstream SPIRE plugin-SDK code.
 pub mod nodeattestor {
     tonic::include_proto!("spire.plugin.server.nodeattestor.v1");
