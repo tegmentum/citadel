@@ -270,10 +270,16 @@ existing signed artifacts.
   (`GET /` + endpoints serve). Topology, env, and the ingestion loop are in
   `docs/deploy/control-plane.md`. **Load rig:** a runnable 10k-node ingestion
   benchmark (`tests/cp7_load_bench.rs`, `#[ignore]`d) + methodology/targets in
-  `docs/deploy/load-rig.md` — written and compile-checked, **not yet run**. The
-  one networked piece left to assemble (from the existing agent + CP crates) is
-  the combined observer-ingestion daemon; everything it calls (`observe`,
-  `poll_durability`, the drain/relay loop) exists and is tested.
+  `docs/deploy/load-rig.md` — written and compile-checked, **not yet run**.
+  **Combined daemon (done):** `daemon::run_observer_daemon` bridges a live
+  observer agent (`citadel-agent`'s `AgentHandle::observer_feed`) into the CP via
+  `ingest_observer_feed`, relaying pending operator writes back through the
+  observer; the `control-plane-daemon` binary (feature `daemon`) runs the
+  observer node + gossip endpoint + CP API + ingestion loop in one process.
+  Tested over the in-process actor transport (`tests/cp7_daemon.rs`): a live
+  observer agent's feed converges the CP's fleet view to the mesh's trust. The
+  shipped binary uses the mock backend + plain HTTP; production wires the agent's
+  TPM backend + mutual-TLS.
 * **Done (durable store backends):** the `ControlPlaneStore` trait now has two
   durable impls beside `MemStore`. **`RedbStore`** — embedded, pure-Rust ACID KV
   ([redb]); default-built + tested (round-trips the verified facts, survives a

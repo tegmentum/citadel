@@ -62,3 +62,10 @@ jobs:
       # round-trip test is #[ignore]d (needs a live Postgres via CITADEL_PG_TEST_URL).
       - name: Clippy (control-plane postgres-store feature)
         run: cargo clippy -p citadel-control-plane --features postgres-store --all-targets -- -D warnings
+
+      # The combined observer-ingestion daemon (CP7) — pulls citadel-agent. Its
+      # integration test runs the daemon over the in-process actor transport.
+      - name: Clippy (control-plane daemon feature)
+        run: cargo clippy -p citadel-control-plane --features daemon --all-targets -- -D warnings
+      - name: Test (control-plane daemon feature)
+        run: cargo test -p citadel-control-plane --features daemon --test cp7_daemon

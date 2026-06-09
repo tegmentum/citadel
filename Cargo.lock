@@ -620,6 +620,7 @@ dependencies = [
  "anyhow",
  "axum",
  "blake3",
+ "citadel-agent",
  "citadel-mesh",
  "http-body-util",
  "postgres",

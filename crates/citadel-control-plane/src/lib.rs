@@ -18,6 +18,8 @@
 //! verifies, stores, and aggregates.
 
 pub mod api;
+#[cfg(feature = "daemon")]
+pub mod daemon;
 mod model;
 pub mod operator;
 mod redb_store;
@@ -164,13 +166,6 @@ impl<S: ControlPlaneStore> ControlPlane<S> {
         self.operators.insert(operator);
     }
 
-    /// Relay an **operator-authorized**, authority-signed reference manifest into
-    /// the mesh (CP5 `POST /v1/policies`). The CP holds no key that decides
-    /// trust: it (1) checks the operator is registered, (2) verifies the
-    /// operator's signature over this manifest's content id, (3) verifies the
-    /// manifest's own authority signature, then broadcasts it via the observer
-    /// node and records a tamper-evident audit link. Nodes still adopt it only
-    /// if they trust the manifest's authority. Returns the manifest content id.
     /// Validate an operator-authorized policy publish and **enqueue** it for
     /// relay — the node-free half used by the HTTP `POST /v1/policies` handler.
     /// Checks (1) the action authorizes this manifest, (2) the operator is
@@ -339,13 +334,35 @@ impl<S: ControlPlaneStore> ControlPlane<S> {
     /// (M0) — the live ingestion feed (CP1): every known member's facts + every
     /// verified verdict it has buffered since the last call.
     pub fn observe(&mut self, node: &mut citadel_mesh::node::Node, tick: u64) {
+        let members: Vec<MemberUpdate> = node.membership().iter().map(|m| m.update()).collect();
+        let verdicts = node.drain_observed_verdicts();
+        self.ingest_observer_feed(
+            members,
+            verdicts,
+            node.mesh_epoch(),
+            node.witness_count(),
+            tick,
+        );
+    }
+
+    /// Ingest an observer feed (members + verified verdicts + mesh params) —
+    /// the transport-agnostic core of [`Self::observe`], used by the networked
+    /// CP7 daemon which pulls the feed from a remote observer agent.
+    pub fn ingest_observer_feed(
+        &mut self,
+        members: Vec<MemberUpdate>,
+        verdicts: Vec<AttestationResult>,
+        epoch: u64,
+        witness_count: usize,
+        tick: u64,
+    ) {
         self.last_tick = self.last_tick.max(tick);
-        self.set_mesh_params(node.mesh_epoch(), node.witness_count());
-        for m in node.membership().iter() {
-            self.ingest_member(&m.update(), tick);
+        self.set_mesh_params(epoch, witness_count);
+        for m in &members {
+            self.ingest_member(m, tick);
         }
-        for v in node.drain_observed_verdicts() {
-            self.ingest_verdict(&v);
+        for v in &verdicts {
+            self.ingest_verdict(v);
         }
     }
 

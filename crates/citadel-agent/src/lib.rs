@@ -23,10 +23,11 @@ use tokio::task::AbortHandle;
 use citadel_mesh::attest::{Attestor, TrustAnchors};
 use citadel_mesh::crypto::MeshKeypair;
 use citadel_mesh::id::{Epoch, MeshId};
-use citadel_mesh::membership::Membership;
+use citadel_mesh::membership::{MemberUpdate, Membership};
 use citadel_mesh::node::{Node, NodeConfig};
+use citadel_mesh::quarantine::OperatorQuarantineApproval;
 use citadel_mesh::reference::ReferenceManifest;
-use citadel_mesh::types::GossipEnvelope;
+use citadel_mesh::types::{AttestationResult, GossipEnvelope};
 use citadel_mesh::NodeId;
 use tpm_core::backend::{MockBackend, TpmBackend};
 
@@ -50,6 +51,19 @@ enum Cmd {
     BroadcastReferenceManifest(Box<ReferenceManifest>),
     HasReferenceManifest([u8; 32], oneshot::Sender<bool>),
     TrustOf(NodeId, oneshot::Sender<Option<String>>),
+    ObserverFeed(oneshot::Sender<ObserverFeed>),
+    RelayQuarantineApproval(Box<OperatorQuarantineApproval>),
+}
+
+/// One pull of an observer node's verified state for the control plane (CP7
+/// daemon): the mesh params + every known member + the verified verdicts
+/// received since the last pull. Feeds `ControlPlane::ingest_observer_feed`.
+#[derive(Clone, Debug, Default)]
+pub struct ObserverFeed {
+    pub epoch: u64,
+    pub witness_count: usize,
+    pub members: Vec<MemberUpdate>,
+    pub verdicts: Vec<AttestationResult>,
 }
 
 /// This node's log-shipping view: the root of its own measurement log and of
@@ -91,6 +105,26 @@ impl AgentHandle {
         for a in self.aborts.iter() {
             a.abort();
         }
+    }
+
+    /// Pull this (observer) node's verified state for the control plane (CP7
+    /// daemon): mesh params + members + the verdicts received since the last
+    /// pull (which it drains). Empty on a non-observer node.
+    pub async fn observer_feed(&self) -> ObserverFeed {
+        let (tx, rx) = oneshot::channel();
+        if self.cmd.send(Cmd::ObserverFeed(tx)).await.is_ok() {
+            rx.await.unwrap_or_default()
+        } else {
+            ObserverFeed::default()
+        }
+    }
+
+    /// Relay a trusted operator's quarantine approval into the mesh (CP5).
+    pub async fn relay_quarantine_approval(&self, approval: OperatorQuarantineApproval) {
+        let _ = self
+            .cmd
+            .send(Cmd::RelayQuarantineApproval(Box::new(approval)))
+            .await;
     }
 
     /// Deliver an inbound envelope to the node.
@@ -245,6 +279,19 @@ pub fn spawn_node(
                         .get(&subject)
                         .map(|m| m.trust.as_str().to_string());
                     let _ = reply.send(trust);
+                }
+                Cmd::ObserverFeed(reply) => {
+                    let feed = ObserverFeed {
+                        epoch: node.mesh_epoch(),
+                        witness_count: node.witness_count(),
+                        members: node.membership().iter().map(|m| m.update()).collect(),
+                        verdicts: node.drain_observed_verdicts(),
+                    };
+                    let _ = reply.send(feed);
+                }
+                Cmd::RelayQuarantineApproval(approval) => {
+                    node.relay_quarantine_approval(*approval);
+                    drain_outbox(&mut node, &transport);
                 }
             }
         }

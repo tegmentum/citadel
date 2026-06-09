@@ -106,12 +106,28 @@ loop {
 }
 ```
 
-The observer `Node` joins the mesh exactly like a worker but in `observer: true`
-mode (non-voting, never a witness). Wire it with `citadel-agent`'s transport
-(`serve_mtls`/`mtls_client`) pointed at the mesh seeds; register operator keys
-with `cp.authorize_operator` so `POST /v1/policies` and quarantine relays are
-accepted. (This combined ingestion binary is the one networked piece left to
-assemble from the existing agent + control-plane crates.)
+This is the **`control-plane-daemon`** binary (build with `--features daemon`):
+it runs an `observer: true` node over `citadel-agent`'s HTTP transport, serves
+its gossip endpoint, and runs `daemon::run_observer_daemon` (pull the verified
+feed → `ingest_observer_feed` → relay pending operator writes) against the same
+shared `ControlPlane` the API serves. Config:
+
+```sh
+CITADEL_MESH=prod-east-1 \
+CITADEL_SEED=9 \
+CITADEL_PEERS='[[1,"http://w1:8090"],[2,"http://w2:8090"],[3,"http://w3:8090"]]' \
+CITADEL_MESH_LISTEN=0.0.0.0:8090 \
+CITADEL_CP_ADDR=0.0.0.0:8088 \
+CITADEL_CP_STORE=pg CITADEL_PG_URL=postgres://.../citadel \
+control-plane-daemon
+```
+
+The daemon path (observer agent → `observer_feed` → `ingest_observer_feed` →
+fleet view) is covered by `tests/cp7_daemon.rs` over the in-process actor
+transport. The shipped binary uses the mock backend + plain HTTP; a production
+deploy wires the same TPM backend (`CITADEL_TPM_BACKEND`) + mutual-TLS
+(`serve_mtls`/`mtls_client`) the agent uses, and registers operator keys via
+`cp.authorize_operator`.
 
 ## Maintenance jobs
 

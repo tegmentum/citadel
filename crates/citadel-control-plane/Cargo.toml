@@ -15,11 +15,19 @@ axum = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "net"] }
 redb = "2"
 postgres = { version = "0.19", optional = true }
+citadel-agent = { path = "../citadel-agent", optional = true }
 
 [features]
 # PgStore (CP7): a Postgres-backed durable store. Off by default — pulls the
 # blocking `postgres` client and needs a live database; its test is `#[ignore]`d.
 postgres-store = ["dep:postgres"]
+# The combined observer-ingestion daemon (CP7): runs an observer node via
+# citadel-agent and feeds its verified gossip into the control plane.
+daemon = ["dep:citadel-agent"]
+
+[[bin]]
+name = "control-plane-daemon"
+required-features = ["daemon"]
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
