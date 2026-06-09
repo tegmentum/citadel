@@ -23,6 +23,8 @@ use citadel_spiffe::{IssuanceDecision, NodeTrustView, SpiffeId, TrustDomain};
 use tokio_stream::Stream;
 use tonic::{Request, Response, Status, Streaming};
 
+pub mod mtls;
+
 /// The compiled proto file-descriptor set, for gRPC reflection (SPIRE discovers
 /// a plugin's services via reflection).
 pub const FILE_DESCRIPTOR_SET: &[u8] =

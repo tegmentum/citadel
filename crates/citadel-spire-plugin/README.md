@@ -41,22 +41,25 @@ docker run --rm --entrypoint /opt/spire/bin/spire-server \
 docker compose -f deploy/docker-compose.yml up
 ```
 
+## AutoMTLS — done
+
+SPIRE enables go-plugin AutoMTLS (it sets `PLUGIN_CLIENT_CERT`). The plugin
+handles it (`src/mtls.rs`): it parses `PLUGIN_CLIENT_CERT` as the client CA,
+generates an ephemeral server cert, serves mutual TLS (requiring + verifying the
+client cert) on the project's rustls/aws-lc provider, and advertises the base64
+(RawStdEncoding) DER leaf as the 6th handshake field. Proven end to end by
+`tests/go_plugin_automtls.rs`, which emulates the go-plugin host: it presents a
+client cert, reads the advertised server cert, connects over mTLS, and Attests.
+
 ## Honest integration boundary
 
-Two pieces are required for a *full* live attestation flow and are the documented
-remaining deployment work:
+One piece remains for a *full* live attestation flow:
 
-1. **AutoMTLS.** SPIRE enables go-plugin AutoMTLS (it sets `PLUGIN_CLIENT_CERT`).
-   This scaffold serves plaintext and logs when AutoMTLS is requested. Completing
-   it means: parse `PLUGIN_CLIENT_CERT` (client CA), generate an ephemeral server
-   cert, serve mTLS requiring+verifying the client cert, and emit the base64
-   (RawStdEncoding) DER leaf as the 6th handshake field. The protocol everything
-   else depends on is already proven by `go_plugin_host`.
-2. **Agent-side plugin.** A SPIRE NodeAttestor is a *pair*: the agent produces the
-   attestation payload, the server (this plugin) verifies it. A matching
-   agent-side plugin (or reuse of an existing attestor's payload) is needed for
-   end-to-end node attestation. The server plugin + trust gate is what's built
-   here.
+- **Agent-side plugin.** A SPIRE NodeAttestor is a *pair*: the agent produces the
+  attestation payload, the server (this plugin) verifies it. A matching
+  agent-side plugin (or reuse of an existing attestor's payload) completes
+  end-to-end node attestation. The server plugin + trust gate + AutoMTLS are built
+  here.
 
 The trust source is a `TrustView`: a JSON file (`CITADEL_TRUST_FILE`) for
 standalone/demo runs; production points it at the control plane.

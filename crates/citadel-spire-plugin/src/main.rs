@@ -8,9 +8,9 @@
 //! standalone/demo runs; production points this at the control plane
 //! (`TrustProvider`). See README.md for the Docker harness.
 //!
-//! Note: SPIRE enables go-plugin AutoMTLS (`PLUGIN_CLIENT_CERT`). This scaffold
-//! serves plaintext over the unix socket and logs if AutoMTLS is requested; the
-//! mTLS cert exchange is the documented remaining deployment step.
+//! AutoMTLS: when SPIRE passes `PLUGIN_CLIENT_CERT` (its default), the plugin
+//! serves mutual TLS and advertises its server cert in the handshake (see
+//! [`citadel_spire_plugin::mtls`]); otherwise it serves plaintext.
 
 use std::collections::HashMap;
 use std::env;
@@ -102,13 +102,9 @@ async fn main() -> anyhow::Result<()> {
         );
         std::process::exit(1);
     }
-    if env::var("PLUGIN_CLIENT_CERT").is_ok() {
-        eprintln!(
-            "citadel-spire-plugin: AutoMTLS requested by host (PLUGIN_CLIENT_CERT set) but this \
-             scaffold serves plaintext; configure SPIRE without AutoMTLS, or see README for the \
-             mTLS step."
-        );
-    }
+    // AutoMTLS: if the host passed its client cert, serve mTLS and advertise our
+    // server cert in the handshake; otherwise plaintext.
+    let auto_mtls = env::var("PLUGIN_CLIENT_CERT").ok();
 
     let version = negotiate_version();
     let socket = env::temp_dir().join(format!("citadel-spire-{}.sock", std::process::id()));
@@ -127,20 +123,91 @@ async fn main() -> anyhow::Result<()> {
         .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
         .build_v1alpha()?;
 
-    // Emit the go-plugin handshake line to stdout (nothing else may touch stdout):
-    //   CoreProtocolVersion|AppProtocolVersion|network|address|protocol|serverCert
-    println!("1|{version}|unix|{}|grpc|", socket.display());
-    use std::io::Write;
-    std::io::stdout().flush()?;
-
-    tonic::transport::Server::builder()
+    let router = tonic::transport::Server::builder()
         .add_service(health_service)
         .add_service(reflection)
         .add_service(NodeAttestorServer::new(plugin.clone()))
-        .add_service(ConfigServer::new(plugin))
-        .serve_with_incoming(UnixListenerStream::new(listener))
-        .await?;
+        .add_service(ConfigServer::new(plugin));
+
+    let server_cert = match &auto_mtls {
+        Some(ca) => Some(citadel_spire_plugin::mtls::build(ca)?),
+        None => None,
+    };
+
+    // Emit the go-plugin handshake line to stdout (nothing else may touch stdout):
+    //   CoreProtocolVersion|AppProtocolVersion|network|address|protocol|serverCert
+    let cert_field = server_cert
+        .as_ref()
+        .map(|s| citadel_spire_plugin::mtls::handshake_cert_field(&s.cert_der))
+        .unwrap_or_default();
+    println!("1|{version}|unix|{}|grpc|{cert_field}", socket.display());
+    use std::io::Write;
+    std::io::stdout().flush()?;
+
+    match server_cert {
+        Some(tls) => {
+            // mTLS: terminate TLS per connection, serve plaintext gRPC over it.
+            let acceptor = tokio_rustls::TlsAcceptor::from(tls.config);
+            let incoming = async_stream::stream! {
+                loop {
+                    match listener.accept().await {
+                        Ok((sock, _)) => match acceptor.accept(sock).await {
+                            Ok(s) => yield Ok::<_, std::io::Error>(TlsConn(s)),
+                            Err(e) => eprintln!("citadel-spire-plugin: tls accept: {e}"),
+                        },
+                        Err(e) => yield Err(e),
+                    }
+                }
+            };
+            router.serve_with_incoming(incoming).await?;
+        }
+        None => {
+            router
+                .serve_with_incoming(UnixListenerStream::new(listener))
+                .await?;
+        }
+    }
 
     let _ = std::fs::remove_file(&socket);
     Ok(())
+}
+
+/// A TLS-terminated unix connection presented to tonic (AutoMTLS path).
+struct TlsConn(tokio_rustls::server::TlsStream<tokio::net::UnixStream>);
+
+impl tonic::transport::server::Connected for TlsConn {
+    type ConnectInfo = ();
+    fn connect_info(&self) -> Self::ConnectInfo {}
+}
+
+impl tokio::io::AsyncRead for TlsConn {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.0).poll_read(cx, buf)
+    }
+}
+
+impl tokio::io::AsyncWrite for TlsConn {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.0).poll_write(cx, buf)
+    }
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.0).poll_flush(cx)
+    }
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.0).poll_shutdown(cx)
+    }
 }
