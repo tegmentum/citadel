@@ -47,6 +47,7 @@ pub mod node;
 pub mod promotion;
 pub mod quarantine;
 pub mod reference;
+pub mod release;
 pub mod runtime;
 pub mod rvp;
 pub mod state;

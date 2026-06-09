@@ -1,29 +1,24 @@
-//! # citadel-mss — Mesh-Sealed Secrets (MSS1 prototype)
+//! # citadel-mss — Mesh-Sealed Secrets (the sealing layer)
 //!
-//! A secret opens **iff a quorum of its assigned witnesses currently approve**,
-//! each approving only if it independently classifies the requester `Trusted`.
-//! Access is therefore governed by the *continuous agreement of the mesh*, not by
-//! one machine's claim (`mss-roadmap.md`).
+//! The **release protocol** (request → assigned-witness vote → quorum
+//! authorization, gossip-wired, lease-bound) lives in
+//! [`citadel_mesh::release`] and runs in the live mesh (`Node::request_release`
+//! / `release_authorized`). This crate is the **TPM-sealing layer** on top: it
+//! seals a secret under a mesh-gated policy and only [`open`]s it when handed a
+//! satisfied [`ReleaseAuthorization`] — so a secret's bytes are released only by
+//! the continuous agreement of the mesh, not by one machine's claim.
 //!
-//! Design calls realised here:
-//! * **C2** — the binding is quorum-as-authority: a [`ReleaseAuthorization`] (the
-//!   assigned witnesses' signed approvals, bound to a fresh nonce) is what gates
-//!   [`open`]; a real TPM would require it via PolicyAuthorize on the seal (S0).
-//! * **C3** — categorical witness agreement gates release (k-of-n APPROVE), no
-//!   numeric trust score.
-//! * **C4** — the quorum is the secret's **bounded** assigned-witness set
-//!   ([`assigned_witnesses`] via the mesh's HRW), so availability needs only k of
-//!   n reachable.
-//! * **C5** — every approval is bound to the request nonce: a replayed
-//!   healthy-state authorization is rejected.
-//!
-//! This prototype proves the protocol + the seal/open binding over a
-//! [`TpmBackend`]; gossip-wiring it into the live `Node` is MSS3.
+//! Design calls (`mss-roadmap.md`): the requester's own TPM holds the sealed
+//! blob (C1 — no continuous custodian); the quorum authorization is the unseal
+//! gate (C2); categorical witness agreement decides (C3); the assigned set is
+//! bounded by HRW (C4); the authorization is nonce-bound (C5).
 
-use citadel_mesh::crypto::{MeshKeypair, MeshPublicKey, Signature};
+use citadel_mesh::crypto::MeshPublicKey;
 use citadel_mesh::id::Epoch;
 use citadel_mesh::{witness, NodeId};
 use tpm_core::backend::{SealedData, TpmBackend};
+
+pub use citadel_mesh::release::{ReleaseAuthorization, ReleaseRequest, ReleaseVote};
 
 /// An assigned witness and its mesh public key (for verifying its release vote).
 pub type WitnessKey = (NodeId, MeshPublicKey);
@@ -37,7 +32,7 @@ pub struct SecretPolicy {
     pub quorum: usize,
     /// Size of the assigned witness set (n) chosen by HRW over `secret_id`.
     pub witnesses: usize,
-    /// Lease lifetime in ticks (MSS2 enforces renewal; here it rides the nonce).
+    /// Lease lifetime in ticks (the mesh enforces renewal).
     pub lease_ticks: u64,
 }
 
@@ -60,175 +55,9 @@ pub fn assigned_witnesses(
     witness::assign(NodeId(secret_id), roster, Epoch(epoch), n).witnesses
 }
 
-/// A node's signed request to open a secret. The `nonce` makes each request
-/// (and the authorization built for it) single-use (C5).
-#[derive(Clone, Debug)]
-pub struct ReleaseRequest {
-    pub secret_id: [u8; 32],
-    pub requester: NodeId,
-    pub nonce: [u8; 32],
-    pub tick: u64,
-    pub signature: Signature,
-}
-
-impl ReleaseRequest {
-    fn signing_bytes(
-        secret_id: &[u8; 32],
-        requester: &NodeId,
-        nonce: &[u8; 32],
-        tick: u64,
-    ) -> Vec<u8> {
-        serde_json::to_vec(&("mss-release-request", secret_id, requester, nonce, tick))
-            .expect("ser")
-    }
-
-    pub fn sign(
-        kp: &MeshKeypair,
-        requester: NodeId,
-        secret_id: [u8; 32],
-        nonce: [u8; 32],
-        tick: u64,
-    ) -> Self {
-        let signature = kp.sign(&Self::signing_bytes(&secret_id, &requester, &nonce, tick));
-        ReleaseRequest {
-            secret_id,
-            requester,
-            nonce,
-            tick,
-            signature,
-        }
-    }
-
-    pub fn verify(&self, requester_pub: &MeshPublicKey) -> bool {
-        requester_pub.verify(
-            &Self::signing_bytes(&self.secret_id, &self.requester, &self.nonce, self.tick),
-            &self.signature,
-        )
-    }
-}
-
-/// A witness's signed ballot on a release request — APPROVE only if the witness
-/// independently sees the requester `Trusted` (C3). Bound to the request nonce.
-#[derive(Clone, Debug)]
-pub struct ReleaseVote {
-    pub secret_id: [u8; 32],
-    pub requester: NodeId,
-    pub nonce: [u8; 32],
-    pub voter: NodeId,
-    pub approve: bool,
-    pub signature: Signature,
-}
-
-impl ReleaseVote {
-    fn signing_bytes(
-        secret_id: &[u8; 32],
-        requester: &NodeId,
-        nonce: &[u8; 32],
-        voter: &NodeId,
-        approve: bool,
-    ) -> Vec<u8> {
-        serde_json::to_vec(&(
-            "mss-release-vote",
-            secret_id,
-            requester,
-            nonce,
-            voter,
-            approve,
-        ))
-        .expect("ser")
-    }
-
-    /// Cast a vote: `trusts_requester` is the witness's *own* current trust
-    /// classification (it would attest the requester in a live mesh, MSS3).
-    pub fn cast(
-        kp: &MeshKeypair,
-        voter: NodeId,
-        req: &ReleaseRequest,
-        trusts_requester: bool,
-    ) -> Self {
-        let approve = trusts_requester;
-        let signature = kp.sign(&Self::signing_bytes(
-            &req.secret_id,
-            &req.requester,
-            &req.nonce,
-            &voter,
-            approve,
-        ));
-        ReleaseVote {
-            secret_id: req.secret_id,
-            requester: req.requester,
-            nonce: req.nonce,
-            voter,
-            approve,
-            signature,
-        }
-    }
-
-    pub fn verify(&self, voter_pub: &MeshPublicKey) -> bool {
-        voter_pub.verify(
-            &Self::signing_bytes(
-                &self.secret_id,
-                &self.requester,
-                &self.nonce,
-                &self.voter,
-                self.approve,
-            ),
-            &self.signature,
-        )
-    }
-}
-
-/// The collected approvals for a release — the quorum authorization (C2). A real
-/// TPM seal would require this via PolicyAuthorize; here [`open`] checks it.
-pub struct ReleaseAuthorization {
-    pub secret_id: [u8; 32],
-    pub requester: NodeId,
-    pub nonce: [u8; 32],
-    pub votes: Vec<ReleaseVote>,
-}
-
-impl ReleaseAuthorization {
-    pub fn new(req: &ReleaseRequest, votes: Vec<ReleaseVote>) -> Self {
-        ReleaseAuthorization {
-            secret_id: req.secret_id,
-            requester: req.requester,
-            nonce: req.nonce,
-            votes,
-        }
-    }
-
-    /// How many **distinct assigned witnesses** validly approved this exact
-    /// request (correct secret/requester/nonce, signature verifies, in the
-    /// assigned set). Forged, unassigned, duplicate, or stale-nonce votes don't
-    /// count.
-    pub fn approvals(&self, assigned: &[WitnessKey]) -> usize {
-        let mut counted = std::collections::HashSet::new();
-        let mut n = 0;
-        for v in &self.votes {
-            let Some((_, pubkey)) = assigned.iter().find(|(id, _)| *id == v.voter) else {
-                continue;
-            };
-            if v.secret_id == self.secret_id
-                && v.requester == self.requester
-                && v.nonce == self.nonce
-                && v.approve
-                && v.verify(pubkey)
-                && counted.insert(v.voter)
-            {
-                n += 1;
-            }
-        }
-        n
-    }
-
-    pub fn satisfies(&self, policy: &SecretPolicy, assigned: &[WitnessKey]) -> bool {
-        self.approvals(assigned) >= policy.quorum
-    }
-}
-
 /// The policy digest a secret is sealed under — binds the blob to this secret +
 /// version (a real TPM would make this a PolicyAuthorize digest the quorum
-/// authority satisfies; S0).
+/// authority satisfies; roadmap S0).
 fn policy_digest(policy: &SecretPolicy) -> [u8; 32] {
     let mut h = blake3::Hasher::new();
     h.update(b"mss-secret-policy\x00");
@@ -247,22 +76,23 @@ pub fn seal(
     Ok(MeshSealedSecret { policy, sealed })
 }
 
-/// Open a sealed secret **iff** the authorization is a satisfied quorum of the
-/// secret's assigned witnesses for this exact (nonce-bound) request. Otherwise
-/// refuse — the blob is never unsealed without live mesh agreement.
+/// Open a sealed secret **iff** the mesh's release authorization is a satisfied
+/// quorum of the secret's eligible witnesses for this exact (nonce-bound)
+/// request. Otherwise refuse — the blob is never unsealed without live mesh
+/// agreement.
 pub fn open(
     backend: &dyn TpmBackend,
     secret: &MeshSealedSecret,
     auth: &ReleaseAuthorization,
-    assigned: &[WitnessKey],
+    eligible: &[WitnessKey],
 ) -> anyhow::Result<Vec<u8>> {
     if auth.secret_id != secret.policy.secret_id {
         anyhow::bail!("authorization is for a different secret");
     }
-    if !auth.satisfies(&secret.policy, assigned) {
+    if !auth.satisfies(secret.policy.quorum, eligible) {
         anyhow::bail!(
             "quorum not satisfied: {} of {} required approvals",
-            auth.approvals(assigned),
+            auth.approvals(eligible),
             secret.policy.quorum
         );
     }
@@ -272,6 +102,7 @@ pub fn open(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use citadel_mesh::crypto::MeshKeypair;
     use tpm_core::backend::MockBackend;
 
     fn id(n: u8) -> NodeId {
@@ -280,8 +111,11 @@ mod tests {
     fn kp(n: u8) -> MeshKeypair {
         MeshKeypair::from_seed([n; 32])
     }
+    fn seed_of(wid: NodeId) -> u8 {
+        (1u8..=7).find(|s| id(*s) == wid).unwrap()
+    }
 
-    fn fixture() -> (Vec<NodeId>, Vec<WitnessKey>, [u8; 32], SecretPolicy) {
+    fn fixture() -> (Vec<WitnessKey>, [u8; 32], SecretPolicy) {
         let roster: Vec<NodeId> = (1u8..=7).map(id).collect();
         let secret_id = [42u8; 32];
         let policy = SecretPolicy {
@@ -291,41 +125,52 @@ mod tests {
             witnesses: 5,
             lease_ticks: 10,
         };
-        let assigned_ids = assigned_witnesses(secret_id, &roster, 1, policy.witnesses);
-        // (id, pubkey) for the assigned set — map id back to its keypair seed.
-        let assigned: Vec<WitnessKey> = assigned_ids
-            .iter()
-            .map(|wid| {
-                let seed = (1u8..=7).find(|s| id(*s) == *wid).unwrap();
-                (*wid, kp(seed).public())
-            })
+        let eligible: Vec<WitnessKey> = assigned_witnesses(secret_id, &roster, 1, policy.witnesses)
+            .into_iter()
+            .map(|wid| (wid, kp(seed_of(wid)).public()))
             .collect();
-        (roster, assigned, secret_id, policy)
+        (eligible, secret_id, policy)
+    }
+
+    fn request(
+        secret_id: [u8; 32],
+        policy: &SecretPolicy,
+        requester_kp: &MeshKeypair,
+        nonce: [u8; 32],
+    ) -> ReleaseRequest {
+        ReleaseRequest::create(
+            requester_kp,
+            NodeId(requester_kp.public().fingerprint()),
+            secret_id,
+            nonce,
+            policy.quorum,
+            policy.witnesses,
+            policy.lease_ticks,
+            5,
+        )
     }
 
     #[test]
     fn opens_with_a_quorum_of_trusting_witnesses() {
         let backend = MockBackend::new();
-        let (_, assigned, secret_id, policy) = fixture();
-        let secret = seal(&backend, b"db-prod-password", policy).unwrap();
+        let (eligible, secret_id, policy) = fixture();
+        let secret = seal(&backend, b"db-prod-password", policy.clone()).unwrap();
+        let rkp = kp(100);
+        let req = request(secret_id, &policy, &rkp, [9u8; 32]);
 
-        let requester_kp = kp(100);
-        let requester = NodeId(requester_kp.public().fingerprint());
-        let req = ReleaseRequest::sign(&requester_kp, requester, secret_id, [9u8; 32], 5);
-        assert!(req.verify(&requester_kp.public()));
-
-        // Every assigned witness trusts the requester → approves.
-        let votes: Vec<ReleaseVote> = assigned
+        let votes: Vec<ReleaseVote> = eligible
             .iter()
-            .map(|(wid, _)| {
-                let seed = (1u8..=7).find(|s| id(*s) == *wid).unwrap();
-                ReleaseVote::cast(&kp(seed), *wid, &req, true)
-            })
+            .map(|(wid, _)| ReleaseVote::sign(&kp(seed_of(*wid)), &req, *wid, true, 6))
             .collect();
-        let auth = ReleaseAuthorization::new(&req, votes);
-        assert!(auth.approvals(&assigned) >= 3);
+        let auth = ReleaseAuthorization {
+            secret_id,
+            requester: req.requester,
+            nonce: req.nonce,
+            votes,
+        };
+        assert!(auth.approvals(&eligible) >= 3);
         assert_eq!(
-            open(&backend, &secret, &auth, &assigned).unwrap(),
+            open(&backend, &secret, &auth, &eligible).unwrap(),
             b"db-prod-password"
         );
     }
@@ -333,89 +178,79 @@ mod tests {
     #[test]
     fn denied_without_a_quorum() {
         let backend = MockBackend::new();
-        let (_, assigned, secret_id, policy) = fixture();
-        let secret = seal(&backend, b"top-secret", policy).unwrap();
-        let requester_kp = kp(100);
-        let requester = NodeId(requester_kp.public().fingerprint());
-        let req = ReleaseRequest::sign(&requester_kp, requester, secret_id, [9u8; 32], 5);
+        let (eligible, secret_id, policy) = fixture();
+        let secret = seal(&backend, b"top-secret", policy.clone()).unwrap();
+        let rkp = kp(100);
+        let req = request(secret_id, &policy, &rkp, [9u8; 32]);
 
-        // Only 2 of the 5 assigned witnesses trust the requester (the rest see it
-        // as compromised and DENY) — below the quorum of 3.
-        let votes: Vec<ReleaseVote> = assigned
+        // Only 2 of the 5 eligible witnesses approve (the rest see it compromised).
+        let votes: Vec<ReleaseVote> = eligible
             .iter()
             .enumerate()
-            .map(|(i, (wid, _))| {
-                let seed = (1u8..=7).find(|s| id(*s) == *wid).unwrap();
-                ReleaseVote::cast(&kp(seed), *wid, &req, i < 2)
-            })
+            .map(|(i, (wid, _))| ReleaseVote::sign(&kp(seed_of(*wid)), &req, *wid, i < 2, 6))
             .collect();
-        let auth = ReleaseAuthorization::new(&req, votes);
-        assert_eq!(auth.approvals(&assigned), 2);
-        assert!(
-            open(&backend, &secret, &auth, &assigned).is_err(),
-            "quorum not met → no release"
-        );
+        let auth = ReleaseAuthorization {
+            secret_id,
+            requester: req.requester,
+            nonce: req.nonce,
+            votes,
+        };
+        assert_eq!(auth.approvals(&eligible), 2);
+        assert!(open(&backend, &secret, &auth, &eligible).is_err());
     }
 
     #[test]
     fn replayed_authorization_is_rejected() {
         let backend = MockBackend::new();
-        let (_, assigned, secret_id, policy) = fixture();
-        let secret = seal(&backend, b"secret", policy).unwrap();
+        let (eligible, secret_id, policy) = fixture();
+        let secret = seal(&backend, b"secret", policy.clone()).unwrap();
         let rkp = kp(100);
-        let requester = NodeId(rkp.public().fingerprint());
-
-        // A full quorum approved an OLD request (nonce A, when the node was healthy).
-        let old = ReleaseRequest::sign(&rkp, requester, secret_id, [0xAA; 32], 1);
-        let votes: Vec<ReleaseVote> = assigned
+        // A full quorum approved an OLD request (nonce A).
+        let old = request(secret_id, &policy, &rkp, [0xAA; 32]);
+        let votes: Vec<ReleaseVote> = eligible
             .iter()
-            .map(|(wid, _)| {
-                let seed = (1u8..=7).find(|s| id(*s) == *wid).unwrap();
-                ReleaseVote::cast(&kp(seed), *wid, &old, true)
-            })
+            .map(|(wid, _)| ReleaseVote::sign(&kp(seed_of(*wid)), &old, *wid, true, 6))
             .collect();
-        let mut auth = ReleaseAuthorization::new(&old, votes);
-        // Replay it against a FRESH request (nonce B): tampering the auth's nonce
-        // invalidates every vote signature.
-        auth.nonce = [0xBB; 32];
-        assert_eq!(
-            auth.approvals(&assigned),
-            0,
-            "stale-nonce authorization counts for nothing"
-        );
-        assert!(open(&backend, &secret, &auth, &assigned).is_err());
+        // Replay it against a fresh nonce B: tampering the nonce voids every sig.
+        let auth = ReleaseAuthorization {
+            secret_id,
+            requester: old.requester,
+            nonce: [0xBB; 32],
+            votes,
+        };
+        assert_eq!(auth.approvals(&eligible), 0);
+        assert!(open(&backend, &secret, &auth, &eligible).is_err());
     }
 
     #[test]
     fn unassigned_and_forged_votes_do_not_count() {
         let backend = MockBackend::new();
-        let (_, assigned, secret_id, policy) = fixture();
-        let secret = seal(&backend, b"secret", policy).unwrap();
+        let (eligible, secret_id, policy) = fixture();
+        let secret = seal(&backend, b"secret", policy.clone()).unwrap();
         let rkp = kp(100);
-        let requester = NodeId(rkp.public().fingerprint());
-        let req = ReleaseRequest::sign(&rkp, requester, secret_id, [9u8; 32], 5);
+        let req = request(secret_id, &policy, &rkp, [9u8; 32]);
 
-        // 2 valid assigned approvals...
-        let mut votes: Vec<ReleaseVote> = assigned
+        let mut votes: Vec<ReleaseVote> = eligible
             .iter()
             .take(2)
-            .map(|(wid, _)| {
-                let seed = (1u8..=7).find(|s| id(*s) == *wid).unwrap();
-                ReleaseVote::cast(&kp(seed), *wid, &req, true)
-            })
+            .map(|(wid, _)| ReleaseVote::sign(&kp(seed_of(*wid)), &req, *wid, true, 6))
             .collect();
-        // ...plus a vote from a node NOT in the assigned set (seed 200),
-        votes.push(ReleaseVote::cast(&kp(200), id(200), &req, true));
-        // ...plus a forged vote (claims an assigned voter but signed by an impostor).
-        let victim = assigned[2].0;
-        votes.push(ReleaseVote::cast(&kp(201), victim, &req, true));
-        let auth = ReleaseAuthorization::new(&req, votes);
+        // A vote from a node NOT in the eligible set, and a forged vote claiming
+        // an eligible voter but signed by an impostor.
+        votes.push(ReleaseVote::sign(&kp(200), &req, id(200), true, 6));
+        votes.push(ReleaseVote::sign(&kp(201), &req, eligible[2].0, true, 6));
+        let auth = ReleaseAuthorization {
+            secret_id,
+            requester: req.requester,
+            nonce: req.nonce,
+            votes,
+        };
 
         assert_eq!(
-            auth.approvals(&assigned),
+            auth.approvals(&eligible),
             2,
-            "only the genuine assigned approvals count"
+            "only genuine eligible approvals count"
         );
-        assert!(open(&backend, &secret, &auth, &assigned).is_err());
+        assert!(open(&backend, &secret, &auth, &eligible).is_err());
     }
 }

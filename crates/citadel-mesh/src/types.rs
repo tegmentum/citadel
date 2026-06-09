@@ -144,6 +144,11 @@ pub enum GossipMessage {
     /// A trusted operator's signed approval of a proposal — the sign-off the
     /// most severe scopes require (§13.4); relayed in by the control plane (CP5).
     QuarantineApproval(Box<crate::quarantine::OperatorQuarantineApproval>),
+    /// A node requests mesh-governed release of a secret (Mesh-Sealed Secrets).
+    /// Its assigned witnesses vote; a quorum authorizes the unseal.
+    ReleaseRequest(Box<crate::release::ReleaseRequest>),
+    /// An assigned witness's signed ballot on a release request (MSS).
+    ReleaseVote(Box<crate::release::ReleaseVote>),
 }
 
 // -- Attestation records (design §8) --

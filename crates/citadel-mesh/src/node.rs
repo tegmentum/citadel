@@ -301,6 +301,8 @@ pub struct Node {
     /// In-flight quarantine votes, keyed by proposal id — the gossip-driven
     /// proposal/vote/operator-approval state every node tallies (transient).
     quarantine_rounds: HashMap<[u8; 32], QuarantineRound>,
+    /// In-flight mesh-sealed-secret release requests, keyed by request id (MSS).
+    release_rounds: HashMap<[u8; 32], ReleaseRound>,
     /// Keys this node trusts as operators (CP5) — only their signed approvals
     /// satisfy a scope's operator-sign-off requirement.
     operator_keys: HashSet<MeshPublicKey>,
@@ -423,6 +425,16 @@ struct QuarantineRound {
     enacted: bool,
 }
 
+/// Gossip-driven state for one mesh-sealed-secret release request (MSS): the
+/// request (once seen), the assigned witnesses' votes, and the tick the quorum
+/// was first reached (the lease starts there). Transient.
+#[derive(Default)]
+struct ReleaseRound {
+    request: Option<crate::release::ReleaseRequest>,
+    votes: HashMap<NodeId, crate::release::ReleaseVote>,
+    authorized_at: Option<u64>,
+}
+
 impl Node {
     pub fn new(
         mesh_id: MeshId,
@@ -481,6 +493,7 @@ impl Node {
             probation_start: HashMap::new(),
             quarantine: HashMap::new(),
             quarantine_rounds: HashMap::new(),
+            release_rounds: HashMap::new(),
             operator_keys: HashSet::new(),
             own_log: EventLog::new(config_window),
             replicas: HashMap::new(),
@@ -2201,6 +2214,8 @@ impl Node {
             GossipMessage::QuarantineProposal(p) => self.on_quarantine_proposal(*p),
             GossipMessage::QuarantineVote(v) => self.on_quarantine_vote(*v),
             GossipMessage::QuarantineApproval(a) => self.on_quarantine_approval(*a),
+            GossipMessage::ReleaseRequest(r) => self.on_release_request(*r),
+            GossipMessage::ReleaseVote(v) => self.on_release_vote(*v),
         }
     }
 
@@ -2881,6 +2896,184 @@ impl Node {
                 r.enacted = true;
             }
         }
+    }
+
+    // -- Mesh-Sealed Secrets: gossip-governed release (MSS) ------------------
+
+    /// Request mesh-governed release of a secret: broadcast a signed
+    /// [`ReleaseRequest`](crate::release::ReleaseRequest) so the secret's
+    /// assigned witnesses vote. Returns the request id; poll
+    /// [`Self::release_authorized`] for the outcome.
+    pub fn request_release(
+        &mut self,
+        secret_id: [u8; 32],
+        nonce: [u8; 32],
+        quorum: usize,
+        witness_count: usize,
+        lease_ticks: u64,
+        tick: u64,
+    ) -> [u8; 32] {
+        let req = crate::release::ReleaseRequest::create(
+            &self.keypair,
+            self.id,
+            secret_id,
+            nonce,
+            quorum,
+            witness_count,
+            lease_ticks,
+            tick,
+        );
+        let id = req.id();
+        self.release_rounds.entry(id).or_default().request = Some(req.clone());
+        self.broadcast(GossipMessage::ReleaseRequest(Box::new(req)));
+        self.tally_release(id, tick);
+        id
+    }
+
+    /// The eligible voters for a secret's release: its assigned witnesses (HRW
+    /// over `secret_id`), with the requester excluded (a node can't approve its
+    /// own access).
+    fn release_eligible(
+        &self,
+        secret_id: [u8; 32],
+        witness_count: usize,
+        requester: NodeId,
+    ) -> Vec<NodeId> {
+        witness::assign(
+            NodeId(secret_id),
+            &self.roster(),
+            Epoch(self.config.mesh_epoch),
+            witness_count,
+        )
+        .witnesses
+        .into_iter()
+        .filter(|w| *w != requester)
+        .collect()
+    }
+
+    fn cast_release_vote(&mut self, request_id: [u8; 32], tick: u64) {
+        let Some(req) = self
+            .release_rounds
+            .get(&request_id)
+            .and_then(|r| r.request.clone())
+        else {
+            return;
+        };
+        if self.config.observer || self.id == req.requester {
+            return;
+        }
+        if !self
+            .release_eligible(req.secret_id, req.witness_count, req.requester)
+            .contains(&self.id)
+        {
+            return;
+        }
+        // Approve iff this node independently classifies the requester Trusted (C3).
+        let approve = matches!(
+            self.membership.get(&req.requester).map(|m| m.trust),
+            Some(TrustState::Trusted)
+        );
+        let vote = crate::release::ReleaseVote::sign(&self.keypair, &req, self.id, approve, tick);
+        self.release_rounds
+            .entry(request_id)
+            .or_default()
+            .votes
+            .insert(vote.voter, vote.clone());
+        self.broadcast(GossipMessage::ReleaseVote(Box::new(vote)));
+    }
+
+    fn on_release_request(&mut self, req: crate::release::ReleaseRequest) {
+        let Some(requester) = self.membership.get(&req.requester) else {
+            return;
+        };
+        if !req.verify_signature(&requester.public_key) {
+            return; // forged request
+        }
+        let id = req.id();
+        let first_sight = self
+            .release_rounds
+            .get(&id)
+            .map(|r| r.request.is_none())
+            .unwrap_or(true);
+        self.release_rounds.entry(id).or_default().request = Some(req);
+        if first_sight {
+            self.cast_release_vote(id, self.tick);
+        }
+        self.tally_release(id, self.tick);
+    }
+
+    fn on_release_vote(&mut self, vote: crate::release::ReleaseVote) {
+        let Some(voter) = self.membership.get(&vote.voter) else {
+            return;
+        };
+        if !vote.verify(&voter.public_key) {
+            return; // forged vote
+        }
+        let id = vote.request_id();
+        self.release_rounds
+            .entry(id)
+            .or_default()
+            .votes
+            .insert(vote.voter, vote);
+        self.tally_release(id, self.tick);
+    }
+
+    fn tally_release(&mut self, request_id: [u8; 32], now: u64) {
+        let Some(round) = self.release_rounds.get(&request_id) else {
+            return;
+        };
+        if round.authorized_at.is_some() {
+            return; // lease already started; renewal needs a fresh request
+        }
+        let Some(req) = round.request.clone() else {
+            return;
+        };
+        let eligible: Vec<(NodeId, MeshPublicKey)> = self
+            .release_eligible(req.secret_id, req.witness_count, req.requester)
+            .into_iter()
+            .filter_map(|w| self.membership.get(&w).map(|m| (w, m.public_key)))
+            .collect();
+        let auth = crate::release::ReleaseAuthorization {
+            secret_id: req.secret_id,
+            requester: req.requester,
+            nonce: req.nonce,
+            votes: round.votes.values().cloned().collect(),
+        };
+        if auth.satisfies(req.quorum, &eligible) {
+            if let Some(r) = self.release_rounds.get_mut(&request_id) {
+                r.authorized_at = Some(now);
+            }
+        }
+    }
+
+    /// Whether `request_id`'s release is currently authorized: a quorum approved
+    /// and the lease has not expired (C4 — access is held for the lease, renewal
+    /// re-runs the vote).
+    pub fn release_authorized(&self, request_id: [u8; 32], now: u64) -> bool {
+        let Some(round) = self.release_rounds.get(&request_id) else {
+            return false;
+        };
+        let (Some(at), Some(req)) = (round.authorized_at, round.request.as_ref()) else {
+            return false;
+        };
+        now < at.saturating_add(req.lease_ticks)
+    }
+
+    /// The signed authorization for a granted release (the quorum's votes) — what
+    /// `citadel-mss` checks to unseal. `None` until a quorum is reached.
+    pub fn release_authorization(
+        &self,
+        request_id: [u8; 32],
+    ) -> Option<crate::release::ReleaseAuthorization> {
+        let round = self.release_rounds.get(&request_id)?;
+        round.authorized_at?;
+        let req = round.request.as_ref()?;
+        Some(crate::release::ReleaseAuthorization {
+            secret_id: req.secret_id,
+            requester: req.requester,
+            nonce: req.nonce,
+            votes: round.votes.values().cloned().collect(),
+        })
     }
 
     /// Apply an enacted quarantine scope to `subject` in this view.

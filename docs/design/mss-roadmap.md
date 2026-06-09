@@ -104,8 +104,8 @@ earned over the existing probation window (reuse `promotion`).
 |---|------|-------|--------|--------|
 | S0 | tpm-core: `unseal_authorized` (quorum PolicyAuthorize for sealing) | TPM prereq | 2–3 d | no |
 | MSS1 | Secret authority + release protocol (request → vote → authorize → unseal) | Core | 1–2 wk | S0 |
-| MSS2 | Leases + revocation (TTL, renew-requires-fresh-quorum) | Core | 1 wk | MSS1 |
-| MSS3 | Gossip-wire the release protocol into `Node` | Mesh | 1 wk | MSS1, M2 pattern |
+| MSS2 | Leases + revocation | Core | ✅ done | MSS1 |
+| MSS3 | Gossip-wire the release protocol into `Node` | Mesh | ✅ done | MSS1 |
 | MSS4 | Decision audit + dashboard "Secrets" view | Read | 1 wk | MSS1, CP4 |
 | MSS5 | Mesh-sealed service identity (gate `tpm-tls` minting) | Identity | 1 wk | MSS1, E2 |
 | MSS6 | Threshold mode / distributed HSM (Shamir + threshold sig) | Crypto | 3–4 wk | MSS1 |
