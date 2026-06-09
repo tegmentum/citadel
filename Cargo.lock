@@ -652,6 +652,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "citadel-mss"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "citadel-mesh",
+ "serde",
+ "serde_json",
+ "tpm-core",
+]
+
+[[package]]
 name = "clang-sys"
 version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
