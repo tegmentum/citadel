@@ -110,7 +110,7 @@ earned over the existing probation window (reuse `promotion`).
 | MSS5 | Mesh-sealed service identity (gate `tpm-tls` minting) | Identity | ✅ done | MSS1, E2 |
 | MSS6 | Threshold custody (Shamir) | Crypto | ✅ done | MSS1 |
 | MSS6b | Threshold signing (FROST) | Crypto | ✅ done (trusted-dealer; DKG = follow-up) | MSS6 |
-| MSS7 | Escrow + break-glass + bootstrap class | Ops | 1 wk | MSS1, MSS2 |
+| MSS7 | Escrow + break-glass + bootstrap class | Ops | ✅ done | MSS1, MSS2 |
 
 **MVP = S0 + MSS1 + MSS2** — quorum-gated, leased release with revocation and
 audit. That covers all eight of the design's §20 success criteria except the

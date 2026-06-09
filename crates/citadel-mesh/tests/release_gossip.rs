@@ -133,3 +133,54 @@ fn service_identity_is_a_mesh_released_secret_class() {
         "a distrusted node cannot mint its identity"
     );
 }
+
+#[test]
+fn bootstrap_class_serves_a_probationary_node() {
+    const SECRET_B: [u8; 32] = [0xBC; 32];
+    // Attestation off (witness_count 0) so trust doesn't churn; the secret's own
+    // release quorum (n=5) is independent of attestation witnessing.
+    let mut mesh = Mesh::new("prod-east-1");
+    let cfg = NodeConfig {
+        witness_count: 0,
+        probe_interval: 1,
+        ..NodeConfig::default()
+    };
+    let workers: Vec<NodeId> = (1..=6)
+        .map(|s| mesh.add_node(s, "worker", cfg.clone()))
+        .collect();
+    mesh.wire_full_membership();
+    mesh.run(8);
+
+    // The requester is a freshly-(re)joined node: Probationary in every view
+    // (the state a cold-starting node is in).
+    let node = workers[0];
+    for &w in &workers {
+        mesh.node_mut(w).lift_quarantine(node, 8);
+    }
+    assert_eq!(
+        mesh.trust_of(workers[1], node),
+        Some(TrustState::Probationary)
+    );
+
+    // A bootstrap-class release is granted to a Probationary node...
+    let boot = mesh
+        .node_mut(node)
+        .request_release_classed(SECRET_B, [1u8; 32], 3, 5, 100, true, 20);
+    mesh.run(10);
+    let now = mesh.node(node).current_tick();
+    assert!(
+        mesh.node(node).release_authorized(boot, now),
+        "bootstrap class serves a probationary node"
+    );
+
+    // ...but a normal (Trusted-required) release is not.
+    let normal =
+        mesh.node_mut(node)
+            .request_release_classed(SECRET, [2u8; 32], 3, 5, 100, false, now + 1);
+    mesh.run(10);
+    let now2 = mesh.node(node).current_tick();
+    assert!(
+        !mesh.node(node).release_authorized(normal, now2),
+        "a high-value secret still needs Trusted"
+    );
+}

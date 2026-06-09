@@ -2913,7 +2913,32 @@ impl Node {
         lease_ticks: u64,
         tick: u64,
     ) -> [u8; 32] {
-        let req = crate::release::ReleaseRequest::create(
+        self.request_release_classed(
+            secret_id,
+            nonce,
+            quorum,
+            witness_count,
+            lease_ticks,
+            false,
+            tick,
+        )
+    }
+
+    /// Request release of a chosen class (`bootstrap = true` lets a
+    /// `Probationary` node obtain a cold-start secret — MSS7). Returns the
+    /// request id.
+    #[allow(clippy::too_many_arguments)]
+    pub fn request_release_classed(
+        &mut self,
+        secret_id: [u8; 32],
+        nonce: [u8; 32],
+        quorum: usize,
+        witness_count: usize,
+        lease_ticks: u64,
+        bootstrap: bool,
+        tick: u64,
+    ) -> [u8; 32] {
+        let req = crate::release::ReleaseRequest::create_classed(
             &self.keypair,
             self.id,
             secret_id,
@@ -2921,6 +2946,7 @@ impl Node {
             quorum,
             witness_count,
             lease_ticks,
+            bootstrap,
             tick,
         );
         let id = req.id();
@@ -2968,11 +2994,11 @@ impl Node {
         {
             return;
         }
-        // Approve iff this node independently classifies the requester Trusted (C3).
-        let approve = matches!(
-            self.membership.get(&req.requester).map(|m| m.trust),
-            Some(TrustState::Trusted)
-        );
+        // Approve iff this node independently classifies the requester Trusted
+        // (C3) — or, for a bootstrap-class secret, at least Probationary (MSS7).
+        let trust = self.membership.get(&req.requester).map(|m| m.trust);
+        let approve = matches!(trust, Some(TrustState::Trusted))
+            || (req.bootstrap && matches!(trust, Some(TrustState::Probationary)));
         let vote = crate::release::ReleaseVote::sign(&self.keypair, &req, self.id, approve, tick);
         self.release_rounds
             .entry(request_id)

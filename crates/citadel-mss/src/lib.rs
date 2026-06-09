@@ -16,9 +16,12 @@
 pub mod threshold;
 pub mod tsig;
 
-use citadel_mesh::crypto::MeshPublicKey;
+use std::collections::HashSet;
+
+use citadel_mesh::crypto::{MeshKeypair, MeshPublicKey, Signature};
 use citadel_mesh::id::Epoch;
 use citadel_mesh::{witness, NodeId};
+use serde::{Deserialize, Serialize};
 use tpm_core::backend::{KeyHandle, SealedData, TpmBackend};
 
 pub use citadel_mesh::release::{ReleaseAuthorization, ReleaseRequest, ReleaseVote};
@@ -37,6 +40,12 @@ pub struct SecretPolicy {
     pub witnesses: usize,
     /// Lease lifetime in ticks (the mesh enforces renewal).
     pub lease_ticks: u64,
+    /// Security officers required **in addition to** the mesh quorum for escrow
+    /// release (MSS7 / §15). `0` = no officer requirement.
+    pub min_officers: usize,
+    /// Whether this secret allows **break-glass**: officers alone (no mesh quorum)
+    /// may release it when the mesh is unreachable (MSS7 / C4). Audited loudly.
+    pub break_glass: bool,
 }
 
 /// A secret sealed under a mesh-gated policy. The blob is held by the requester's
@@ -141,6 +150,126 @@ pub fn open_authorized(
         policy_ref,
         approval_sig,
     )
+}
+
+// -- Officer escrow + break-glass (roadmap MSS7) ----------------------------
+//
+// High-value/recovery secrets can require N-of-M **security officers** in
+// addition to the mesh quorum (escrow, §15); and a secret may opt into
+// **break-glass**, where officers alone release it when the mesh is unreachable
+// (a partition). Break-glass is the emergency path and must be audited loudly.
+
+/// A security officer's signed approval of a secret release, bound to the
+/// request nonce (single-use, like a witness vote).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OfficerApproval {
+    pub officer: MeshPublicKey,
+    pub secret_id: [u8; 32],
+    pub nonce: [u8; 32],
+    pub signature: Signature,
+}
+
+impl OfficerApproval {
+    fn signing_bytes(secret_id: &[u8; 32], nonce: &[u8; 32]) -> Vec<u8> {
+        serde_json::to_vec(&("mss-officer-approval", secret_id, nonce)).expect("serializable")
+    }
+
+    /// Sign an approval as an officer.
+    pub fn sign(officer: &MeshKeypair, secret_id: [u8; 32], nonce: [u8; 32]) -> Self {
+        let signature = officer.sign(&Self::signing_bytes(&secret_id, &nonce));
+        OfficerApproval {
+            officer: officer.public(),
+            secret_id,
+            nonce,
+            signature,
+        }
+    }
+
+    pub fn verify(&self) -> bool {
+        self.officer.verify(
+            &Self::signing_bytes(&self.secret_id, &self.nonce),
+            &self.signature,
+        )
+    }
+}
+
+/// Count the **distinct registered officers** that validly approved this exact
+/// (secret, nonce). Forged, unregistered, duplicate, or stale approvals don't
+/// count.
+pub fn count_officer_approvals(
+    approvals: &[OfficerApproval],
+    officers: &[MeshPublicKey],
+    secret_id: [u8; 32],
+    nonce: [u8; 32],
+) -> usize {
+    let registered: HashSet<&MeshPublicKey> = officers.iter().collect();
+    let mut seen = HashSet::new();
+    approvals
+        .iter()
+        .filter(|a| {
+            a.secret_id == secret_id
+                && a.nonce == nonce
+                && registered.contains(&a.officer)
+                && a.verify()
+                && seen.insert(a.officer)
+        })
+        .count()
+}
+
+/// Open an escrowed secret (MSS7 / §15): requires **both** the mesh release
+/// quorum **and** ≥ `min_officers` registered officer approvals (officers + the
+/// mesh, bound to the same nonce). Either alone is insufficient.
+pub fn open_escrow(
+    backend: &dyn TpmBackend,
+    secret: &MeshSealedSecret,
+    mesh_auth: &ReleaseAuthorization,
+    eligible: &[WitnessKey],
+    officer_approvals: &[OfficerApproval],
+    officers: &[MeshPublicKey],
+) -> anyhow::Result<Vec<u8>> {
+    if mesh_auth.secret_id != secret.policy.secret_id {
+        anyhow::bail!("authorization is for a different secret");
+    }
+    if !mesh_auth.satisfies(secret.policy.quorum, eligible) {
+        anyhow::bail!("mesh quorum not satisfied");
+    }
+    let o = count_officer_approvals(
+        officer_approvals,
+        officers,
+        secret.policy.secret_id,
+        mesh_auth.nonce,
+    );
+    if o < secret.policy.min_officers {
+        anyhow::bail!(
+            "officer quorum not satisfied: {o} of {}",
+            secret.policy.min_officers
+        );
+    }
+    backend.unseal(&secret.sealed)
+}
+
+/// **Break-glass** open (MSS7 / C4): when the mesh is unreachable, ≥ `min_officers`
+/// registered officers alone release the secret — only if its policy opts in.
+/// The mesh quorum is bypassed, so the caller MUST record this as a loud,
+/// high-severity audit event.
+pub fn open_breakglass(
+    backend: &dyn TpmBackend,
+    secret: &MeshSealedSecret,
+    nonce: [u8; 32],
+    officer_approvals: &[OfficerApproval],
+    officers: &[MeshPublicKey],
+) -> anyhow::Result<Vec<u8>> {
+    if !secret.policy.break_glass {
+        anyhow::bail!("break-glass is not permitted for this secret");
+    }
+    let o = count_officer_approvals(officer_approvals, officers, secret.policy.secret_id, nonce);
+    if o < secret.policy.min_officers {
+        anyhow::bail!(
+            "officer quorum not satisfied: {o} of {}",
+            secret.policy.min_officers
+        );
+    }
+    backend.unseal(&secret.sealed)
 }
 
 // -- Threshold / distributed-HSM custody (roadmap MSS6) ---------------------
@@ -252,6 +381,8 @@ mod tests {
             quorum: 3,
             witnesses: 5,
             lease_ticks: 10,
+            min_officers: 0,
+            break_glass: false,
         };
         let eligible: Vec<WitnessKey> = assigned_witnesses(secret_id, &roster, 1, policy.witnesses)
             .into_iter()
@@ -460,5 +591,97 @@ mod tests {
         let sig = threshold_sign(&backend, &blobs[0..3], &public, msg).unwrap();
         assert!(tsig::verify(&public, msg, &sig));
         assert!(!tsig::verify(&public, b"issue-cert: cn=attacker", &sig));
+    }
+
+    // -- MSS7: officer escrow + break-glass --
+
+    fn officer(n: u8) -> MeshKeypair {
+        MeshKeypair::from_seed([200 + n; 32])
+    }
+
+    #[test]
+    fn escrow_needs_both_the_mesh_quorum_and_officers() {
+        let backend = MockBackend::new();
+        let (eligible, secret_id, mut policy) = fixture();
+        policy.min_officers = 2; // a recovery secret
+        let secret = seal(&backend, b"root-ca-key", policy).unwrap();
+        let rkp = kp(100);
+        let req = request(secret_id, &secret.policy, &rkp, [9u8; 32]);
+
+        // Full mesh quorum.
+        let votes: Vec<ReleaseVote> = eligible
+            .iter()
+            .map(|(wid, _)| ReleaseVote::sign(&kp(seed_of(*wid)), &req, *wid, true, 6))
+            .collect();
+        let auth = ReleaseAuthorization {
+            secret_id,
+            requester: req.requester,
+            nonce: req.nonce,
+            votes,
+        };
+
+        let officers = vec![
+            officer(1).public(),
+            officer(2).public(),
+            officer(3).public(),
+        ];
+        let two = vec![
+            OfficerApproval::sign(&officer(1), secret_id, req.nonce),
+            OfficerApproval::sign(&officer(2), secret_id, req.nonce),
+        ];
+        let one = vec![OfficerApproval::sign(&officer(1), secret_id, req.nonce)];
+
+        // Quorum + 2 officers → opens.
+        assert_eq!(
+            open_escrow(&backend, &secret, &auth, &eligible, &two, &officers).unwrap(),
+            b"root-ca-key"
+        );
+        // Quorum + only 1 officer → refused.
+        assert!(open_escrow(&backend, &secret, &auth, &eligible, &one, &officers).is_err());
+        // 2 officers but NO mesh quorum → refused.
+        let no_quorum = ReleaseAuthorization {
+            secret_id,
+            requester: req.requester,
+            nonce: req.nonce,
+            votes: vec![],
+        };
+        assert!(open_escrow(&backend, &secret, &no_quorum, &eligible, &two, &officers).is_err());
+    }
+
+    #[test]
+    fn break_glass_lets_officers_release_without_the_mesh() {
+        let backend = MockBackend::new();
+        let (_, secret_id, mut policy) = fixture();
+        policy.min_officers = 2;
+        policy.break_glass = true;
+        let secret = seal(&backend, b"emergency-recovery-key", policy).unwrap();
+        let nonce = [0xEEu8; 32];
+        let officers = vec![
+            officer(1).public(),
+            officer(2).public(),
+            officer(3).public(),
+        ];
+        let two = vec![
+            OfficerApproval::sign(&officer(1), secret_id, nonce),
+            OfficerApproval::sign(&officer(2), secret_id, nonce),
+        ];
+
+        // Officers alone (no mesh) open a break-glass secret.
+        assert_eq!(
+            open_breakglass(&backend, &secret, nonce, &two, &officers).unwrap(),
+            b"emergency-recovery-key"
+        );
+        // One officer is not enough.
+        assert!(open_breakglass(&backend, &secret, nonce, &two[0..1], &officers).is_err());
+
+        // A non-break-glass secret refuses the emergency path entirely.
+        let (_, sid2, mut p2) = fixture();
+        p2.min_officers = 2; // break_glass stays false
+        let normal = seal(&backend, b"x", p2).unwrap();
+        let two2 = vec![
+            OfficerApproval::sign(&officer(1), sid2, nonce),
+            OfficerApproval::sign(&officer(2), sid2, nonce),
+        ];
+        assert!(open_breakglass(&backend, &normal, nonce, &two2, &officers).is_err());
     }
 }

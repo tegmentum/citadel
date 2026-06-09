@@ -29,6 +29,10 @@ pub struct ReleaseRequest {
     pub witness_count: usize,
     /// Ticks the granted authorization remains valid before renewal (C4).
     pub lease_ticks: u64,
+    /// A **bootstrap-class** secret (MSS7 / C5): witnesses approve a requester at
+    /// `Probationary` trust, not only `Trusted` — for low-value cold-start secrets
+    /// (e.g. a new node's own service cert). `false` = full `Trusted` required.
+    pub bootstrap: bool,
     pub tick: u64,
     pub signature: Signature,
 }
@@ -39,6 +43,7 @@ impl ReleaseRequest {
         request_id(&self.secret_id, &self.requester, &self.nonce)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn signing_bytes(
         secret_id: &[u8; 32],
         requester: &NodeId,
@@ -46,6 +51,7 @@ impl ReleaseRequest {
         quorum: usize,
         witness_count: usize,
         lease_ticks: u64,
+        bootstrap: bool,
         tick: u64,
     ) -> Vec<u8> {
         serde_json::to_vec(&(
@@ -56,11 +62,13 @@ impl ReleaseRequest {
             quorum,
             witness_count,
             lease_ticks,
+            bootstrap,
             tick,
         ))
         .expect("serializable")
     }
 
+    /// A standard release request (full `Trusted` required).
     #[allow(clippy::too_many_arguments)]
     pub fn create(
         kp: &MeshKeypair,
@@ -72,6 +80,33 @@ impl ReleaseRequest {
         lease_ticks: u64,
         tick: u64,
     ) -> Self {
+        Self::create_classed(
+            kp,
+            requester,
+            secret_id,
+            nonce,
+            quorum,
+            witness_count,
+            lease_ticks,
+            false,
+            tick,
+        )
+    }
+
+    /// A release request for a chosen class (`bootstrap = true` accepts a
+    /// `Probationary` requester — MSS7 cold-start).
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_classed(
+        kp: &MeshKeypair,
+        requester: NodeId,
+        secret_id: [u8; 32],
+        nonce: [u8; 32],
+        quorum: usize,
+        witness_count: usize,
+        lease_ticks: u64,
+        bootstrap: bool,
+        tick: u64,
+    ) -> Self {
         let signature = kp.sign(&Self::signing_bytes(
             &secret_id,
             &requester,
@@ -79,6 +114,7 @@ impl ReleaseRequest {
             quorum,
             witness_count,
             lease_ticks,
+            bootstrap,
             tick,
         ));
         ReleaseRequest {
@@ -88,6 +124,7 @@ impl ReleaseRequest {
             quorum,
             witness_count,
             lease_ticks,
+            bootstrap,
             tick,
             signature,
         }
@@ -102,6 +139,7 @@ impl ReleaseRequest {
                 self.quorum,
                 self.witness_count,
                 self.lease_ticks,
+                self.bootstrap,
                 self.tick,
             ),
             &self.signature,
