@@ -89,6 +89,10 @@
       <div class="body feed" id="feed"><span class="empty">No events yet.</span></div>
     </div>
     <div class="panel" style="margin-top:16px">
+      <h2>Mesh-sealed secrets</h2>
+      <div class="body audit" id="secrets"><span class="empty">No release requests.</span></div>
+    </div>
+    <div class="panel" style="margin-top:16px">
       <h2>Operator audit</h2>
       <div class="body audit" id="audit"><span class="empty">No operator actions.</span></div>
     </div>
@@ -182,6 +186,15 @@ async function refreshFeed(){
   }
 }
 
+async function refreshSecrets(){
+  const r = await get('/v1/secrets');
+  $('secrets').innerHTML = r.length ? r.map(s =>
+    `<div><span class="${s.authorized?'ok':'bad'}">${s.authorized?'● released':'● denied'}</span> `+
+    `<span class="mono">${short(s.secret_id)}</span> &larr; <span class="mono">${short(s.requester)}</span> `+
+    `<span class="mono">${s.approvals}/${s.quorum} of ${s.eligible}</span></div>`).join('')
+    : '<span class="empty">No release requests.</span>';
+}
+
 async function refreshAudit(){
   const a = await get('/v1/audit');
   $('audit').innerHTML = a.length ? a.slice().reverse().map(e =>
@@ -191,7 +204,7 @@ async function refreshAudit(){
 
 async function tick(){
   try{
-    await Promise.all([refreshFleet(), refreshNodes(), refreshFeed(), refreshAudit()]);
+    await Promise.all([refreshFleet(), refreshNodes(), refreshFeed(), refreshSecrets(), refreshAudit()]);
     await refreshDetail();
     $('status').textContent = 'live · '+new Date().toLocaleTimeString();
     $('status').style.color = 'var(--trusted)';

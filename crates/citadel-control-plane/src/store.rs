@@ -9,6 +9,7 @@
 //! derives rollups on the way out.
 
 use citadel_mesh::evidence::EvidenceDurability;
+use citadel_mesh::release::ReleaseDecision;
 use citadel_mesh::types::AttestationResult;
 use citadel_mesh::NodeId;
 
@@ -47,6 +48,11 @@ pub trait ControlPlaneStore: Send + Sync {
     fn append_operator_audit(&mut self, entry: OperatorAuditEntry);
     /// The operator-action audit chain, in order.
     fn operator_audit(&self) -> Vec<OperatorAuditEntry>;
+    /// Replace the observed secret-release decisions (MSS4; latest poll wins —
+    /// the observer's snapshot is authoritative).
+    fn set_releases(&mut self, releases: Vec<ReleaseDecision>);
+    /// The current secret-release decisions.
+    fn releases(&self) -> Vec<ReleaseDecision>;
 }
 
 /// In-memory store — the default backend (tests, small fleets, the read-replica
@@ -58,6 +64,7 @@ pub struct MemStore {
     durability: std::collections::HashMap<NodeId, Vec<EvidenceDurability>>,
     events: Vec<TimelineEvent>,
     operator_audit: Vec<OperatorAuditEntry>,
+    releases: Vec<ReleaseDecision>,
 }
 
 impl MemStore {
@@ -123,5 +130,11 @@ impl ControlPlaneStore for MemStore {
     }
     fn operator_audit(&self) -> Vec<OperatorAuditEntry> {
         self.operator_audit.clone()
+    }
+    fn set_releases(&mut self, releases: Vec<ReleaseDecision>) {
+        self.releases = releases;
+    }
+    fn releases(&self) -> Vec<ReleaseDecision> {
+        self.releases.clone()
     }
 }

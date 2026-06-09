@@ -13,6 +13,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use citadel_mesh::evidence::EvidenceDurability;
+use citadel_mesh::release::ReleaseDecision;
 use citadel_mesh::types::AttestationResult;
 use citadel_mesh::NodeId;
 
@@ -25,6 +26,7 @@ const VERDICTS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("verdicts")
 const DURABILITY: TableDefinition<&[u8], &[u8]> = TableDefinition::new("durability");
 const EVENTS: TableDefinition<u64, &[u8]> = TableDefinition::new("events");
 const AUDIT: TableDefinition<u64, &[u8]> = TableDefinition::new("operator_audit");
+const RELEASES: TableDefinition<u64, &[u8]> = TableDefinition::new("releases");
 
 /// A durable control-plane store backed by an on-disk redb database.
 pub struct RedbStore {
@@ -50,6 +52,7 @@ impl RedbStore {
             w.open_table(DURABILITY)?;
             w.open_table(EVENTS)?;
             w.open_table(AUDIT)?;
+            w.open_table(RELEASES)?;
         }
         w.commit()?;
         Ok(RedbStore { db })
@@ -182,5 +185,24 @@ impl ControlPlaneStore for RedbStore {
     }
     fn operator_audit(&self) -> Vec<OperatorAuditEntry> {
         self.values::<u64, OperatorAuditEntry>(AUDIT)
+    }
+    fn set_releases(&mut self, releases: Vec<ReleaseDecision>) {
+        // Replace-wholesale: the observer's snapshot is authoritative. Store the
+        // whole set under one key.
+        let bytes = enc(&releases);
+        let w = self.db.begin_write().expect("redb write");
+        {
+            let mut t = w.open_table(RELEASES).expect("redb table");
+            t.insert(0u64, bytes.as_slice()).expect("redb insert");
+        }
+        w.commit().expect("redb commit");
+    }
+    fn releases(&self) -> Vec<ReleaseDecision> {
+        let r = self.db.begin_read().expect("redb read");
+        let t = r.open_table(RELEASES).expect("redb table");
+        t.get(0u64)
+            .expect("redb get")
+            .map(|g| dec(g.value()))
+            .unwrap_or_default()
     }
 }

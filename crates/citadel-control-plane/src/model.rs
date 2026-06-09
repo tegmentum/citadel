@@ -120,6 +120,21 @@ pub struct TimelineEvent {
     pub detail: String,
 }
 
+/// A mesh-sealed-secret release decision as presented to operators (MSS4): who
+/// requested which secret, the quorum tally of its assigned witnesses, and
+/// whether release was authorized. Derived from signed gossip — verifiable.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ReleaseView {
+    pub secret_id: String,
+    pub requester: String,
+    pub quorum: usize,
+    pub eligible: usize,
+    pub approvals: usize,
+    pub denials: usize,
+    pub authorized: bool,
+    pub lease_ticks: u64,
+}
+
 /// Map a derived [`TrustState`] into the fleet histogram.
 pub(crate) fn bump(h: &mut FleetHealth, trust: TrustState) {
     h.total += 1;

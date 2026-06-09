@@ -61,11 +61,20 @@ async fn main() -> anyhow::Result<()> {
     mesh.measured_state_change(bad, "sha256", 0, &[0xAA; 32]);
     mesh.run(20);
 
+    // A trusted node requests a mesh-sealed secret (granted by quorum); the
+    // tampered node requests another (denied) — both show in the Secrets panel.
+    mesh.node_mut(workers[1])
+        .request_release([0xA1; 32], [1u8; 32], 3, 5, 100, 44);
+    mesh.node_mut(bad)
+        .request_release([0xB2; 32], [2u8; 32], 3, 5, 100, 44);
+    mesh.run(10);
+
     // The control plane, with a registered operator.
     let operator = MeshKeypair::from_seed([50; 32]);
     let mut cp = ControlPlane::new(MemStore::new());
     cp.authorize_operator(operator.public());
-    cp.observe(mesh.node_mut(observer), 44);
+    cp.observe(mesh.node_mut(observer), 54);
+    cp.poll_releases(mesh.node(observer));
     for &w in &workers {
         cp.poll_durability(mesh.node(w));
     }
@@ -96,6 +105,7 @@ async fn main() -> anyhow::Result<()> {
             }
             let mut g = driver_cp.lock().unwrap();
             g.observe(mesh.node_mut(observer), tick);
+            g.poll_releases(mesh.node(observer));
             for &w in &workers {
                 g.poll_durability(mesh.node(w));
             }

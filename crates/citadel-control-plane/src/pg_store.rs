@@ -22,6 +22,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use citadel_mesh::evidence::EvidenceDurability;
+use citadel_mesh::release::ReleaseDecision;
 use citadel_mesh::types::AttestationResult;
 use citadel_mesh::NodeId;
 
@@ -38,6 +39,7 @@ CREATE TABLE IF NOT EXISTS events (seq BIGSERIAL PRIMARY KEY, subject TEXT NOT N
 CREATE INDEX IF NOT EXISTS events_tick ON events(tick);
 CREATE INDEX IF NOT EXISTS events_subject ON events(subject);
 CREATE TABLE IF NOT EXISTS operator_audit (seq BIGINT PRIMARY KEY, data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS releases (id INT PRIMARY KEY, data TEXT NOT NULL);
 ";
 
 /// A durable control-plane store over Postgres.
@@ -180,6 +182,20 @@ impl ControlPlaneStore for PgStore {
     }
     fn operator_audit(&self) -> Vec<OperatorAuditEntry> {
         self.json_rows("SELECT data FROM operator_audit ORDER BY seq", &[])
+    }
+    fn set_releases(&mut self, releases: Vec<ReleaseDecision>) {
+        // Replace-wholesale under a single row (the observer snapshot is authoritative).
+        self.exec(
+            "INSERT INTO releases (id, data) VALUES (0, $1)
+             ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data",
+            &[&serde_json::to_string(&releases).expect("ser")],
+        );
+    }
+    fn releases(&self) -> Vec<ReleaseDecision> {
+        self.json_rows("SELECT data FROM releases WHERE id = 0", &[])
+            .into_iter()
+            .next()
+            .unwrap_or_default()
     }
 }
 

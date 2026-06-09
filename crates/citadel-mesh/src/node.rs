@@ -3059,6 +3059,46 @@ impl Node {
         now < at.saturating_add(req.lease_ticks)
     }
 
+    /// This node's tally of every release round it has seen (MSS4) — the
+    /// auditable secret-access decisions, for a control-plane observer to ingest.
+    pub fn release_decisions(&self) -> Vec<crate::release::ReleaseDecision> {
+        self.release_rounds
+            .values()
+            .filter_map(|round| {
+                let req = round.request.as_ref()?;
+                let eligible: Vec<(NodeId, MeshPublicKey)> = self
+                    .release_eligible(req.secret_id, req.witness_count, req.requester)
+                    .into_iter()
+                    .filter_map(|w| self.membership.get(&w).map(|m| (w, m.public_key)))
+                    .collect();
+                let (mut approvals, mut denials) = (0usize, 0usize);
+                for v in round.votes.values() {
+                    if let Some((_, pk)) = eligible.iter().find(|(id, _)| *id == v.voter) {
+                        if v.verify(pk) {
+                            if v.approve {
+                                approvals += 1;
+                            } else {
+                                denials += 1;
+                            }
+                        }
+                    }
+                }
+                Some(crate::release::ReleaseDecision {
+                    secret_id: req.secret_id,
+                    requester: req.requester,
+                    nonce: req.nonce,
+                    quorum: req.quorum,
+                    eligible: eligible.len(),
+                    approvals,
+                    denials,
+                    authorized: round.authorized_at.is_some(),
+                    lease_ticks: req.lease_ticks,
+                    authorized_at: round.authorized_at,
+                })
+            })
+            .collect()
+    }
+
     /// The signed authorization for a granted release (the quorum's votes) — what
     /// `citadel-mss` checks to unseal. `None` until a quorum is reached.
     pub fn release_authorization(

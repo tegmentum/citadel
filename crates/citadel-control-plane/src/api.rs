@@ -17,7 +17,7 @@ use citadel_mesh::NodeId;
 
 use crate::{
     AgreementView, ControlPlane, ControlPlaneStore, EvidenceDurabilityView, FleetHealth, NodeView,
-    OperatorAction, OperatorAuditEntry, TimelineEvent, WriteError,
+    OperatorAction, OperatorAuditEntry, ReleaseView, TimelineEvent, WriteError,
 };
 
 #[derive(serde::Deserialize)]
@@ -73,6 +73,7 @@ pub fn router<S: ControlPlaneStore + 'static>(cp: Shared<S>) -> Router {
         .route("/v1/nodes/{id}/timeline", get(timeline::<S>))
         .route("/v1/events", get(events::<S>))
         .route("/v1/audit", get(operator_audit::<S>))
+        .route("/v1/secrets", get(secrets::<S>))
         .route("/v1/policies", post(publish_policy::<S>))
         .with_state(cp)
 }
@@ -157,6 +158,13 @@ async fn operator_audit<S: ControlPlaneStore + 'static>(
     State(cp): State<Shared<S>>,
 ) -> Json<Vec<OperatorAuditEntry>> {
     Json(cp.lock().unwrap().operator_audit())
+}
+
+/// `GET /v1/secrets` — the mesh-sealed-secret release decisions (MSS4).
+async fn secrets<S: ControlPlaneStore + 'static>(
+    State(cp): State<Shared<S>>,
+) -> Json<Vec<ReleaseView>> {
+    Json(cp.lock().unwrap().releases())
 }
 
 /// `POST /v1/policies` — validate + audit + **enqueue** an operator-authorized

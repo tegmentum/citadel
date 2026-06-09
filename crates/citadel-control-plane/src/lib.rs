@@ -35,7 +35,7 @@ pub use redb_store::RedbStore;
 
 pub use model::{
     AgreementView, DurabilityRecord, EvidenceDurabilityView, FleetHealth, NodeRecord, NodeView,
-    ReportView, TimelineEvent,
+    ReleaseView, ReportView, TimelineEvent,
 };
 pub use operator::{OperatorAction, OperatorAuditEntry, WriteError};
 pub use store::{ControlPlaneStore, MemStore};
@@ -376,6 +376,32 @@ impl<S: ControlPlaneStore> ControlPlane<S> {
         }
         self.store
             .upsert_durability(node.id(), node.evidence_durability());
+    }
+
+    /// Poll an observer node's secret-release decisions (MSS4) — its tally of
+    /// every release round it has witnessed. The observer's snapshot is
+    /// authoritative, so this replaces the stored set.
+    pub fn poll_releases(&mut self, node: &citadel_mesh::node::Node) {
+        self.store.set_releases(node.release_decisions());
+    }
+
+    /// The secret-release decisions as operator views (MSS4): the quorum tally +
+    /// authorized flag per request, derived from the signed gossip.
+    pub fn releases(&self) -> Vec<crate::ReleaseView> {
+        self.store
+            .releases()
+            .into_iter()
+            .map(|d| crate::ReleaseView {
+                secret_id: hex32(&d.secret_id),
+                requester: d.requester.to_hex(),
+                quorum: d.quorum,
+                eligible: d.eligible,
+                approvals: d.approvals,
+                denials: d.denials,
+                authorized: d.authorized,
+                lease_ticks: d.lease_ticks,
+            })
+            .collect()
     }
 
     /// A node's evidence-durability view (§17.3): each record is

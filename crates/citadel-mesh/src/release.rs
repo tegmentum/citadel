@@ -225,6 +225,25 @@ impl ReleaseAuthorization {
     }
 }
 
+/// A node's tally of one release round — the auditable record of a secret-access
+/// decision (MSS4): who requested, the quorum, how many eligible witnesses
+/// approved vs. denied, and whether it was authorized. Every node that saw the
+/// signed request + votes derives the same decision (witnessed + replicated).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReleaseDecision {
+    pub secret_id: [u8; 32],
+    pub requester: NodeId,
+    pub nonce: [u8; 32],
+    pub quorum: usize,
+    /// Eligible (assigned, requester-excluded) witnesses.
+    pub eligible: usize,
+    pub approvals: usize,
+    pub denials: usize,
+    pub authorized: bool,
+    pub lease_ticks: u64,
+    pub authorized_at: Option<u64>,
+}
+
 fn request_id(secret_id: &[u8; 32], requester: &NodeId, nonce: &[u8; 32]) -> [u8; 32] {
     let mut h = blake3::Hasher::new();
     h.update(b"mss-release\x00");
