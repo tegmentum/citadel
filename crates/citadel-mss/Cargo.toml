@@ -13,3 +13,4 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 blake3 = "1"
 rand = "0.8"
+frost-ed25519 = { version = "2", features = ["serde"] }

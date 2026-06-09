@@ -14,6 +14,7 @@
 //! bounded by HRW (C4); the authorization is nonce-bound (C5).
 
 pub mod threshold;
+pub mod tsig;
 
 use citadel_mesh::crypto::MeshPublicKey;
 use citadel_mesh::id::Epoch;
@@ -185,6 +186,44 @@ pub fn reconstruct(
         })
         .collect::<anyhow::Result<_>>()?;
     Ok(threshold::combine(&shares))
+}
+
+/// Generate a `threshold`-of-N FROST **signing** key (MSS6b) and seal one key
+/// package to each holder's TPM. Returns the group public package + the sealed
+/// per-holder packages. The signing key is never reassembled after this.
+pub fn distribute_signing_key(
+    backend: &dyn TpmBackend,
+    threshold: u16,
+    holders: &[NodeId],
+) -> anyhow::Result<(tsig::PublicKeyPackage, Vec<(NodeId, SealedData)>)> {
+    let (public, packages) = tsig::keygen(threshold, holders.len() as u16)?;
+    let sealed = holders
+        .iter()
+        .zip(packages)
+        .map(|(h, kp)| {
+            let bytes = serde_json::to_vec(&kp)?;
+            Ok((*h, backend.seal(&bytes, None)?))
+        })
+        .collect::<anyhow::Result<_>>()?;
+    Ok((public, sealed))
+}
+
+/// Produce a group signature over `message` from a threshold of holders' sealed
+/// key packages — the key is never reconstructed (MSS6b).
+pub fn threshold_sign(
+    backend: &dyn TpmBackend,
+    sealed_packages: &[SealedData],
+    public: &tsig::PublicKeyPackage,
+    message: &[u8],
+) -> anyhow::Result<tsig::Signature> {
+    let packages: Vec<tsig::KeyPackage> = sealed_packages
+        .iter()
+        .map(|s| {
+            let bytes = backend.unseal(s)?;
+            Ok(serde_json::from_slice(&bytes)?)
+        })
+        .collect::<anyhow::Result<_>>()?;
+    tsig::sign(&packages, public, message)
 }
 
 #[cfg(test)]
@@ -404,5 +443,22 @@ mod tests {
             reconstruct(&backend, &blobs[0..2]).unwrap(),
             secret.to_vec()
         );
+    }
+
+    #[test]
+    fn threshold_signing_over_sealed_shares() {
+        let backend = MockBackend::new();
+        let holders: Vec<NodeId> = (1u8..=5).map(id).collect();
+        let (public, sealed) = distribute_signing_key(&backend, 3, &holders).unwrap();
+        assert_eq!(sealed.len(), 5);
+
+        let msg = b"issue-cert: cn=workload-7";
+        let blobs: Vec<_> = sealed.iter().map(|(_, s)| s.clone()).collect();
+
+        // A threshold of holders produce a valid group signature; the signing
+        // key is never reconstructed.
+        let sig = threshold_sign(&backend, &blobs[0..3], &public, msg).unwrap();
+        assert!(tsig::verify(&public, msg, &sig));
+        assert!(!tsig::verify(&public, b"issue-cert: cn=attacker", &sig));
     }
 }
