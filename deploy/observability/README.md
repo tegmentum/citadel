@@ -40,3 +40,11 @@ A server binary that already holds the `ControlPlane` mounts it at `/metrics`
 `text/plain; version=0.0.4`). It lives in the server/daemon binary — which depends
 on both the control plane and the exporter — to avoid a crate cycle (the exporter
 depends on the control plane). Point the compose `citadel` scrape job there.
+
+## OBS5 — long-term storage & multi-cluster
+
+`otel-collector-config/collector-full.yaml` exports to Mimir (metrics), Tempo
+(traces), and Loki (logs); `collector-gateway.yaml` is the per-cluster forwarder
+for multi-cluster federation. `docker-compose-full.yml` + `grafana-datasources.yaml`
+run the full LGTM stack. See `multi-cluster.md`. Both collector configs are
+validated with `otelcol validate` against `otel-collector-contrib:0.103`.

@@ -1,0 +1,6 @@
+# Grafana datasource provisioning for the Citadel LGTM stack.
+apiVersion: 1
+datasources:
+  - { name: Mimir, type: prometheus, access: proxy, url: http://mimir:9009/prometheus, isDefault: true }
+  - { name: Tempo, type: tempo, access: proxy, url: http://tempo:3200 }
+  - { name: Loki, type: loki, access: proxy, url: http://loki:3100 }

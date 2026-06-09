@@ -1,0 +1,19 @@
+# OBS5 multi-cluster: a per-cluster agent Collector forwards (OTLP) to a central
+# gateway Collector, which stamps the originating cluster and writes to the global
+# backends. The shared citadel.cluster.id attribute keeps every signal
+# cluster-scoped across the federation ("mesh trust bundles", design §18).
+receivers:
+  otlp:
+    protocols:
+      grpc: { endpoint: 0.0.0.0:4317 }
+processors:
+  batch: {}
+exporters:
+  otlp/upstream:
+    endpoint: citadel-gateway:4317
+    tls: { insecure: true }
+service:
+  pipelines:
+    metrics: { receivers: [otlp], processors: [batch], exporters: [otlp/upstream] }
+    traces:  { receivers: [otlp], processors: [batch], exporters: [otlp/upstream] }
+    logs:    { receivers: [otlp], processors: [batch], exporters: [otlp/upstream] }
