@@ -108,7 +108,7 @@ earned over the existing probation window (reuse `promotion`).
 | MSS3 | Gossip-wire the release protocol into `Node` | Mesh | ✅ done | MSS1 |
 | MSS4 | Decision audit + dashboard "Secrets" view | Read | ✅ done | MSS1, CP4 |
 | MSS5 | Mesh-sealed service identity (gate `tpm-tls` minting) | Identity | ✅ done | MSS1, E2 |
-| MSS6 | Threshold custody (Shamir) | Crypto | ✅ done | MSS1 |
+| MSS6 | Threshold custody (Shamir; pluggable sharks/vsss) | Crypto | ✅ done | MSS1 |
 | MSS6b | Threshold signing (FROST) | Crypto | ✅ done (+ DKG + gossip transport) | MSS6 |
 | MSS7 | Escrow + break-glass + bootstrap class | Ops | ✅ done | MSS1, MSS2 |
 

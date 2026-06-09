@@ -15,3 +15,9 @@ blake3 = "1"
 rand = "0.8"
 frost-ed25519 = { version = "2", features = ["serde"] }
 sharks = "0.5"
+vsss-rs = { version = "5", optional = true }
+
+[features]
+# Pluggable Shamir backend: the reviewed `vsss-rs` crate as an alternative to the
+# default `sharks` (see threshold::SecretSharing).
+shamir-vsss = ["dep:vsss-rs"]

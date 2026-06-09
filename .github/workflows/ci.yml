@@ -69,3 +69,7 @@ jobs:
         run: cargo clippy -p citadel-control-plane --features daemon --all-targets -- -D warnings
       - name: Test (control-plane daemon feature)
         run: cargo test -p citadel-control-plane --features daemon --test cp7_daemon
+
+      # The pluggable vsss-rs Shamir backend (MSS) — off by default; build + test it.
+      - name: Test (mss shamir-vsss backend)
+        run: cargo test -p citadel-mss --features shamir-vsss
