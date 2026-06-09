@@ -436,3 +436,28 @@ async fn read_api_serves_timeline_and_change_feed() {
         .unwrap();
     assert_eq!(resp.status(), 200);
 }
+
+#[tokio::test]
+async fn dashboard_spa_is_served_at_root() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let (cp, _w, _o) = observed_mesh();
+    let app = api::router(Arc::new(Mutex::new(cp)));
+    let resp = app
+        .oneshot(Request::get("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.headers()["content-type"], "text/html; charset=utf-8");
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let html = String::from_utf8(bytes.to_vec()).unwrap();
+    // It's the agreement-first console wired to the CP endpoints.
+    assert!(html.contains("CITADEL"));
+    assert!(html.contains("agreement first"));
+    assert!(html.contains("/v1/mesh/health"));
+    assert!(html.contains("/v1/events?since="));
+    assert!(html.contains("/v1/audit"));
+}

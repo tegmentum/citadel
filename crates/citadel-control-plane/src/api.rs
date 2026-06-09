@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::response::Html;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use citadel_mesh::reference::ReferenceManifest;
@@ -54,9 +55,16 @@ fn write_status(e: WriteError) -> StatusCode {
 /// the synchronous read; no `.await` happens under it.
 pub type Shared<S> = Arc<Mutex<ControlPlane<S>>>;
 
-/// Build the read-API router over a shared control plane.
+/// The operator dashboard SPA (CP6) — a dependency-free single page that renders
+/// the agreement-first fleet/node views, change feed, and operator audit over
+/// the JSON endpoints below. Embedded so the control plane serves it with no
+/// build step or static-asset dependency.
+const DASHBOARD_HTML: &str = include_str!("../assets/dashboard.html");
+
+/// Build the control-plane router: the dashboard SPA at `/` + the JSON API.
 pub fn router<S: ControlPlaneStore + 'static>(cp: Shared<S>) -> Router {
     Router::new()
+        .route("/", get(dashboard))
         .route("/v1/mesh/health", get(mesh_health::<S>))
         .route("/v1/nodes", get(nodes::<S>))
         .route("/v1/nodes/{id}", get(node::<S>))
@@ -67,6 +75,21 @@ pub fn router<S: ControlPlaneStore + 'static>(cp: Shared<S>) -> Router {
         .route("/v1/audit", get(operator_audit::<S>))
         .route("/v1/policies", post(publish_policy::<S>))
         .with_state(cp)
+}
+
+/// Bind `addr` and serve the dashboard + API until shutdown (deployment entry
+/// point). The host drives the observer node and the write queues separately.
+pub async fn serve<S: ControlPlaneStore + 'static>(
+    addr: std::net::SocketAddr,
+    cp: Shared<S>,
+) -> std::io::Result<()> {
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, router(cp)).await
+}
+
+/// Serve the dashboard SPA (CP6).
+async fn dashboard() -> Html<&'static str> {
+    Html(DASHBOARD_HTML)
 }
 
 async fn mesh_health<S: ControlPlaneStore + 'static>(

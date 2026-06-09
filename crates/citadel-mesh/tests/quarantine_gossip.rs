@@ -98,6 +98,14 @@ fn full_isolation_waits_for_a_relayed_operator_approval() {
             "with the operator approval, node {w} enacts full isolation"
         );
     }
+
+    // The isolating quarantine freezes trust at `Isolated`: a fresh challenge
+    // no longer downgrades it back to `Suspicious`.
+    mesh.run(12);
+    assert_eq!(
+        mesh.trust_of(workers[0], subject),
+        Some(TrustState::Isolated)
+    );
 }
 
 #[test]

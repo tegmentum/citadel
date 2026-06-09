@@ -26,7 +26,7 @@ calendar (1 engineer). "Gating" = needs something outside the item itself.
 | CP4 | Forensic timeline + audit-chain verify + change feed | Read | ✅ done | CP1, CP2 |
 | M2 | Mesh: gossip-wire quarantine (proposal/vote/operator-approval) | Mesh prereq | ✅ done | no |
 | CP5 | Operator workflow (signed policy + quarantine) | Write | ✅ done | CP1; RVP, quarantine, M2 |
-| CP6 | Web dashboard SPA (all §16.3 views) | UI | 3–5 wk | CP1–CP5 view API |
+| CP6 | Web dashboard SPA (agreement-first) | UI | ✅ done (dependency-free SPA) | CP1–CP5 view API |
 | CP7 | Scale / HA (sharded observers, replica API) | Scale | 2–3 wk | CP1–CP5 |
 
 The first useful product is **M0 + M1 + CP1 + CP2** — a verifiable fleet view
@@ -212,12 +212,11 @@ existing signed artifacts.
   isolation, witnesses approve but it's gated; the CP relays the operator's
   signed approval and **the mesh enacts full isolation fleet-wide**; the relay is
   audited; an unregistered operator's approval is refused.
-* **Follow-up (pre-existing, minor):** an isolating quarantine sets trust
-  `Isolated`, but a witness's *direct* `set_trust` in `on_evidence` (on the next
-  challenge) can overwrite it to `Suspicious` — `aggregate_trust` already freezes
-  on quarantine, but that direct path doesn't. Enforcement keys off
-  `quarantine_of`/scope (which converges correctly), so this is cosmetic; gate
-  that direct `set_trust` on quarantine to make the trust enum match.
+* **Done — trust-freeze fix:** the verifier's *direct* `set_trust` in
+  `on_evidence` is now gated on quarantine, so an isolating quarantine's trust
+  stays `Isolated` instead of being downgraded to `Suspicious` by the next
+  challenge (matching the freeze `aggregate_trust` already applies). Asserted in
+  the quarantine-gossip test.
 
 ### CP6 — web dashboard SPA
 * **Goal:** the §16.3 views, **agreement-first**, for operators.
@@ -230,6 +229,17 @@ existing signed artifacts.
   a scenario and asserts the rendered agreement/evidence blocks.
 * **Effort:** 3–5 wk. **Gating:** the CP1–CP5 view API. **Decision:** frontend
   stack + auth (open question in the design).
+* **Done (v1, dependency-free):** an embedded single-page console
+  (`assets/dashboard.html`, served at `GET /` via `api::router`; `api::serve`
+  binds it) — **no JS/WASM build step**, so CI stays cargo-only. It polls the
+  JSON endpoints (3s) and renders **agreement-first**: fleet health histogram +
+  mesh-health/durability %, a node table (color-coded trust), and a node
+  drill-down that leads with "*N of M assigned witnesses agree*" + dissenters
+  with reasons + silent witnesses (never a bare alert), then evidence durability
+  and the per-node timeline; plus the live change feed (`/v1/events?since=`) and
+  the operator audit (`/v1/audit`). Tested: `GET /` serves the SPA wired to the
+  CP endpoints. **Follow-up:** auth (OIDC/mTLS) and a framework build if richer
+  UI is wanted — the JSON API is stable, so that's additive.
 
 ### CP7 — scale / HA
 * **Goal:** 10k+ nodes; resilient CP.

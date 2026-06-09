@@ -2329,9 +2329,14 @@ impl Node {
         }
         let verdict = result.result;
         // Our own direct observation — provisional until (and unless) the
-        // assigned-witness quorum decides otherwise in `aggregate_trust`.
-        self.membership
-            .set_trust(&ev.subject, verdict_to_trust(verdict));
+        // assigned-witness quorum decides otherwise in `aggregate_trust`. A
+        // quarantined subject's trust is frozen (e.g. `Isolated`); a fresh
+        // challenge must not downgrade it back to `Suspicious` (the same freeze
+        // `aggregate_trust` honours — it's lifted only on rejoin, design §13.5).
+        if !self.quarantine.contains_key(&ev.subject) {
+            self.membership
+                .set_trust(&ev.subject, verdict_to_trust(verdict));
+        }
         self.record_report(ev.subject, self.id, verdict);
         self.aggregate_trust(ev.subject);
         // Gossip the signed verdict so every node aggregates the same

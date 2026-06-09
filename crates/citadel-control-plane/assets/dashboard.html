@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Citadel Control Plane</title>
+<style>
+  :root {
+    --bg:#0e1116; --panel:#161b22; --line:#283039; --txt:#d6deeb; --dim:#8b97a7;
+    --trusted:#3fb950; --degraded:#d29922; --suspicious:#f85149; --isolated:#bc4cff;
+    --unknown:#6e7681; --accent:#58a6ff;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt);
+    font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  header { padding:14px 20px; border-bottom:1px solid var(--line);
+    display:flex; align-items:baseline; gap:16px; }
+  header h1 { font-size:16px; margin:0; letter-spacing:.5px; }
+  header .sub { color:var(--dim); font-size:12px; }
+  header .right { margin-left:auto; color:var(--dim); font-size:12px; }
+  .wrap { display:grid; grid-template-columns:1.4fr 1fr; gap:16px; padding:16px 20px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; }
+  .panel h2 { font-size:12px; text-transform:uppercase; letter-spacing:1px;
+    color:var(--dim); margin:0; padding:10px 14px; border-bottom:1px solid var(--line); }
+  .panel .body { padding:10px 14px; }
+  .stat-row { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:6px; }
+  .stat { background:var(--bg); border:1px solid var(--line); border-radius:6px;
+    padding:8px 12px; min-width:96px; }
+  .stat .n { font-size:20px; font-weight:600; }
+  .stat .l { font-size:11px; color:var(--dim); text-transform:uppercase; }
+  .bar { height:8px; border-radius:4px; background:var(--line); overflow:hidden; display:flex; }
+  .bar > span { display:block; height:100%; }
+  table { width:100%; border-collapse:collapse; }
+  th,td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); font-size:13px; }
+  th { color:var(--dim); font-weight:500; font-size:11px; text-transform:uppercase; }
+  tr.node { cursor:pointer; }
+  tr.node:hover { background:#1c2230; }
+  tr.node.sel { background:#202840; }
+  .pill { padding:1px 8px; border-radius:10px; font-size:11px; font-weight:600; }
+  .t-trusted { color:var(--trusted); } .t-degraded { color:var(--degraded); }
+  .t-suspicious { color:var(--suspicious); } .t-isolated,.t-retired { color:var(--isolated); }
+  .t-unknown,.t-untrusted,.t-probationary,.t-provisionally-admitted { color:var(--unknown); }
+  .mono { color:var(--dim); }
+  .agree { font-size:22px; font-weight:700; }
+  .dissent { color:var(--suspicious); }
+  .silent { color:var(--degraded); }
+  .ok { color:var(--trusted); } .bad { color:var(--suspicious); }
+  .feed div, .audit div { padding:3px 0; border-bottom:1px solid var(--line); font-size:12px; }
+  .feed .k { color:var(--accent); }
+  .empty { color:var(--dim); font-style:italic; }
+  .sub2 { color:var(--dim); font-size:12px; margin:0 0 8px; }
+  code { color:var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>CITADEL</h1>
+  <span class="sub">control plane &middot; verifying aggregator (not a root of trust)</span>
+  <span class="right" id="status">connecting&hellip;</span>
+</header>
+
+<div class="wrap">
+  <div>
+    <div class="panel">
+      <h2>Fleet health</h2>
+      <div class="body">
+        <div class="stat-row" id="fleet-stats"></div>
+        <div class="bar" id="fleet-bar"></div>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:16px">
+      <h2>Nodes</h2>
+      <div class="body" style="padding:0">
+        <table>
+          <thead><tr><th>node</th><th>role</th><th>trust</th><th>liveness</th><th>witnesses</th><th>rev</th></tr></thead>
+          <tbody id="nodes"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="panel">
+      <h2>Node &mdash; agreement first</h2>
+      <div class="body" id="detail"><span class="empty">Select a node to drill down.</span></div>
+    </div>
+    <div class="panel" style="margin-top:16px">
+      <h2>Change feed</h2>
+      <div class="body feed" id="feed"><span class="empty">No events yet.</span></div>
+    </div>
+    <div class="panel" style="margin-top:16px">
+      <h2>Operator audit</h2>
+      <div class="body audit" id="audit"><span class="empty">No operator actions.</span></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const short = h => (h && h.length > 12) ? h.slice(0,8)+'…'+h.slice(-4) : (h||'');
+const tcls = t => 't-'+(t||'unknown');
+async function get(u){ const r = await fetch(u); if(!r.ok) throw new Error(u+' '+r.status); return r.json(); }
+
+let selected = null;
+let feedCursor = 0;
+
+async function refreshFleet(){
+  const h = await get('/v1/mesh/health');
+  const cells = [
+    ['mesh health', h.mesh_health_pct.toFixed(1)+'%'],
+    ['durability', h.evidence_durability_pct.toFixed(1)+'%'],
+    ['total', h.total], ['trusted', h.trusted], ['suspicious', h.suspicious],
+    ['degraded', h.degraded], ['isolated', h.isolated], ['unknown', h.unknown],
+  ];
+  $('fleet-stats').innerHTML = cells.map(([l,n]) =>
+    `<div class="stat"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
+  const seg = (n,c) => h.total && n ? `<span style="width:${100*n/h.total}%;background:${c}"></span>` : '';
+  $('fleet-bar').innerHTML =
+    seg(h.trusted,'var(--trusted)')+seg(h.degraded,'var(--degraded)')+
+    seg(h.suspicious,'var(--suspicious)')+seg(h.isolated,'var(--isolated)')+
+    seg(h.unknown,'var(--unknown)');
+}
+
+async function refreshNodes(){
+  const ns = await get('/v1/nodes');
+  $('nodes').innerHTML = ns.map(n => `
+    <tr class="node ${n.id===selected?'sel':''}" data-id="${n.id}">
+      <td class="mono" title="${n.id}">${short(n.id)}</td>
+      <td>${n.role||'—'}</td>
+      <td><span class="pill ${tcls(n.trust)}">${n.trust}</span></td>
+      <td>${n.liveness}</td>
+      <td>${n.witnesses_agree}/${n.witnesses_total}</td>
+      <td class="mono">${n.last_policy_revision}</td>
+    </tr>`).join('') || '<tr><td colspan=6 class="empty">No nodes yet.</td></tr>';
+  for (const tr of document.querySelectorAll('tr.node'))
+    tr.onclick = () => { selected = tr.dataset.id; refreshNodes(); refreshDetail(); };
+}
+
+async function refreshDetail(){
+  if(!selected){ return; }
+  const [a, e] = await Promise.all([
+    get('/v1/nodes/'+selected+'/agreement').catch(()=>null),
+    get('/v1/nodes/'+selected+'/evidence').catch(()=>null),
+  ]);
+  let html = `<p class="sub2">node <code>${short(selected)}</code> &middot; policy rev ${a?a.policy_revision:'—'}</p>`;
+  if(a){
+    html += `<div class="agree">${a.agree}<span class="mono"> / ${a.assigned.length} witnesses agree</span></div>`;
+    html += `<p class="sub2">quorum ${a.quorum_threshold} &middot; reported ${a.reported}</p>`;
+    if(a.dissenters.length){
+      html += '<p class="dissent"><b>Dissenters</b></p>';
+      html += a.dissenters.map(d =>
+        `<div><span class="mono">${short(d.verifier)}</span> &rarr; <span class="dissent">${d.verdict}</span> ${d.reasons.join(', ')}</div>`).join('');
+    }
+    if(a.silent.length)
+      html += `<p class="silent">Silent (assigned, no report): ${a.silent.map(short).join(', ')}</p>`;
+    if(!a.dissenters.length && !a.silent.length)
+      html += '<p class="ok">Unanimous &mdash; all assigned witnesses agree.</p>';
+  } else html += '<p class="empty">No agreement record yet.</p>';
+
+  if(e && e.records_total){
+    html += `<p class="sub2" style="margin-top:10px"><b>Evidence durability</b> &middot; ${e.records_durable}/${e.records_total} reconstructable (${e.durability_pct.toFixed(1)}%)</p>`;
+    html += e.records.slice(0,6).map(r =>
+      `<div><span class="${r.reconstructable?'ok':'bad'}">${r.reconstructable?'✓':'✗'}</span> <span class="mono">${short(r.record_id)}</span> ${r.holders_acked}/${r.total} held (need ${r.threshold})</div>`).join('');
+  }
+  const tl = await get('/v1/nodes/'+selected+'/timeline').catch(()=>[]);
+  if(tl.length){
+    html += '<p class="sub2" style="margin-top:10px"><b>Timeline</b></p>';
+    html += tl.slice(-8).reverse().map(t =>
+      `<div><span class="mono">t${t.tick}</span> <span class="k">${t.kind}</span> ${t.detail}</div>`).join('');
+  }
+  $('detail').innerHTML = html;
+}
+
+async function refreshFeed(){
+  const evs = await get('/v1/events?since='+feedCursor);
+  if(evs.length){
+    for(const e of evs) feedCursor = Math.max(feedCursor, e.tick);
+    const rows = evs.slice(-12).reverse().map(e =>
+      `<div><span class="mono">t${e.tick}</span> <span class="k">${e.kind}</span> <span class="mono">${short(e.subject)}</span> ${e.detail}</div>`).join('');
+    const f = $('feed'); if(f.querySelector('.empty')) f.innerHTML='';
+    f.innerHTML = rows + f.innerHTML;
+  }
+}
+
+async function refreshAudit(){
+  const a = await get('/v1/audit');
+  $('audit').innerHTML = a.length ? a.slice().reverse().map(e =>
+    `<div><span class="mono">#${e.seq} t${e.tick}</span> <span class="k">${e.kind}</span> op <span class="mono">${short(e.operator)}</span> &rarr; <span class="mono">${short(e.target)}</span></div>`).join('')
+    : '<span class="empty">No operator actions.</span>';
+}
+
+async function tick(){
+  try{
+    await Promise.all([refreshFleet(), refreshNodes(), refreshFeed(), refreshAudit()]);
+    await refreshDetail();
+    $('status').textContent = 'live · '+new Date().toLocaleTimeString();
+    $('status').style.color = 'var(--trusted)';
+  }catch(err){
+    $('status').textContent = 'disconnected · '+err.message;
+    $('status').style.color = 'var(--suspicious)';
+  }
+}
+tick();
+setInterval(tick, 3000);
+</script>
+</body>
+</html>
