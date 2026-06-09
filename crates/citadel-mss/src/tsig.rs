@@ -43,7 +43,6 @@ pub fn keygen(threshold: u16, n: u16) -> anyhow::Result<(PublicKeyPackage, Vec<K
 pub fn keygen_dkg(threshold: u16, n: u16) -> anyhow::Result<(PublicKeyPackage, Vec<KeyPackage>)> {
     use frost::keys::dkg;
     use frost::Identifier;
-    let mut rng = OsRng;
     let ids: Vec<Identifier> = (1..=n)
         .map(|i| Identifier::try_from(i).map_err(|e| anyhow::anyhow!("identifier: {e}")))
         .collect::<anyhow::Result<_>>()?;
@@ -52,7 +51,7 @@ pub fn keygen_dkg(threshold: u16, n: u16) -> anyhow::Result<(PublicKeyPackage, V
     let mut r1_secrets = BTreeMap::new();
     let mut r1_pkgs = BTreeMap::new();
     for id in &ids {
-        let (secret, pkg) = dkg::part1(*id, n, threshold, &mut rng)?;
+        let (secret, pkg) = dkg::part1(*id, n, threshold, OsRng)?;
         r1_secrets.insert(*id, secret);
         r1_pkgs.insert(*id, pkg);
     }
