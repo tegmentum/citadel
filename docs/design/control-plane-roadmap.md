@@ -263,9 +263,17 @@ existing signed artifacts.
   **Retention** (`retain_events`) prunes old timeline events; the audit chain is
   never pruned. **Load smoke:** 600 subjects × 4 verifiers ingest + aggregate
   correctly. Store ops `replace_verdicts`/`prune_events` added to all three
-  backends. **Remaining:** the scaled read API is just stateless `api::router`
-  replicas over a shared `PgStore` (deployment); a true 10k-node benchmark is a
-  load-rig task, not a unit test.
+  backends. **Deployment:** the `control-plane` server binary
+  (`src/bin/control-plane.rs`) serves the dashboard + API over an env-selected
+  store (`mem`/`redb`/`pg`) and an optional shard identity — run N stateless
+  replicas over a shared `PgStore` for the scaled read API; runtime-smoke-checked
+  (`GET /` + endpoints serve). Topology, env, and the ingestion loop are in
+  `docs/deploy/control-plane.md`. **Load rig:** a runnable 10k-node ingestion
+  benchmark (`tests/cp7_load_bench.rs`, `#[ignore]`d) + methodology/targets in
+  `docs/deploy/load-rig.md` — written and compile-checked, **not yet run**. The
+  one networked piece left to assemble (from the existing agent + CP crates) is
+  the combined observer-ingestion daemon; everything it calls (`observe`,
+  `poll_durability`, the drain/relay loop) exists and is tested.
 * **Done (durable store backends):** the `ControlPlaneStore` trait now has two
   durable impls beside `MemStore`. **`RedbStore`** — embedded, pure-Rust ACID KV
   ([redb]); default-built + tested (round-trips the verified facts, survives a
