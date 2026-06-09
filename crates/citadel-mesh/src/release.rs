@@ -244,6 +244,16 @@ pub struct ReleaseDecision {
     pub authorized_at: Option<u64>,
 }
 
+/// The secret-class id for a node's **mesh-sealed service identity** (MSS5): the
+/// node's TLS/credential identity is released like any secret, so it is minted
+/// only while the mesh currently trusts the node. Stable per node.
+pub fn identity_secret_id(node: NodeId) -> [u8; 32] {
+    let mut h = blake3::Hasher::new();
+    h.update(b"mss-service-identity\x00");
+    h.update(&node.0);
+    *h.finalize().as_bytes()
+}
+
 fn request_id(secret_id: &[u8; 32], requester: &NodeId, nonce: &[u8; 32]) -> [u8; 32] {
     let mut h = blake3::Hasher::new();
     h.update(b"mss-release\x00");

@@ -483,6 +483,26 @@ pub fn mint_tls_identity(node: &mut Node, common_name: &str) -> Option<tpm_tls::
     Some(identity)
 }
 
+/// Mint this node's mesh-TLS identity **only if the mesh authorized its release**
+/// (MSS5): the identity is a secret class
+/// ([`identity_secret_id`](citadel_mesh::release::identity_secret_id)) the node
+/// requests like any secret, so a node the mesh no longer trusts cannot mint (or
+/// renew) its service identity. `identity_request_id` is the node's pending
+/// release request for that secret. Returns `None` if the release isn't
+/// authorized (refused without even minting) or the backend can't sign. The key
+/// stays TPM-held.
+pub fn mint_mesh_identity(
+    node: &mut Node,
+    common_name: &str,
+    identity_request_id: [u8; 32],
+    now: u64,
+) -> Option<tpm_tls::TpmTlsIdentity> {
+    if !node.release_authorized(identity_request_id, now) {
+        return None; // the mesh has not authorized this node's identity
+    }
+    mint_tls_identity(node, common_name)
+}
+
 /// The public key a peer seeded by `seed` presents.
 pub fn peer_public_key(seed: u8) -> citadel_mesh::crypto::MeshPublicKey {
     MeshKeypair::from_seed([seed; 32]).public()

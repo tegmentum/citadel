@@ -107,7 +107,7 @@ earned over the existing probation window (reuse `promotion`).
 | MSS2 | Leases + revocation | Core | ✅ done | MSS1 |
 | MSS3 | Gossip-wire the release protocol into `Node` | Mesh | ✅ done | MSS1 |
 | MSS4 | Decision audit + dashboard "Secrets" view | Read | ✅ done | MSS1, CP4 |
-| MSS5 | Mesh-sealed service identity (gate `tpm-tls` minting) | Identity | 1 wk | MSS1, E2 |
+| MSS5 | Mesh-sealed service identity (gate `tpm-tls` minting) | Identity | ✅ done | MSS1, E2 |
 | MSS6 | Threshold mode / distributed HSM (Shamir + threshold sig) | Crypto | 3–4 wk | MSS1 |
 | MSS7 | Escrow + break-glass + bootstrap class | Ops | 1 wk | MSS1, MSS2 |
 

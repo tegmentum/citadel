@@ -100,3 +100,36 @@ fn a_compromised_node_is_denied_at_renewal() {
         "a node whose trust dropped is denied at renewal"
     );
 }
+
+#[test]
+fn service_identity_is_a_mesh_released_secret_class() {
+    use citadel_mesh::release::identity_secret_id;
+    let (mut mesh, workers) = trusted_mesh();
+
+    // A trusted node's service identity is released by quorum (it may mint).
+    let good = workers[0];
+    let id_ok =
+        mesh.node_mut(good)
+            .request_release(identity_secret_id(good), [7u8; 32], 3, 5, 100, 20);
+    mesh.run(10);
+    let now = mesh.node(good).current_tick();
+    assert!(
+        mesh.node(good).release_authorized(id_ok, now),
+        "a trusted node may mint its mesh identity"
+    );
+
+    // A compromised node's identity is refused.
+    let bad = workers[5];
+    mesh.measured_state_change(bad, "sha256", 0, &[0xAA; 32]);
+    mesh.run(16);
+    assert_eq!(mesh.trust_of(workers[1], bad), Some(TrustState::Suspicious));
+    let id_bad =
+        mesh.node_mut(bad)
+            .request_release(identity_secret_id(bad), [8u8; 32], 3, 5, 100, 40);
+    mesh.run(12);
+    let now2 = mesh.node(bad).current_tick();
+    assert!(
+        !mesh.node(bad).release_authorized(id_bad, now2),
+        "a distrusted node cannot mint its identity"
+    );
+}
