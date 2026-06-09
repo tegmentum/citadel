@@ -63,6 +63,13 @@ pub struct ControlPlane<S: ControlPlaneStore> {
     witness_count: usize,
     /// Registered operator keys allowed to authorize writes (CP5).
     operators: HashSet<MeshPublicKey>,
+    /// Operator-authorized manifests awaiting relay into the mesh — the API
+    /// validates + enqueues (no node needed); the host loop drains and
+    /// broadcasts through the observer node (CP5 live `POST` wiring).
+    pending_manifests: Vec<ReferenceManifest>,
+    /// Latest mesh tick the CP has observed — stamped onto operator audit
+    /// entries created by the (tick-less) HTTP path.
+    last_tick: u64,
 }
 
 impl<S: ControlPlaneStore> ControlPlane<S> {
@@ -72,7 +79,14 @@ impl<S: ControlPlaneStore> ControlPlane<S> {
             epoch: 0,
             witness_count: 0,
             operators: HashSet::new(),
+            pending_manifests: Vec::new(),
+            last_tick: 0,
         }
+    }
+
+    /// The latest mesh tick the CP has observed (used to stamp HTTP-path audits).
+    pub fn current_tick(&self) -> u64 {
+        self.last_tick
     }
 
     /// Register an operator key allowed to authorize writes (CP5).
@@ -87,11 +101,16 @@ impl<S: ControlPlaneStore> ControlPlane<S> {
     /// manifest's own authority signature, then broadcasts it via the observer
     /// node and records a tamper-evident audit link. Nodes still adopt it only
     /// if they trust the manifest's authority. Returns the manifest content id.
-    pub fn publish_policy(
+    /// Validate an operator-authorized policy publish and **enqueue** it for
+    /// relay — the node-free half used by the HTTP `POST /v1/policies` handler.
+    /// Checks (1) the action authorizes this manifest, (2) the operator is
+    /// registered, (3) its signature verifies, (4) the manifest's own authority
+    /// signature verifies; then audits + enqueues. The host loop drains via
+    /// [`Self::drain_pending_manifests`]. Returns the manifest content id.
+    pub fn submit_policy(
         &mut self,
         action: &OperatorAction,
         manifest: &ReferenceManifest,
-        observer: &mut citadel_mesh::node::Node,
         tick: u64,
     ) -> Result<[u8; 32], WriteError> {
         let target = manifest.content_id();
@@ -107,8 +126,32 @@ impl<S: ControlPlaneStore> ControlPlane<S> {
         if !manifest.verify_signature() {
             return Err(WriteError::BadArtifact);
         }
-        observer.broadcast_reference_manifest(manifest.clone());
+        self.last_tick = self.last_tick.max(tick);
         self.append_operator_audit("publish-policy", &target, &action.operator, tick);
+        self.pending_manifests.push(manifest.clone());
+        Ok(target)
+    }
+
+    /// Drain the manifests awaiting relay — the host loop broadcasts each
+    /// through its observer node (`node.broadcast_reference_manifest`).
+    pub fn drain_pending_manifests(&mut self) -> Vec<ReferenceManifest> {
+        std::mem::take(&mut self.pending_manifests)
+    }
+
+    /// Validate, audit, and relay a policy publish in one call via the supplied
+    /// observer node (the in-process convenience over
+    /// [`Self::submit_policy`] + [`Self::drain_pending_manifests`]).
+    pub fn publish_policy(
+        &mut self,
+        action: &OperatorAction,
+        manifest: &ReferenceManifest,
+        observer: &mut citadel_mesh::node::Node,
+        tick: u64,
+    ) -> Result<[u8; 32], WriteError> {
+        let target = self.submit_policy(action, manifest, tick)?;
+        for m in self.drain_pending_manifests() {
+            observer.broadcast_reference_manifest(m);
+        }
         Ok(target)
     }
 
@@ -182,6 +225,7 @@ impl<S: ControlPlaneStore> ControlPlane<S> {
     /// (M0) — the live ingestion feed (CP1): every known member's facts + every
     /// verified verdict it has buffered since the last call.
     pub fn observe(&mut self, node: &mut citadel_mesh::node::Node, tick: u64) {
+        self.last_tick = self.last_tick.max(tick);
         self.set_mesh_params(node.mesh_epoch(), node.witness_count());
         for m in node.membership().iter() {
             self.ingest_member(&m.update(), tick);

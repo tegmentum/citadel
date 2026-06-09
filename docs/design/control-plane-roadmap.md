@@ -24,7 +24,7 @@ calendar (1 engineer). "Gating" = needs something outside the item itself.
 | CP2 | Agreement records + drill-down (§17.4) | Read | ✅ done | CP1 |
 | CP3 | Evidence durability + reconstruction check | Read | ✅ done | CP1 |
 | CP4 | Forensic timeline + audit-chain verify + change feed | Read | ✅ done | CP1, CP2 |
-| CP5 | Operator workflow (signed policy / quarantine) | Write | ◑ policy publish + audit done; quarantine relay + live POST wiring remain | CP1; RVP, quarantine |
+| CP5 | Operator workflow (signed policy + audit) | Write | ✅ policy write path done; quarantine relay deferred to a mesh prereq (gossip-wire quarantine) | CP1; RVP, quarantine |
 | CP6 | Web dashboard SPA (all §16.3 views) | UI | 3–5 wk | CP1–CP5 view API |
 | CP7 | Scale / HA (sharded observers, replica API) | Scale | 2–3 wk | CP1–CP5 |
 
@@ -169,6 +169,29 @@ existing signed artifacts.
   others `REFERENCE_UNKNOWN`); a forged operator action fails signature at the
   nodes; the CP audit log is hash-chained.
 * **Effort:** 1–2 wk. **Gating:** CP1; reuses RVP + quarantine.
+* **Done (policy write path, end to end):** `OperatorAction` (a *registered*
+  operator's signature over `(kind, target)`); `submit_policy` validates four
+  things — the action authorizes *this* manifest, the operator is registered, its
+  signature verifies, and the manifest's **own authority signature** verifies —
+  then appends a BLAKE3 hash-chained `OperatorAuditEntry` and **enqueues** the
+  manifest; `drain_pending_manifests` lets the host loop relay it through the
+  observer node (decoupling the API from the node). `publish_policy` is the
+  in-process convenience. `POST /v1/policies` (validate+audit+enqueue; `WriteError`
+  → 403/400), `GET /v1/audit`. Nodes still adopt only if they trust the authority
+  — the CP holds no trust-deciding key. Tested: an authorized publish (lib + live
+  HTTP) is adopted by the mesh and audited; unauthorized/target-mismatch/forged
+  writes are refused, not relayed, not audited; the audit chain links + verifies.
+  Gating default is **single authorized-operator signature**; quorum/co-sign for
+  severe scopes is a documented extension (carry multiple `OperatorAction`s + a
+  per-kind threshold).
+* **Deferred — quarantine operator-action (mesh prerequisite):** the mesh's
+  quarantine flow (`propose`/`vote`/`tally`) is **not gossip-wired** — it's a
+  direct API + a pure tally function (harness-driven), with no
+  `GossipMessage::Quarantine` and no operator-approval artifact nodes ingest.
+  Relaying an operator quarantine approval therefore has no mesh entry point;
+  enacting it fleet-wide needs the quarantine protocol added to gossip first (a
+  **Track-M mesh item**, not CP-only). The CP-side `OperatorAction`/audit
+  mechanism already generalises to it once that exists.
 
 ### CP6 — web dashboard SPA
 * **Goal:** the §16.3 views, **agreement-first**, for operators.

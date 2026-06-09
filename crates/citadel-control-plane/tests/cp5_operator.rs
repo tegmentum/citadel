@@ -173,3 +173,78 @@ async fn read_api_serves_the_operator_audit() {
     assert_eq!(audit.as_array().unwrap().len(), 1);
     assert_eq!(audit[0]["kind"], "publish-policy");
 }
+
+#[tokio::test]
+async fn live_post_policies_validates_then_host_relays_to_the_mesh() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use std::sync::{Arc, Mutex};
+    use tower::ServiceExt;
+
+    let (mut mesh, workers, observer) = mesh_with_observer();
+    let authority = MeshKeypair::from_seed([200; 32]);
+    mesh.set_reference_authorities_all(TrustAnchors::with(authority.public()));
+    let operator = MeshKeypair::from_seed([50; 32]);
+    let stranger = MeshKeypair::from_seed([99; 32]);
+
+    let mut cp = ControlPlane::new(MemStore::new());
+    cp.authorize_operator(operator.public());
+    cp.observe(mesh.node_mut(observer), 7); // establish the current tick
+    let shared = Arc::new(Mutex::new(cp));
+    let app = citadel_control_plane::api::router(shared.clone());
+
+    let manifest = a_manifest(&authority);
+    let cid = manifest.content_id();
+
+    // An unregistered operator over HTTP → 403, nothing enqueued.
+    let unauth = OperatorAction::sign(&stranger, "publish-policy", cid);
+    let body =
+        serde_json::to_vec(&serde_json::json!({ "action": unauth, "manifest": manifest })).unwrap();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::post("/v1/policies")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+    assert!(shared.lock().unwrap().drain_pending_manifests().is_empty());
+
+    // An authorized publish over HTTP → 200 + content id; it is enqueued.
+    let action = OperatorAction::sign(&operator, "publish-policy", cid);
+    let body =
+        serde_json::to_vec(&serde_json::json!({ "action": action, "manifest": manifest })).unwrap();
+    let resp = app
+        .oneshot(
+            Request::post("/v1/policies")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let reply: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(reply["content_id"], citadel_mesh::NodeId(cid).to_hex());
+
+    // The host loop drains the queue and relays through the observer node.
+    let pending = shared.lock().unwrap().drain_pending_manifests();
+    assert_eq!(pending.len(), 1);
+    for m in pending {
+        mesh.node_mut(observer).broadcast_reference_manifest(m);
+    }
+    mesh.run(10);
+    for &w in &workers {
+        assert!(
+            mesh.node(w).has_reference_manifest(cid),
+            "mesh adopted the HTTP-published policy"
+        );
+    }
+    // The accepted write was audited.
+    assert_eq!(shared.lock().unwrap().operator_audit().len(), 1);
+}
