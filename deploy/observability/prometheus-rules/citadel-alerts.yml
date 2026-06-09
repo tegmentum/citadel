@@ -1,0 +1,41 @@
+# Citadel security-state alerts. Rules backed by the OBS2 exporter are active
+# today; rules marked (OBS4) depend on agent-emitted metrics not yet exported.
+groups:
+  - name: citadel-trust
+    rules:
+      - alert: ClusterTrustCollapse
+        expr: citadel_cluster_trust_score < 0.8
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "Cluster trust score below 0.8 (currently {{ $value }})"
+          description: "Fewer than 80% of known nodes are Trusted — investigate attestation/mesh health."
+      - alert: NodeCompromised
+        expr: citadel_node_trust_state < 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "Node {{ $labels.node }} is in a compromised trust state"
+      - alert: NodeQuarantined
+        expr: citadel_nodes_quarantined > 0
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $value }} node(s) currently isolated/suspicious"
+      - alert: AttestationFailureSpike
+        expr: rate(citadel_tpm_quote_failure_total[5m]) > 10
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Verified attestation failures spiking ({{ $value }}/s)"
+  - name: citadel-mesh-obs4
+    rules:
+      # (OBS4) These reference agent-emitted metrics added with the OTLP layer.
+      - alert: QuorumFailure
+        expr: rate(citadel_mesh_quorum_failure_total[5m]) > 0
+        labels: { severity: critical }
+        annotations: { summary: "Mesh quorum failures detected" }
+      - alert: MeshPartition
+        expr: citadel_mesh_partition_events_total > 0
+        labels: { severity: critical }
+        annotations: { summary: "Mesh partition event detected" }

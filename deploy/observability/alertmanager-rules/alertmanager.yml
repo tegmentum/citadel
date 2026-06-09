@@ -1,0 +1,16 @@
+# Minimal Alertmanager routing for Citadel security alerts.
+route:
+  receiver: citadel-secops
+  group_by: ['alertname', 'cluster']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers: [ severity="critical" ]
+      receiver: citadel-secops
+      repeat_interval: 1h
+receivers:
+  - name: citadel-secops
+    # Wire to your paging/webhook target in deployment.
+    webhook_configs:
+      - url: http://citadel-secops-webhook:9095/alerts
