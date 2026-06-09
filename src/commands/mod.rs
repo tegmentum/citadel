@@ -2,6 +2,7 @@ pub mod apply;
 pub mod attest;
 pub mod audit;
 pub mod capabilities;
+pub mod cluster;
 pub mod doctor;
 pub mod explain;
 pub mod graph;

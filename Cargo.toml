@@ -33,7 +33,7 @@ tpm-hw = ["tpm-core/tpm-hw"]
 vtpm = ["dep:vtpm-backend"]
 
 [[bin]]
-name = "tpm"
+name = "citadel"
 path = "src/main.rs"
 
 [dependencies]
@@ -50,6 +50,9 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 chrono.workspace = true
 uuid.workspace = true
+# Plain-HTTP client for `citadel cluster` (queries the control-plane API); no TLS
+# (local endpoint) to avoid a rustls provider in this binary.
+ureq = { version = "2", default-features = false }
 
 [dev-dependencies]
 tempfile.workspace = true

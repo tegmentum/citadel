@@ -6,18 +6,20 @@
 use std::process::Command;
 
 fn tpm_cmd() -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_tpm"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_citadel"));
     // Each test gets a unique temp store
     let store = tempfile::NamedTempFile::new().unwrap();
     cmd.env("TPM_STORE_PATH", store.path());
     cmd.env("NO_COLOR", "1");
+    cmd.arg("tpm");
     cmd
 }
 
 fn tpm_cmd_with_store(store_path: &std::path::Path) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_tpm"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_citadel"));
     cmd.env("TPM_STORE_PATH", store_path);
     cmd.env("NO_COLOR", "1");
+    cmd.arg("tpm");
     cmd
 }
 
@@ -42,9 +44,24 @@ fn help_output() {
 
 #[test]
 fn version_output() {
-    let (stdout, _, ok) = run(tpm_cmd().arg("--version"));
+    // --version is a top-level flag (citadel --version), not under `tpm`.
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_citadel"));
+    cmd.env("NO_COLOR", "1");
+    let (stdout, _, ok) = run(cmd.arg("--version"));
     assert!(ok);
+    assert!(stdout.contains("citadel"));
+}
+
+#[test]
+fn citadel_help_lists_groups() {
+    // Top-level help shows the command groups (tpm + cluster).
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_citadel"));
+    cmd.env("NO_COLOR", "1");
+    let (stdout, _, ok) = run(cmd.arg("--help"));
+    assert!(ok);
+    assert!(stdout.contains("Citadel"));
     assert!(stdout.contains("tpm"));
+    assert!(stdout.contains("cluster"));
 }
 
 #[test]

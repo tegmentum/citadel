@@ -6,9 +6,10 @@
 use std::process::Command;
 
 fn tpm(store: &std::path::Path) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_tpm"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_citadel"));
     cmd.env("TPM_STORE_PATH", store);
     cmd.env("NO_COLOR", "1");
+    cmd.arg("tpm");
     cmd
 }
 

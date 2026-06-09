@@ -4,10 +4,14 @@ use clap::{Parser, Subcommand};
 use tpm_core::output::OutputFormat;
 
 #[derive(Parser)]
-#[command(name = "tpm", about = "TPM operator platform", version)]
+#[command(
+    name = "citadel",
+    about = "Citadel — TPM-backed distributed trust platform",
+    version
+)]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Option<Command>,
+    pub command: Option<TopCommand>,
 
     /// Output format
     #[arg(long, global = true, default_value = "text", value_parser = parse_output_format)]
@@ -36,6 +40,44 @@ pub struct Cli {
 
 fn parse_output_format(s: &str) -> Result<OutputFormat, String> {
     s.parse()
+}
+
+/// Top-level command groups under `citadel`.
+#[derive(Subcommand)]
+pub enum TopCommand {
+    /// TPM operator platform — keys, attestation, sealing, measurement, audit.
+    Tpm {
+        #[command(subcommand)]
+        command: Command,
+    },
+    /// Cluster operations — query the Citadel control plane (mesh trust).
+    Cluster {
+        #[command(subcommand)]
+        command: ClusterCommand,
+    },
+}
+
+/// The control-plane base URL flag, shared by the cluster subcommands.
+const CONTROL_PLANE_HELP: &str = "Control-plane base URL";
+
+/// `citadel cluster ...` — operator queries against the control-plane HTTP API.
+#[derive(Subcommand)]
+pub enum ClusterCommand {
+    /// Cluster trust + mesh health (`GET /v1/mesh/health`).
+    Status {
+        #[arg(long, env = "CITADEL_CONTROL_PLANE", default_value = "http://127.0.0.1:8080", help = CONTROL_PLANE_HELP)]
+        endpoint: String,
+    },
+    /// List the nodes the control plane knows (`GET /v1/nodes`).
+    Nodes {
+        #[arg(long, env = "CITADEL_CONTROL_PLANE", default_value = "http://127.0.0.1:8080", help = CONTROL_PLANE_HELP)]
+        endpoint: String,
+    },
+    /// Cluster security-state metrics (`GET /metrics`, Prometheus exposition).
+    Metrics {
+        #[arg(long, env = "CITADEL_CONTROL_PLANE", default_value = "http://127.0.0.1:8080", help = CONTROL_PLANE_HELP)]
+        endpoint: String,
+    },
 }
 
 #[derive(Subcommand)]

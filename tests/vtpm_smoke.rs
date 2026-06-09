@@ -23,11 +23,12 @@ fn vtpm_component() -> Option<String> {
 fn tpm_vtpm(store: &std::path::Path) -> Command {
     let component = vtpm_component()
         .expect("TPM_VTPM_COMPONENT not set — point it at tpm-ephemeral.component.wasm");
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_tpm"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_citadel"));
     cmd.env("TPM_STORE_PATH", store);
     cmd.env("TPM_VTPM_COMPONENT", &component);
     cmd.env("NO_COLOR", "1");
     cmd.args(["--backend", "vtpm"]);
+    cmd.arg("tpm");
     cmd
 }
 
