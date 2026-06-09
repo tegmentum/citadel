@@ -35,6 +35,61 @@ pub fn keygen(threshold: u16, n: u16) -> anyhow::Result<(PublicKeyPackage, Vec<K
     Ok((public, packages))
 }
 
+/// Distributed key generation (DKG): the `threshold`-of-`n` key is built by the
+/// participants running the three FROST DKG rounds, so **no party — not even a
+/// dealer — ever holds the whole signing key**, even at generation time (the
+/// hardening over [`keygen`]'s trusted dealer). Orchestrated in-process here; the
+/// mesh would carry the rounds over gossip.
+pub fn keygen_dkg(threshold: u16, n: u16) -> anyhow::Result<(PublicKeyPackage, Vec<KeyPackage>)> {
+    use frost::keys::dkg;
+    use frost::Identifier;
+    let mut rng = OsRng;
+    let ids: Vec<Identifier> = (1..=n)
+        .map(|i| Identifier::try_from(i).map_err(|e| anyhow::anyhow!("identifier: {e}")))
+        .collect::<anyhow::Result<_>>()?;
+
+    // Round 1: each participant commits; its package goes to all the others.
+    let mut r1_secrets = BTreeMap::new();
+    let mut r1_pkgs = BTreeMap::new();
+    for id in &ids {
+        let (secret, pkg) = dkg::part1(*id, n, threshold, &mut rng)?;
+        r1_secrets.insert(*id, secret);
+        r1_pkgs.insert(*id, pkg);
+    }
+    let others_r1 = |me: &Identifier| -> BTreeMap<Identifier, dkg::round1::Package> {
+        r1_pkgs
+            .iter()
+            .filter(|(j, _)| *j != me)
+            .map(|(j, p)| (*j, p.clone()))
+            .collect()
+    };
+
+    // Round 2: each participant produces a package addressed to each other.
+    let mut r2_secrets = BTreeMap::new();
+    let mut r2_by_sender: BTreeMap<Identifier, BTreeMap<Identifier, dkg::round2::Package>> =
+        BTreeMap::new();
+    for id in &ids {
+        let (secret, pkgs) = dkg::part2(r1_secrets.remove(id).unwrap(), &others_r1(id))?;
+        r2_secrets.insert(*id, secret);
+        r2_by_sender.insert(*id, pkgs);
+    }
+
+    // Round 3: each participant derives its key package + the shared group key.
+    let mut key_packages = Vec::with_capacity(ids.len());
+    let mut public = None;
+    for id in &ids {
+        let r2_for_me: BTreeMap<Identifier, dkg::round2::Package> = r2_by_sender
+            .iter()
+            .filter(|(j, _)| *j != id)
+            .filter_map(|(j, pkgs)| pkgs.get(id).map(|p| (*j, p.clone())))
+            .collect();
+        let (kp, pubkey) = dkg::part3(&r2_secrets[id], &others_r1(id), &r2_for_me)?;
+        key_packages.push(kp);
+        public = Some(pubkey);
+    }
+    Ok((public.expect("n >= 1"), key_packages))
+}
+
 /// Produce a group signature from `packages` (≥ threshold holders' key packages)
 /// over `message`, running both FROST rounds + aggregation. The signing key is
 /// never reassembled. Fewer than the threshold cannot produce a verifying
@@ -86,6 +141,28 @@ mod tests {
             &[
                 packages[1].clone(),
                 packages[3].clone(),
+                packages[4].clone(),
+            ],
+            &public,
+            msg,
+        )
+        .unwrap();
+        assert!(verify(&public, msg, &sig2));
+    }
+
+    #[test]
+    fn dkg_generates_a_signable_key_with_no_dealer() {
+        // The key is built by the participants (no trusted dealer ever holds it).
+        let (public, packages) = keygen_dkg(3, 5).unwrap();
+        assert_eq!(packages.len(), 5);
+        let msg = b"dkg-signed";
+        let sig = sign(&packages[0..3], &public, msg).unwrap();
+        assert!(verify(&public, msg, &sig));
+        // A different 3-subset signs under the same group key.
+        let sig2 = sign(
+            &[
+                packages[1].clone(),
+                packages[2].clone(),
                 packages[4].clone(),
             ],
             &public,
