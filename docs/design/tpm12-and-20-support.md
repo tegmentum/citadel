@@ -92,7 +92,7 @@ for high-value secrets.
 | Phase | Scope |
 |---|---|
 | T1 | ✅ done. `BackendStatus.spec_version` + `Capabilities` (banks/ecc/policy_sessions/policy_authorize); mock/hardware/vtpm report `Tpm20`; `service::create_key` rejects unsupported algorithms with a clear error; `citadel tpm status` shows the spec tier. No behavior change for 2.0. |
-| T2 | `Tpm12Backend` (RSA keys, SHA-1 PCRs, `TPM_Quote`, seal-to-PCR, NV) via a 1.2 TSS shim, behind a `tpm12` feature. Auto-detect TIS 1.2 devices. |
+| T2 | ✅ done (software model). `Tpm12Backend` reports the 1.2 spec + capabilities; RSA keys / SHA-1 PCRs / quote / seal / NV work; ECC is rejected and the 2.0-only policy ops inherit the `bail!` default. Selectable via `--backend tpm12`. A real 1.2 device binds via a TrouSerS/TSS 1.2 shim (deployment), like `HardwareBackend` for 2.0. |
 | T3 | ✅ done (in-tree). `hash_for_bank` now first-class for `sha1` (1.2) + `sha384`, so measured boot / IMA / reference manifests work on the SHA-1 bank; `NodeTrustView` gains `tpm_spec` + a `citadel:tpm-spec=<2.0|1.2>` selector so policy can require 2.0. Spec now gossips end to end: a node advertises its tier (Node::set_tpm_spec from the backend, wired in build_node_with_backend) → MemberUpdate.tpm_spec → CP NodeRecord → spiffe_node_view → the selector auto-populates. |
 | T4 | Docs + a 1.2 conformance test (against a 1.2 simulator where available) mirroring the swtpm 2.0 path. |
 

@@ -47,6 +47,8 @@ fn create_backend(
     match name {
         "auto" => auto_detect_backend(vtpm_state_path),
         "mock" => Ok(Box::new(MockBackend::new())),
+        // Software-modeled TPM 1.2 tier (RSA-only, SHA-1 PCRs, no policy sessions).
+        "tpm12" => Ok(Box::new(tpm_core::backend::Tpm12Backend::new())),
         #[cfg(feature = "tpm-hw")]
         "device" => Ok(Box::new(tpm_core::backend::HardwareBackend::new_device()?)),
         #[cfg(not(feature = "tpm-hw"))]
@@ -119,7 +121,7 @@ fn create_backend(
         }
         other => {
             anyhow::bail!(
-                "unknown backend: '{}'\navailable backends: auto, mock, device, swtpm, vtpm",
+                "unknown backend: '{}'\navailable backends: auto, mock, tpm12, device, swtpm, vtpm",
                 other
             )
         }
