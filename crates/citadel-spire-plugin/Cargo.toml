@@ -1,0 +1,33 @@
+[package]
+name = "citadel-spire-plugin"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Citadel SPIRE NodeAttestor plugin: mesh trust gates SVID issuance (SP2)"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "citadel-spire-plugin"
+path = "src/main.rs"
+
+[dependencies]
+citadel-spiffe = { path = "../citadel-spiffe" }
+citadel-mesh = { path = "../citadel-mesh" }
+tonic = "0.12"
+prost = "0.13"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "net", "signal"] }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tokio-stream = { version = "0.1", features = ["net"] }
+
+[build-dependencies]
+tonic-build = "0.12"
+protoc-bin-vendored = "3"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tower = "0.5"
