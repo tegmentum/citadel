@@ -3,7 +3,7 @@ set -euo pipefail
 
 INSTALL_DIR="${HOME}/.local/bin"
 
-echo "Building tpm (release, with vtpm) from published git dependencies..."
+echo "Building citadel (release, with vtpm) from published git dependencies..."
 
 # The build depends on secure-log / vtpm-wasm as git dependencies. If a
 # local development override is present (a gitignored .cargo/config.toml
@@ -18,10 +18,10 @@ fi
 cargo build --release --features vtpm -p tpm 2>&1 | tail -1
 
 mkdir -p "$INSTALL_DIR"
-cp target/release/tpm "$INSTALL_DIR/tpm"
-chmod +x "$INSTALL_DIR/tpm"
+cp target/release/citadel "$INSTALL_DIR/citadel"
+chmod +x "$INSTALL_DIR/citadel"
 
-echo "Installed to ${INSTALL_DIR}/tpm"
+echo "Installed to ${INSTALL_DIR}/citadel"
 
 # Install the vTPM component (libtpms compiled to a WASM component).
 # Prefer a local build from a sibling libtpms-wasm checkout (fast during
@@ -61,8 +61,8 @@ SHELL_NAME="$(basename "$SHELL")"
 case "$SHELL_NAME" in
     zsh)
         mkdir -p "${HOME}/.zsh/completions"
-        "$INSTALL_DIR/tpm" completions zsh > "${HOME}/.zsh/completions/_tpm"
-        echo "Zsh completions installed to ~/.zsh/completions/_tpm"
+        "$INSTALL_DIR/citadel" tpm completions zsh > "${HOME}/.zsh/completions/_citadel"
+        echo "Zsh completions installed to ~/.zsh/completions/_citadel"
         if ! grep -q 'fpath.*zsh/completions' "${HOME}/.zshrc" 2>/dev/null; then
             echo 'fpath=(~/.zsh/completions $fpath)' >> "${HOME}/.zshrc"
             echo "Added completions dir to ~/.zshrc"
@@ -70,16 +70,16 @@ case "$SHELL_NAME" in
         ;;
     bash)
         mkdir -p "${HOME}/.local/share/bash-completion/completions"
-        "$INSTALL_DIR/tpm" completions bash > "${HOME}/.local/share/bash-completion/completions/tpm"
+        "$INSTALL_DIR/citadel" tpm completions bash > "${HOME}/.local/share/bash-completion/completions/citadel"
         echo "Bash completions installed"
         ;;
     fish)
         mkdir -p "${HOME}/.config/fish/completions"
-        "$INSTALL_DIR/tpm" completions fish > "${HOME}/.config/fish/completions/tpm.fish"
+        "$INSTALL_DIR/citadel" tpm completions fish > "${HOME}/.config/fish/completions/citadel.fish"
         echo "Fish completions installed"
         ;;
     *)
-        echo "Run 'tpm completions $SHELL_NAME' to generate completions manually"
+        echo "Run 'citadel tpm completions $SHELL_NAME' to generate completions manually"
         ;;
 esac
 

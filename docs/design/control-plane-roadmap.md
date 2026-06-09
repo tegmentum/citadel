@@ -27,7 +27,7 @@ calendar (1 engineer). "Gating" = needs something outside the item itself.
 | M2 | Mesh: gossip-wire quarantine (proposal/vote/operator-approval) | Mesh prereq | ✅ done | no |
 | CP5 | Operator workflow (signed policy + quarantine) | Write | ✅ done | CP1; RVP, quarantine, M2 |
 | CP6 | Web dashboard SPA (agreement-first) | UI | ✅ done (dependency-free SPA) | CP1–CP5 view API |
-| CP7 | Scale / HA (sharded observers, rollup, retention) | Scale | ✅ done (sharding + rollup + retention; load-rig benchmark remains) | CP1–CP5 |
+| CP7 | Scale / HA (sharded observers, rollup, retention) | Scale | ✅ done (sharding + rollup + retention; load rig run — 10k nodes, ~19k verdicts/s) | CP1–CP5 |
 
 The first useful product is **M0 + M1 + CP1 + CP2** — a verifiable fleet view
 with the agreement-first node drill-down, read-only, ~3–4 weeks.
@@ -268,9 +268,13 @@ existing signed artifacts.
   store (`mem`/`redb`/`pg`) and an optional shard identity — run N stateless
   replicas over a shared `PgStore` for the scaled read API; runtime-smoke-checked
   (`GET /` + endpoints serve). Topology, env, and the ingestion loop are in
-  `docs/deploy/control-plane.md`. **Load rig:** a runnable 10k-node ingestion
-  benchmark (`tests/cp7_load_bench.rs`, `#[ignore]`d) + methodology/targets in
-  `docs/deploy/load-rig.md` — written and compile-checked, **not yet run**.
+  `docs/deploy/control-plane.md`. **Load rig (run):** the 10k-node ingestion
+  benchmark (`tests/cp7_load_bench.rs`, `#[ignore]`d) — **ran**: 10,000 nodes ×
+  4 verifiers × 3 rounds = **120,000 verified verdicts ingested in 6.30s
+  (~19,050 verdicts/s, each Ed25519-re-verified)**; `fleet_health()` over 10,004
+  nodes in **8.6 ms** → 10,000 trusted; rollup collapsed 120k→80k (33%) in
+  0.01s. (Apple-silicon dev host, single CP, MemStore; methodology in
+  `docs/deploy/load-rig.md`.)
   **Combined daemon (done):** `daemon::run_observer_daemon` bridges a live
   observer agent (`citadel-agent`'s `AgentHandle::observer_feed`) into the CP via
   `ingest_observer_feed`, relaying pending operator writes back through the
