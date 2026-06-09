@@ -13,6 +13,8 @@
 //! gate (C2); categorical witness agreement decides (C3); the assigned set is
 //! bounded by HRW (C4); the authorization is nonce-bound (C5).
 
+pub mod threshold;
+
 use citadel_mesh::crypto::MeshPublicKey;
 use citadel_mesh::id::Epoch;
 use citadel_mesh::{witness, NodeId};
@@ -138,6 +140,51 @@ pub fn open_authorized(
         policy_ref,
         approval_sig,
     )
+}
+
+// -- Threshold / distributed-HSM custody (roadmap MSS6) ---------------------
+//
+// A secret is Shamir-split into shares, each **sealed to a distinct holder's
+// TPM** and placed across the fleet — so no single node holds the whole secret
+// at rest (C1). Reconstruction needs `threshold` holders to release + unseal
+// their shares; each release reuses the mesh-gated `open` path (MSS1–3). Below
+// is the distribution + reconstruction core; per-share mesh-gating is the same
+// quorum machinery already tested.
+
+/// Split `secret` into one sealed share per holder (Shamir `threshold`-of-N),
+/// each share sealed to that holder's TPM. Returns `(holder, sealed share)`.
+/// Hand each holder its own entry; no node receives more than its share.
+pub fn distribute(
+    backend: &dyn TpmBackend,
+    secret: &[u8],
+    threshold: u8,
+    holders: &[NodeId],
+) -> anyhow::Result<Vec<(NodeId, SealedData)>> {
+    let shares = threshold::split(secret, threshold, holders.len() as u8);
+    holders
+        .iter()
+        .zip(shares)
+        .map(|(h, s)| {
+            let bytes = serde_json::to_vec(&s)?;
+            Ok((*h, backend.seal(&bytes, None)?))
+        })
+        .collect()
+}
+
+/// Reconstruct a distributed secret from `threshold` holders' (unsealed) shares.
+/// Fewer than the threshold yields a different value, not the secret.
+pub fn reconstruct(
+    backend: &dyn TpmBackend,
+    sealed_shares: &[SealedData],
+) -> anyhow::Result<Vec<u8>> {
+    let shares: Vec<threshold::Share> = sealed_shares
+        .iter()
+        .map(|s| {
+            let bytes = backend.unseal(s)?;
+            Ok(serde_json::from_slice(&bytes)?)
+        })
+        .collect::<anyhow::Result<_>>()?;
+    Ok(threshold::combine(&shares))
 }
 
 #[cfg(test)]
@@ -321,6 +368,41 @@ mod tests {
         // The approval is nonce-bound: it doesn't open under a different nonce.
         assert!(
             open_authorized(&backend, &secret, &authority.id, b"other-nonce", &approval).is_err()
+        );
+    }
+
+    #[test]
+    fn distributed_custody_needs_a_threshold_of_holders() {
+        let backend = MockBackend::new();
+        let secret = b"ca-signing-key-material-distributed";
+        let holders: Vec<NodeId> = (1u8..=5).map(id).collect();
+
+        // Split into one sealed share per holder, 3-of-5.
+        let sealed = distribute(&backend, secret, 3, &holders).unwrap();
+        assert_eq!(sealed.len(), 5);
+
+        // No node holds the whole secret: each sealed share unseals to just a
+        // Shamir share, never the plaintext.
+        for (_, s) in &sealed {
+            let bytes = backend.unseal(s).unwrap();
+            let share: threshold::Share = serde_json::from_slice(&bytes).unwrap();
+            assert_ne!(share.ys, secret.to_vec());
+        }
+
+        // Any 3 holders reconstruct it; 2 do not.
+        let blobs: Vec<_> = sealed.iter().map(|(_, s)| s.clone()).collect();
+        assert_eq!(reconstruct(&backend, &blobs[0..3]).unwrap(), secret);
+        assert_eq!(
+            reconstruct(
+                &backend,
+                &[blobs[1].clone(), blobs[3].clone(), blobs[4].clone()]
+            )
+            .unwrap(),
+            secret
+        );
+        assert_ne!(
+            reconstruct(&backend, &blobs[0..2]).unwrap(),
+            secret.to_vec()
         );
     }
 }
