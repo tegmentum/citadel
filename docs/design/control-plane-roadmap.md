@@ -250,6 +250,19 @@ existing signed artifacts.
 * **Test:** a synthetic 10k-node verdict stream sustains ingestion within budget;
   losing an observer shard self-heals via anti-entropy.
 * **Effort:** 2–3 wk. **Gating:** CP1–CP5.
+* **Done (durable store backends):** the `ControlPlaneStore` trait now has two
+  durable impls beside `MemStore`. **`RedbStore`** — embedded, pure-Rust ACID KV
+  ([redb]); default-built + tested (round-trips the verified facts, survives a
+  reopen, drives a `ControlPlane` like `MemStore`); the first durable step and
+  the per-shard local store. **`PgStore`** (feature `postgres-store`) — Postgres
+  via the blocking client behind a `Mutex`: current-state rows (`nodes`,
+  `durability`) + append tables (`verdicts`, `events`) indexed by `subject`/`tick`
+  + the ordered `operator_audit` chain; the shared store for the scaled read API,
+  with TimescaleDB continuous-aggregates the natural home for the steady-state
+  rollup + retention. Compile-checked in CI; its round-trip test is `#[ignore]`d
+  (needs `CITADEL_PG_TEST_URL`). **Remaining for CP7:** observer sharding by HRW
+  subject-space, replica read API, the rollup/retention jobs, the 10k-node load
+  test.
 
 ---
 

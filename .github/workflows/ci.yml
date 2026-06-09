@@ -57,3 +57,8 @@ jobs:
       # on the equipped node instead (see docs/real-node-handoff.md).
       - name: Clippy (agent vtpm backend feature)
         run: cargo clippy -p citadel-agent --features vtpm --all-targets -- -D warnings
+
+      # The PgStore backend (CP7) is off by default — compile-check it here. Its
+      # round-trip test is #[ignore]d (needs a live Postgres via CITADEL_PG_TEST_URL).
+      - name: Clippy (control-plane postgres-store feature)
+        run: cargo clippy -p citadel-control-plane --features postgres-store --all-targets -- -D warnings

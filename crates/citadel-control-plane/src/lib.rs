@@ -20,7 +20,15 @@
 pub mod api;
 mod model;
 pub mod operator;
+mod redb_store;
 mod store;
+
+#[cfg(feature = "postgres-store")]
+mod pg_store;
+#[cfg(feature = "postgres-store")]
+pub use pg_store::PgStore;
+
+pub use redb_store::RedbStore;
 
 pub use model::{
     AgreementView, DurabilityRecord, EvidenceDurabilityView, FleetHealth, NodeRecord, NodeView,

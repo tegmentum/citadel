@@ -13,6 +13,13 @@ anyhow = { workspace = true }
 blake3 = "1"
 axum = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "net"] }
+redb = "2"
+postgres = { version = "0.19", optional = true }
+
+[features]
+# PgStore (CP7): a Postgres-backed durable store. Off by default — pulls the
+# blocking `postgres` client and needs a live database; its test is `#[ignore]`d.
+postgres-store = ["dep:postgres"]
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

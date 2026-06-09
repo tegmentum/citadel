@@ -497,7 +497,7 @@ mod tests {
 /// **signature-verified** receipt, and any `threshold` of them reconstruct the
 /// record. `holders_acked >= threshold` ⇒ reconstructable. Exposed for the
 /// control plane to report evidence durability (CP3).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EvidenceDurability {
     pub record_id: [u8; 32],
     pub threshold: usize,

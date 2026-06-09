@@ -52,7 +52,7 @@ impl OperatorAction {
 /// One link in the control plane's operator-action audit chain — a
 /// tamper-evident record of every write the CP relayed (the "record operator
 /// decisions" duty, §5.3).
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct OperatorAuditEntry {
     pub seq: u64,
     pub kind: String,

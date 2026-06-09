@@ -8,7 +8,7 @@ use citadel_mesh::NodeId;
 /// gossip via the observer node). Trust is **not** stored here — it is *derived*
 /// from the verified verdict history (the mesh decides trust; the CP recomputes
 /// it), so the CP can never assert a trust the evidence doesn't support.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct NodeRecord {
     pub id: NodeId,
     pub public_key: MeshPublicKey,
@@ -111,7 +111,7 @@ pub struct EvidenceDurabilityView {
 /// derived from a verified artifact (a signed verdict transition, an enrolment,
 /// an audit-chain break). Ordered by `tick`; feeds both the per-subject timeline
 /// and the fleet change feed.
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TimelineEvent {
     pub tick: u64,
     pub subject: String,
