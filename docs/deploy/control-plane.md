@@ -13,6 +13,17 @@ agreement, durability, or a write the mesh did not independently evaluate.
 This guide covers running it at three sizes. The binary is `control-plane`
 (`crates/citadel-control-plane/src/bin/control-plane.rs`).
 
+## See it first (zero setup)
+
+```sh
+cargo run -p citadel-control-plane --example dashboard_demo   # open http://127.0.0.1:8088/
+```
+
+Spins up an in-process mesh (healthy workers + one tampered node + shipped
+evidence + an operator-published policy), feeds it into a `ControlPlane`, keeps
+it live, and serves the real dashboard — the fastest way to see every panel
+populated.
+
 ## Roles
 
 A control-plane deployment has two roles, decoupled by a **shared store**:
