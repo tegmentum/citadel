@@ -13,6 +13,7 @@ members = [
     "crates/citadel-mss",
     "crates/citadel-spiffe",
     "crates/citadel-spire-plugin",
+    "crates/citadel-spire-controller",
     "crates/vtpm-backend",
 ]
 

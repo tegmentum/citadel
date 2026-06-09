@@ -1,0 +1,24 @@
+[package]
+name = "citadel-spire-controller"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Citadel SPIRE registration controller: mesh trust drives SVID registration entries (SP3)"
+
+[dependencies]
+citadel-spiffe = { path = "../citadel-spiffe" }
+citadel-mesh = { path = "../citadel-mesh" }
+tonic = "0.12"
+prost = "0.13"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+
+[build-dependencies]
+tonic-build = "0.12"
+protoc-bin-vendored = "3"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net"] }
+hyper-util = "0.1"
+tower = { version = "0.5", features = ["util"] }

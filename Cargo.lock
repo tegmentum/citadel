@@ -774,6 +774,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "citadel-spire-controller"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "citadel-mesh",
+ "citadel-spiffe",
+ "hyper-util",
+ "prost",
+ "protoc-bin-vendored",
+ "tokio",
+ "tonic",
+ "tonic-build",
+ "tower 0.5.3",
+ "tracing",
+]
+
+[[package]]
 name = "citadel-spire-plugin"
 version = "0.1.0"
 dependencies = [
