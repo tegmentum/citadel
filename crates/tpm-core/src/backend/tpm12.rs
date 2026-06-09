@@ -158,7 +158,7 @@ mod tests {
         assert!(b.verify_signature(&h, b"data", &sig).unwrap());
 
         let ak = b.create_ak(Algorithm::Rsa2048).unwrap();
-        b.pcr_extend("sha1", 7, &vec![0xAB; 20]).unwrap();
+        b.pcr_extend("sha1", 7, &[0xAB; 20]).unwrap();
         let quote = b.quote(&ak, b"nonce-12", "sha1", &[0, 7]).unwrap();
         let ak_pub = b.public_blob(&ak).unwrap();
         let v = b.verify_quote(&quote, &ak_pub, b"nonce-12").unwrap();
