@@ -94,7 +94,26 @@ for high-value secrets.
 | T1 | ✅ done. `BackendStatus.spec_version` + `Capabilities` (banks/ecc/policy_sessions/policy_authorize); mock/hardware/vtpm report `Tpm20`; `service::create_key` rejects unsupported algorithms with a clear error; `citadel tpm status` shows the spec tier. No behavior change for 2.0. |
 | T2 | ✅ done (software model). `Tpm12Backend` reports the 1.2 spec + capabilities; RSA keys / SHA-1 PCRs / quote / seal / NV work; ECC is rejected and the 2.0-only policy ops inherit the `bail!` default. Selectable via `--backend tpm12`. A real 1.2 device binds via a TrouSerS/TSS 1.2 shim (deployment), like `HardwareBackend` for 2.0. |
 | T3 | ✅ done (in-tree). `hash_for_bank` now first-class for `sha1` (1.2) + `sha384`, so measured boot / IMA / reference manifests work on the SHA-1 bank; `NodeTrustView` gains `tpm_spec` + a `citadel:tpm-spec=<2.0|1.2>` selector so policy can require 2.0. Spec now gossips end to end: a node advertises its tier (Node::set_tpm_spec from the backend, wired in build_node_with_backend) → MemberUpdate.tpm_spec → CP NodeRecord → spiffe_node_view → the selector auto-populates. |
-| T4 | Docs + a 1.2 conformance test (against a 1.2 simulator where available) mirroring the swtpm 2.0 path. |
+| T4 | ✅ done. A 1.2 conformance test exercises the supported surface (RSA key + sign/verify, AK + SHA-1 quote + verify, seal/unseal, NV) against `Tpm12Backend`, mirroring the 2.0 path; this doc is the usage reference. A real-1.2-simulator pass (jTSS/TrouSerS) lands with the hardware shim. |
 
 The 2.0 path is unaffected throughout: 1.2 is added as a capability-gated tier,
 not a rewrite.
+
+## Using the 1.2 tier
+
+```sh
+# Run any operator command on the (software-modeled) 1.2 tier:
+citadel tpm --backend tpm12 status         # -> spec: TPM 1.2
+citadel tpm --backend tpm12 key create signing/release --algorithm rsa2048   # ok
+citadel tpm --backend tpm12 key create signing/x --algorithm ecc-p256        # rejected: 1.2 is RSA-only
+```
+
+A node on a 1.2 device advertises `citadel:tpm-spec=1.2` to the mesh; a SPIRE
+registration entry that requires `citadel:tpm-spec=2.0` therefore excludes it from
+high-value workloads, while it still participates in the trust fabric and gets an
+attested RSA identity.
+
+The implementation status (T1–T4) is summarized above; what remains is purely the
+hardware binding for a real 1.2 device (a TrouSerS / TSS 1.2 shim implementing
+`TpmBackend`, selected by auto-detecting a TIS 1.2 device) — deployment work, not
+new design.

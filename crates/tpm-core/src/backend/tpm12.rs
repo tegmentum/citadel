@@ -146,6 +146,36 @@ mod tests {
     }
 
     #[test]
+    fn tpm12_conformance_rsa_quote_seal_nv() {
+        // The full TPM 1.2-supported surface, mirroring the 2.0 conformance path:
+        // RSA key + sign/verify, AK + SHA-1 quote + verify, seal/unseal, NV.
+        let b = Tpm12Backend::new();
+
+        let h = b
+            .create_key(Algorithm::Rsa2048, &ObjectPath::new("conf/rsa").unwrap())
+            .unwrap();
+        let sig = b.sign(&h, b"data").unwrap();
+        assert!(b.verify_signature(&h, b"data", &sig).unwrap());
+
+        let ak = b.create_ak(Algorithm::Rsa2048).unwrap();
+        b.pcr_extend("sha1", 7, &vec![0xAB; 20]).unwrap();
+        let quote = b.quote(&ak, b"nonce-12", "sha1", &[0, 7]).unwrap();
+        let ak_pub = b.public_blob(&ak).unwrap();
+        let v = b.verify_quote(&quote, &ak_pub, b"nonce-12").unwrap();
+        assert!(v.verified && v.signature_valid && v.nonce_matches);
+
+        let sealed = b.seal(b"top-secret", None).unwrap();
+        assert_eq!(b.unseal(&sealed).unwrap(), b"top-secret");
+
+        b.nv_define(0x1500001, 8).unwrap();
+        b.nv_write(0x1500001, &[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
+        assert_eq!(
+            b.nv_read(0x1500001, 8).unwrap(),
+            vec![1, 2, 3, 4, 5, 6, 7, 8]
+        );
+    }
+
+    #[test]
     fn sha1_measured_boot_works_but_policy_authorize_does_not() {
         let b = Tpm12Backend::new();
         // SHA-1 PCR extend (the 1.2 bank) works.
