@@ -1,0 +1,10 @@
+[package]
+name = "citadel-spiffe"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Citadel ↔ SPIFFE/SPIRE: mesh trust gates workload-identity issuance (SP1 core)"
+
+[dependencies]
+citadel-mesh = { path = "../citadel-mesh" }
+serde = { workspace = true }

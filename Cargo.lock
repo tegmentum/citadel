@@ -650,6 +650,7 @@ dependencies = [
  "blake3",
  "citadel-agent",
  "citadel-mesh",
+ "citadel-spiffe",
  "http-body-util",
  "postgres",
  "redb",
@@ -693,6 +694,14 @@ dependencies = [
  "sharks",
  "tpm-core",
  "vsss-rs",
+]
+
+[[package]]
+name = "citadel-spiffe"
+version = "0.1.0"
+dependencies = [
+ "citadel-mesh",
+ "serde",
 ]
 
 [[package]]

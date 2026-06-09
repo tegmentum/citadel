@@ -11,6 +11,7 @@ members = [
     "crates/citadel-agent",
     "crates/citadel-control-plane",
     "crates/citadel-mss",
+    "crates/citadel-spiffe",
     "crates/vtpm-backend",
 ]
 

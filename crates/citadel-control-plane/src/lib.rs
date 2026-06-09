@@ -687,6 +687,27 @@ impl<S: ControlPlaneStore> ControlPlane<S> {
         (trust, pass, total)
     }
 
+    /// This node's verified mesh state for SPIFFE selector derivation (SP4): the
+    /// trust level, the witness agreement behind it, and the appraised IMA policy
+    /// revision — all from the verified verdicts, never node-asserted.
+    pub fn spiffe_node_view(&self, node: &NodeId) -> citadel_spiffe::NodeTrustView {
+        let (trust, agree, total) = self.derived_trust(node);
+        let revision = self
+            .store
+            .verdicts_for(node)
+            .iter()
+            .map(|v| v.policy_revision)
+            .max();
+        citadel_spiffe::NodeTrustView {
+            trust_level: citadel_spiffe::TrustLevel::from_trust_state(trust),
+            quorum_agree: agree,
+            quorum_total: total,
+            ima_policy: revision.map(|r| format!("rev-{r}")),
+            tpm_ak: None,
+            mma_profile: None,
+        }
+    }
+
     /// A node as presented to operators (facts + derived trust + witness tally).
     pub fn node_view(&self, id: &NodeId) -> Option<NodeView> {
         let n = self.store.get_node(id)?;
@@ -752,6 +773,14 @@ impl<S: ControlPlaneStore> ControlPlane<S> {
     }
 }
 
+/// The control plane is the SPIFFE trust source (SP5): a node's identity decision
+/// follows its CP-derived categorical trust.
+impl<S: ControlPlaneStore> citadel_spiffe::TrustProvider for ControlPlane<S> {
+    fn trust_state(&self, node: &NodeId) -> Option<TrustState> {
+        Some(self.derived_trust(node).0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -813,6 +842,53 @@ mod tests {
         let v = cp.node_view(&subject).unwrap();
         assert_eq!(v.trust, "trusted");
         assert_eq!((v.witnesses_agree, v.witnesses_total), (3, 3));
+    }
+
+    #[test]
+    fn spiffe_identity_follows_mesh_trust() {
+        use citadel_spiffe::{IssuanceDecision, SpiffeId, TrustDomain, TrustLevel, TrustProvider};
+
+        let mut cp = ControlPlane::new(MemStore::new());
+        let subject_kp = MeshKeypair::from_seed([1; 32]);
+        let subject = NodeId(subject_kp.public().fingerprint());
+        let w: Vec<MeshKeypair> = (2u8..=5).map(|s| MeshKeypair::from_seed([s; 32])).collect();
+        cp.ingest_member(&member(&subject_kp, false), 1);
+        for kp in &w {
+            cp.ingest_member(&member(kp, false), 1);
+        }
+
+        // A verified node: SPIRE may issue, and the derived selectors say so.
+        for kp in &w {
+            cp.ingest_verdict(&verdict(kp, subject, Verdict::Pass, 10));
+        }
+        assert_eq!(cp.trust_level(&subject), TrustLevel::Verified);
+        assert_eq!(cp.decision(&subject), IssuanceDecision::Issue);
+        let sel = cp.spiffe_node_view(&subject).selectors();
+        assert!(sel.contains(&"citadel:trust-level=verified".to_string()));
+        assert!(sel.contains(&"citadel:quorum-state=healthy".to_string()));
+        assert!(sel.contains(&"citadel:ima-policy=rev-5".to_string()));
+
+        // The node's SPIFFE ID.
+        let id = SpiffeId::node(&TrustDomain::default(), &subject);
+        assert!(id.to_string().starts_with("spiffe://citadel.local/node/"));
+
+        // It is compromised → Quarantined → SPIRE must revoke, deny new.
+        for kp in &w {
+            cp.ingest_verdict(&verdict(kp, subject, Verdict::Fail, 20));
+        }
+        assert_eq!(cp.trust_level(&subject), TrustLevel::Quarantined);
+        let d = cp.decision(&subject);
+        assert!(d.must_revoke() && !d.may_issue_new() && !d.may_renew());
+        assert!(cp
+            .spiffe_node_view(&subject)
+            .selectors()
+            .contains(&"citadel:trust-level=quarantined".to_string()));
+
+        // An unknown node: no issuance (Suspect → renew-only, nothing to revoke).
+        assert_eq!(
+            cp.decision(&NodeId([0xEE; 32])),
+            IssuanceDecision::RenewOnly
+        );
     }
 
     #[test]
