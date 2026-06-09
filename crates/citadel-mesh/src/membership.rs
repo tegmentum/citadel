@@ -41,6 +41,11 @@ pub struct MemberUpdate {
     /// witness rosters.
     #[serde(default)]
     pub observer: bool,
+    /// The node's TPM spec tier (`"2.0"`/`"1.2"`), advertised so the control
+    /// plane can require 2.0 for high-value workloads (TPM 1.2/2.0 support, T3).
+    /// `None` until advertised (back-compat via serde).
+    #[serde(default)]
+    pub tpm_spec: Option<String>,
 }
 
 /// A node's view of one member.
@@ -60,6 +65,8 @@ pub struct Member {
     /// Whether this member is an observer (control plane) — excluded from
     /// witness assignment (M0). Learned via gossip.
     pub observer: bool,
+    /// The member's TPM spec tier (`"2.0"`/`"1.2"`), learned via gossip (T3).
+    pub tpm_spec: Option<String>,
 }
 
 impl Member {
@@ -71,6 +78,7 @@ impl Member {
             liveness: self.liveness,
             tls_cert: self.tls_cert.clone(),
             observer: self.observer,
+            tpm_spec: self.tpm_spec.clone(),
         }
     }
 }
@@ -120,6 +128,7 @@ impl Membership {
                 last_change_tick: tick,
                 tls_cert: None,
                 observer: false,
+                tpm_spec: None,
             },
         );
         Membership { me, members }
@@ -182,6 +191,7 @@ impl Membership {
                 last_change_tick: tick,
                 tls_cert: None,
                 observer: false,
+                tpm_spec: None,
             },
         );
         true
@@ -200,6 +210,14 @@ impl Membership {
     pub fn set_my_observer(&mut self) {
         if let Some(m) = self.members.get_mut(&self.me) {
             m.observer = true;
+        }
+    }
+
+    /// Advertise this node's TPM spec tier (`"2.0"`/`"1.2"`) to peers via gossip
+    /// (T3), so the control plane can require 2.0 for high-value workloads.
+    pub fn set_my_tpm_spec(&mut self, spec: impl Into<String>) {
+        if let Some(m) = self.members.get_mut(&self.me) {
+            m.tpm_spec = Some(spec.into());
         }
     }
 
@@ -240,6 +258,7 @@ impl Membership {
                         last_change_tick: tick,
                         tls_cert: u.tls_cert.clone(),
                         observer: u.observer,
+                        tpm_spec: u.tpm_spec.clone(),
                     },
                 );
                 true
@@ -253,6 +272,10 @@ impl Membership {
                 // Observer-ness is a stable property; learn it from gossip.
                 if u.observer {
                     m.observer = true;
+                }
+                // The TPM spec tier is a stable property; learn it from gossip.
+                if m.tpm_spec.is_none() && u.tpm_spec.is_some() {
+                    m.tpm_spec = u.tpm_spec.clone();
                 }
                 if supersedes(u.incarnation, u.liveness, m.incarnation, m.liveness) {
                     let changed_liveness = m.liveness != u.liveness;
@@ -367,6 +390,7 @@ mod tests {
                 liveness: LivenessState::Suspect,
                 tls_cert: None,
                 observer: false,
+                tpm_spec: None,
             },
             1,
         );
@@ -381,6 +405,7 @@ mod tests {
                 liveness: LivenessState::Alive,
                 tls_cert: None,
                 observer: false,
+                tpm_spec: None,
             },
             2,
         );
@@ -396,6 +421,7 @@ mod tests {
                 liveness: LivenessState::Alive,
                 tls_cert: None,
                 observer: false,
+                tpm_spec: None,
             },
             3,
         );
@@ -414,6 +440,7 @@ mod tests {
                 liveness: LivenessState::Suspect,
                 tls_cert: None,
                 observer: false,
+                tpm_spec: None,
             },
             1,
         );
@@ -431,6 +458,7 @@ mod tests {
                 liveness: LivenessState::Faulty,
                 tls_cert: None,
                 observer: false,
+                tpm_spec: None,
             },
             1,
         );

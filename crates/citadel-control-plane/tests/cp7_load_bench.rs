@@ -42,6 +42,7 @@ fn member(id: NodeId, key: citadel_mesh::crypto::MeshPublicKey) -> MemberUpdate 
         liveness: LivenessState::Alive,
         tls_cert: None,
         observer: false,
+        tpm_spec: None,
     }
 }
 

@@ -556,13 +556,20 @@ impl<S: ControlPlaneStore> ControlPlane<S> {
     pub fn ingest_member(&mut self, u: &MemberUpdate, tick: u64) {
         let prev = self.store.get_node(&u.node_id);
         let first_seen = prev.is_none();
+        let prev_role = prev.as_ref().map(|p| p.role.clone()).unwrap_or_default();
+        // Stable property: keep a previously-learned spec if this update omits it.
+        let tpm_spec = u
+            .tpm_spec
+            .clone()
+            .or_else(|| prev.as_ref().and_then(|p| p.tpm_spec.clone()));
         self.store.upsert_node(NodeRecord {
             id: u.node_id,
             public_key: u.public_key,
-            role: prev.map(|p| p.role).unwrap_or_default(),
+            role: prev_role,
             liveness: u.liveness,
             observer: u.observer,
             last_seen_tick: tick,
+            tpm_spec,
         });
         if first_seen && !u.observer {
             self.record_event(tick, u.node_id, "enrolled", String::new());
@@ -771,7 +778,7 @@ impl<S: ControlPlaneStore> ControlPlane<S> {
             ima_policy: revision.map(|r| format!("rev-{r}")),
             tpm_ak: None,
             mma_profile: None,
-            tpm_spec: None,
+            tpm_spec: self.store.get_node(node).and_then(|n| n.tpm_spec),
         }
     }
 
@@ -863,6 +870,7 @@ mod tests {
             liveness: LivenessState::Alive,
             tls_cert: None,
             observer,
+            tpm_spec: None,
         }
     }
 
@@ -909,6 +917,23 @@ mod tests {
         let v = cp.node_view(&subject).unwrap();
         assert_eq!(v.trust, "trusted");
         assert_eq!((v.witnesses_agree, v.witnesses_total), (3, 3));
+    }
+
+    #[test]
+    fn tpm_spec_propagates_from_membership_to_the_selector() {
+        use citadel_spiffe::TrustProvider;
+        let mut cp = ControlPlane::new(MemStore::new());
+        let kp = MeshKeypair::from_seed([1; 32]);
+        let node = NodeId(kp.public().fingerprint());
+        let mut u = member(&kp, false);
+        u.tpm_spec = Some("1.2".to_string());
+        cp.ingest_member(&u, 1);
+        let _ = cp.trust_level(&node);
+        let view = cp.spiffe_node_view(&node);
+        assert_eq!(view.tpm_spec.as_deref(), Some("1.2"));
+        assert!(view
+            .selectors()
+            .contains(&"citadel:tpm-spec=1.2".to_string()));
     }
 
     #[test]

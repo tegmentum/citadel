@@ -18,6 +18,10 @@ pub struct NodeRecord {
     pub observer: bool,
     /// Latest tick we heard anything about this node.
     pub last_seen_tick: u64,
+    /// The node's TPM spec tier (`"2.0"`/`"1.2"`), learned from membership
+    /// gossip — so policy can require 2.0 (TPM 1.2/2.0 support, T3).
+    #[serde(default)]
+    pub tpm_spec: Option<String>,
 }
 
 /// A node as presented to operators: its facts + the CP-derived trust + the

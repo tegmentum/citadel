@@ -162,6 +162,7 @@ fn ingestion_sustains_a_synthetic_fleet_stream() {
                 liveness: LivenessState::Alive,
                 tls_cert: None,
                 observer: false,
+                tpm_spec: None,
             },
             1,
         );
@@ -176,6 +177,7 @@ fn ingestion_sustains_a_synthetic_fleet_stream() {
                 liveness: LivenessState::Alive,
                 tls_cert: None,
                 observer: false,
+                tpm_spec: None,
             },
             1,
         );
@@ -211,6 +213,7 @@ fn mk_member(kp: &MeshKeypair) -> MemberUpdate {
         liveness: LivenessState::Alive,
         tls_cert: None,
         observer: false,
+        tpm_spec: None,
     }
 }
 

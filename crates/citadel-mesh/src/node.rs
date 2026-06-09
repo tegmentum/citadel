@@ -1116,6 +1116,13 @@ impl Node {
         self.membership.set_my_tls_cert(cert);
     }
 
+    /// Advertise this node's TPM spec tier (`"2.0"`/`"1.2"`) to the mesh (T3): it
+    /// rides membership gossip so the control plane can require 2.0 for high-value
+    /// workloads.
+    pub fn set_tpm_spec(&mut self, spec: impl Into<String>) {
+        self.membership.set_my_tpm_spec(spec);
+    }
+
     /// Broadcast an app-layer relay message on `topic` (a dumb channel for
     /// protocols above the mesh, e.g. MSS threshold-signing rounds). The payload
     /// is opaque to the mesh.

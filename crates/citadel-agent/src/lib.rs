@@ -443,6 +443,14 @@ pub fn build_node_with_backend(
     let membership = Membership::new(id, pubkey, role, 0);
     let attestor = Attestor::new(backend).expect("attestor");
     let mut node = Node::new(mesh_id.clone(), id, keypair, membership, attestor, config);
+    // Advertise this node's TPM spec tier (T3) from its backend, so the control
+    // plane can require 2.0 for high-value workloads.
+    if let Ok(status) = node.attestor().backend_arc().status() {
+        node.set_tpm_spec(match status.spec_version {
+            tpm_core::backend::SpecVersion::Tpm12 => "1.2",
+            tpm_core::backend::SpecVersion::Tpm20 => "2.0",
+        });
+    }
     // Adopt a reference from this node's own (default) measured state so the
     // mesh has a shared golden in the all-mock demo.
     if let Ok(reference) = node.current_reference() {
