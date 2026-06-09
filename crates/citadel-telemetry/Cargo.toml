@@ -1,0 +1,13 @@
+[package]
+name = "citadel-telemetry"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Citadel OTLP telemetry model: security-event logs + the containment trace (OBS4)"
+
+[dependencies]
+citadel-mesh = { path = "../citadel-mesh" }
+citadel-otel-schema = { path = "../citadel-otel-schema" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+blake3 = "1"

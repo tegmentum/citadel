@@ -829,6 +829,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "citadel-telemetry"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "citadel-mesh",
+ "citadel-otel-schema",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "citadel-trust-sync"
 version = "0.1.0"
 dependencies = [
