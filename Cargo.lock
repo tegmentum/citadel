@@ -719,6 +719,8 @@ dependencies = [
  "blake3",
  "citadel-agent",
  "citadel-mesh",
+ "citadel-metrics-exporter",
+ "citadel-otel-schema",
  "citadel-spiffe",
  "http-body-util",
  "postgres",
@@ -753,8 +755,6 @@ dependencies = [
 name = "citadel-metrics-exporter"
 version = "0.1.0"
 dependencies = [
- "citadel-control-plane",
- "citadel-mesh",
  "citadel-otel-schema",
 ]
 

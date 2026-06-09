@@ -75,6 +75,7 @@ pub fn router<S: ControlPlaneStore + 'static>(cp: Shared<S>) -> Router {
         .route("/v1/audit", get(operator_audit::<S>))
         .route("/v1/secrets", get(secrets::<S>))
         .route("/v1/policies", post(publish_policy::<S>))
+        .route("/metrics", get(metrics::<S>))
         .with_state(cp)
 }
 
@@ -101,6 +102,21 @@ async fn mesh_health<S: ControlPlaneStore + 'static>(
 
 async fn nodes<S: ControlPlaneStore + 'static>(State(cp): State<Shared<S>>) -> Json<Vec<NodeView>> {
     Json(cp.lock().unwrap().nodes())
+}
+
+/// Prometheus scrape endpoint (OBS2): the security-state exposition, projected
+/// from the control plane's verified state.
+async fn metrics<S: ControlPlaneStore + 'static>(
+    State(cp): State<Shared<S>>,
+) -> impl axum::response::IntoResponse {
+    let body = citadel_metrics_exporter::render(&cp.lock().unwrap().metrics_snapshot());
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            citadel_metrics_exporter::CONTENT_TYPE,
+        )],
+        body,
+    )
 }
 
 async fn node<S: ControlPlaneStore + 'static>(

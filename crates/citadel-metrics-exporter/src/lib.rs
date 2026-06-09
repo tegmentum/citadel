@@ -1,90 +1,69 @@
 //! # citadel-metrics-exporter (OBS2)
 //!
 //! Renders Citadel's **security-state** metrics in the Prometheus text exposition
-//! format, projecting the control plane's *verified* state (OBS1): cluster trust
-//! score, per-node trust gauge, node-state counts, verified attestation
-//! pass/fail, mesh peers, and quarantine. A scrape target for Prometheus or the
-//! OTel Collector's Prometheus receiver.
+//! format from a [`MetricsSnapshot`] — a plain projection of the control plane's
+//! *verified* state (the control plane builds the snapshot via
+//! `ControlPlane::metrics_snapshot`, so the metrics inherit its re-verification;
+//! the exporter just formats, with no dependency back on the control plane).
 //!
-//! This is a read-only projection — the control plane re-verifies every verdict
-//! before it counts, so the metrics inherit that integrity. Hot-path counters the
-//! CP can't observe (latency histograms, gossip, Hexis) are agent-side OTLP
-//! (roadmap OBS4).
+//! Hot-path counters the control plane can't observe (latency histograms, gossip,
+//! Hexis) are agent-side OTLP (roadmap OBS4).
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-use citadel_control_plane::{ControlPlane, ControlPlaneStore};
-use citadel_mesh::state::TrustState;
-use citadel_otel_schema::{metrics as m, trust_state_code, trust_state_label};
+use citadel_otel_schema::metrics as m;
 
-/// Parse the control plane's lowercase trust string back to a [`TrustState`] for
-/// the ordinal projection.
-fn trust_from_str(s: &str) -> TrustState {
-    match s {
-        "trusted" => TrustState::Trusted,
-        "degraded" => TrustState::Degraded,
-        "probationary" => TrustState::Probationary,
-        "provisionally_admitted" => TrustState::ProvisionallyAdmitted,
-        "untrusted" => TrustState::Untrusted,
-        "suspicious" => TrustState::Suspicious,
-        "isolated" => TrustState::Isolated,
-        "retired" => TrustState::Retired,
-        _ => TrustState::Unknown,
-    }
+/// One node's ordinal trust, for the per-node gauge.
+#[derive(Clone, Debug)]
+pub struct NodeTrust {
+    pub id: String,
+    pub role: String,
+    /// Ordinal trust code (see `citadel_otel_schema::trust_state_code`).
+    pub code: i64,
 }
 
-/// Render the `/metrics` body from the control plane's current verified state.
-pub fn render<S: ControlPlaneStore>(cp: &ControlPlane<S>) -> String {
-    let nodes = cp.nodes();
-    // Exclude observer/control-plane nodes from trust accounting (they ship no
-    // self-evidence) — mirror the fleet rollup.
-    let subjects: Vec<_> = nodes.iter().filter(|n| n.role != "observer").collect();
+/// A point-in-time projection of the cluster's verified security state.
+#[derive(Clone, Debug, Default)]
+pub struct MetricsSnapshot {
+    /// Fraction of known (non-observer) nodes currently Trusted.
+    pub cluster_trust_score: f64,
+    /// Known mesh peers (non-observer subjects).
+    pub mesh_peer_count: u64,
+    /// Nodes currently isolated/suspicious.
+    pub nodes_quarantined: u64,
+    /// Count of nodes per trust-state label.
+    pub nodes_by_state: BTreeMap<String, u64>,
+    /// Per-node ordinal trust.
+    pub per_node: Vec<NodeTrust>,
+    /// Verified passing/failing attestation verdicts.
+    pub tpm_quote_success_total: u64,
+    pub tpm_quote_failure_total: u64,
+}
 
-    let mut by_state: BTreeMap<&str, u64> = BTreeMap::new();
-    let mut trusted = 0u64;
-    for n in &subjects {
-        let st = trust_from_str(&n.trust);
-        *by_state.entry(trust_state_label(st)).or_default() += 1;
-        if matches!(st, TrustState::Trusted) {
-            trusted += 1;
-        }
-    }
-    let known = subjects.len() as u64;
-    let score = if known == 0 {
-        1.0
-    } else {
-        trusted as f64 / known as f64
-    };
-    let quarantined: u64 = subjects
-        .iter()
-        .filter(|n| {
-            matches!(
-                trust_from_str(&n.trust),
-                TrustState::Suspicious | TrustState::Isolated
-            )
-        })
-        .count() as u64;
-    let (pass, fail, _warn) = cp.verdict_totals();
+/// The Prometheus content type for the exposition format `render` produces.
+pub const CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
+/// Render the `/metrics` body from a snapshot.
+pub fn render(s: &MetricsSnapshot) -> String {
     let mut out = String::new();
     gauge(
         &mut out,
         m::CLUSTER_TRUST_SCORE,
         "Fraction of known nodes currently Trusted.",
-        &format!("{score:.4}"),
+        &format!("{:.4}", s.cluster_trust_score),
     );
     gauge(
         &mut out,
         m::MESH_PEER_COUNT,
         "Mesh peers the control plane knows.",
-        &known.to_string(),
+        &s.mesh_peer_count.to_string(),
     );
     gauge(
         &mut out,
         m::NODES_QUARANTINED,
         "Nodes currently isolated or suspicious.",
-        &quarantined.to_string(),
+        &s.nodes_quarantined.to_string(),
     );
 
     let _ = writeln!(
@@ -93,7 +72,7 @@ pub fn render<S: ControlPlaneStore>(cp: &ControlPlane<S>) -> String {
         m::NODES_BY_STATE
     );
     let _ = writeln!(out, "# TYPE {} gauge", m::NODES_BY_STATE);
-    for (state, count) in &by_state {
+    for (state, count) in &s.nodes_by_state {
         let _ = writeln!(out, "{}{{state=\"{state}\"}} {count}", m::NODES_BY_STATE);
     }
 
@@ -103,14 +82,14 @@ pub fn render<S: ControlPlaneStore>(cp: &ControlPlane<S>) -> String {
         m::NODE_TRUST_STATE
     );
     let _ = writeln!(out, "# TYPE {} gauge", m::NODE_TRUST_STATE);
-    for n in &subjects {
-        let code = trust_state_code(trust_from_str(&n.trust));
+    for n in &s.per_node {
         let _ = writeln!(
             out,
-            "{}{{node=\"{}\",role=\"{}\"}} {code}",
+            "{}{{node=\"{}\",role=\"{}\"}} {}",
             m::NODE_TRUST_STATE,
             n.id,
-            n.role
+            n.role,
+            n.code
         );
     }
 
@@ -118,13 +97,13 @@ pub fn render<S: ControlPlaneStore>(cp: &ControlPlane<S>) -> String {
         &mut out,
         m::TPM_QUOTE_SUCCESS_TOTAL,
         "Passing attestation verdicts the control plane has verified.",
-        pass,
+        s.tpm_quote_success_total,
     );
     counter(
         &mut out,
         m::TPM_QUOTE_FAILURE_TOTAL,
         "Failing attestation verdicts the control plane has verified.",
-        fail,
+        s.tpm_quote_failure_total,
     );
     out
 }
@@ -144,77 +123,31 @@ fn counter(out: &mut String, name: &str, help: &str, value: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use citadel_control_plane::{ControlPlane, MemStore};
-    use citadel_mesh::crypto::MeshKeypair;
-    use citadel_mesh::membership::MemberUpdate;
-    use citadel_mesh::state::LivenessState;
-    use citadel_mesh::types::{AttestationResult, Verdict};
-    use citadel_mesh::NodeId;
-
-    fn member(kp: &MeshKeypair) -> MemberUpdate {
-        MemberUpdate {
-            node_id: NodeId(kp.public().fingerprint()),
-            public_key: kp.public(),
-            incarnation: 0,
-            liveness: LivenessState::Alive,
-            tls_cert: None,
-            observer: false,
-        }
-    }
-    fn verdict(
-        verifier: &MeshKeypair,
-        subject: NodeId,
-        result: Verdict,
-        tick: u64,
-    ) -> AttestationResult {
-        AttestationResult {
-            subject,
-            verifier: NodeId(verifier.public().fingerprint()),
-            result,
-            reason_codes: vec![],
-            policy_revision: 5,
-            confidence: 1.0,
-            timestamp_tick: tick,
-            signature: citadel_mesh::crypto::Signature::zero(),
-        }
-        .signed(verifier)
-    }
 
     #[test]
-    fn renders_trust_projection_from_verified_state() {
-        let mut cp = ControlPlane::new(MemStore::new());
-        let subject_kp = MeshKeypair::from_seed([1; 32]);
-        let subject = NodeId(subject_kp.public().fingerprint());
-        let w: Vec<MeshKeypair> = (2u8..=4).map(|s| MeshKeypair::from_seed([s; 32])).collect();
-        cp.ingest_member(&member(&subject_kp), 1);
-        for kp in &w {
-            cp.ingest_member(&member(kp), 1);
-        }
-        for kp in &w {
-            cp.ingest_verdict(&verdict(kp, subject, Verdict::Pass, 10));
-        }
-
-        let body = render(&cp);
-        // The subject is Trusted; the witnesses have no verdicts about themselves
-        // (Unknown). Score = 1 trusted / 4 known.
-        assert!(body.contains("citadel_cluster_trust_score 0.2500"));
-        assert!(body.contains("citadel_mesh_peer_count 4"));
-        assert!(body.contains("citadel_nodes_by_state{state=\"trusted\"} 1"));
-        assert!(body.contains("citadel_tpm_quote_success_total 3"));
-        assert!(body.contains("citadel_nodes_quarantined 0"));
-        // The subject's per-node gauge reads the Trusted ordinal (4); it's the
-        // only Trusted node, so exactly one such line ends with " 4".
-        assert!(body
-            .lines()
-            .any(|l| l.starts_with("citadel_node_trust_state{") && l.ends_with(" 4")));
-
-        // Compromise the subject → quarantine count + failure counter move.
-        for kp in &w {
-            cp.ingest_verdict(&verdict(kp, subject, Verdict::Fail, 20));
-        }
-        let body = render(&cp);
+    fn renders_exposition_format() {
+        let mut by_state = BTreeMap::new();
+        by_state.insert("trusted".to_string(), 3u64);
+        by_state.insert("suspicious".to_string(), 1u64);
+        let snap = MetricsSnapshot {
+            cluster_trust_score: 0.75,
+            mesh_peer_count: 4,
+            nodes_quarantined: 1,
+            nodes_by_state: by_state,
+            per_node: vec![NodeTrust {
+                id: "ab".repeat(32),
+                role: "worker".into(),
+                code: 4,
+            }],
+            tpm_quote_success_total: 9,
+            tpm_quote_failure_total: 2,
+        };
+        let body = render(&snap);
+        assert!(body.contains("citadel_cluster_trust_score 0.7500"));
+        assert!(body.contains("# TYPE citadel_cluster_trust_score gauge"));
+        assert!(body.contains("citadel_nodes_by_state{state=\"trusted\"} 3"));
         assert!(body.contains("citadel_nodes_quarantined 1"));
-        assert!(body.contains("citadel_nodes_by_state{state=\"suspicious\"} 1"));
-        assert!(body.contains("citadel_tpm_quote_failure_total 3"));
+        assert!(body.contains("citadel_tpm_quote_failure_total 2"));
+        assert!(body.contains("role=\"worker\"} 4"));
     }
 }

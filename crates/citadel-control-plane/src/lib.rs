@@ -687,6 +687,55 @@ impl<S: ControlPlaneStore> ControlPlane<S> {
         (trust, pass, total)
     }
 
+    /// Project the cluster's verified security state into a Prometheus snapshot
+    /// (OBS2): per-node ordinal trust, state counts, the Trusted fraction, the
+    /// quarantine count, and verified attestation pass/fail. Every input is
+    /// re-verified by the CP, so the metrics inherit that integrity.
+    pub fn metrics_snapshot(&self) -> citadel_metrics_exporter::MetricsSnapshot {
+        use citadel_metrics_exporter::{MetricsSnapshot, NodeTrust};
+        use citadel_otel_schema::{trust_state_code, trust_state_label};
+
+        let mut by_state: std::collections::BTreeMap<String, u64> =
+            std::collections::BTreeMap::new();
+        let mut per_node = Vec::new();
+        let (mut trusted, mut quarantined, mut known) = (0u64, 0u64, 0u64);
+        for n in self.store.all_nodes() {
+            if n.observer {
+                continue;
+            }
+            known += 1;
+            let (st, _, _) = self.derived_trust(&n.id);
+            *by_state
+                .entry(trust_state_label(st).to_string())
+                .or_default() += 1;
+            if st == TrustState::Trusted {
+                trusted += 1;
+            }
+            if matches!(st, TrustState::Suspicious | TrustState::Isolated) {
+                quarantined += 1;
+            }
+            per_node.push(NodeTrust {
+                id: hex32(&n.id.0),
+                role: n.role.clone(),
+                code: trust_state_code(st),
+            });
+        }
+        let (pass, fail, _warn) = self.verdict_totals();
+        MetricsSnapshot {
+            cluster_trust_score: if known == 0 {
+                1.0
+            } else {
+                trusted as f64 / known as f64
+            },
+            mesh_peer_count: known,
+            nodes_quarantined: quarantined,
+            nodes_by_state: by_state,
+            per_node,
+            tpm_quote_success_total: pass,
+            tpm_quote_failure_total: fail,
+        }
+    }
+
     /// Aggregate verified-verdict counts across all subjects `(pass, fail, warn)`
     /// — the basis for the attestation success/failure metrics (OBS2). Counts the
     /// verdicts the CP has verified and stored.
@@ -906,6 +955,41 @@ mod tests {
             cp.decision(&NodeId([0xEE; 32])),
             IssuanceDecision::RenewOnly
         );
+    }
+
+    #[test]
+    fn metrics_snapshot_projects_verified_trust() {
+        let mut cp = ControlPlane::new(MemStore::new());
+        let subject_kp = MeshKeypair::from_seed([1; 32]);
+        let subject = NodeId(subject_kp.public().fingerprint());
+        let w: Vec<MeshKeypair> = (2u8..=4).map(|s| MeshKeypair::from_seed([s; 32])).collect();
+        cp.ingest_member(&member(&subject_kp, false), 1);
+        for kp in &w {
+            cp.ingest_member(&member(kp, false), 1);
+        }
+        for kp in &w {
+            cp.ingest_verdict(&verdict(kp, subject, Verdict::Pass, 10));
+        }
+
+        let snap = cp.metrics_snapshot();
+        // 1 trusted subject of 4 known; 3 verified Pass verdicts.
+        assert_eq!(snap.mesh_peer_count, 4);
+        assert_eq!(snap.cluster_trust_score, 0.25);
+        assert_eq!(snap.nodes_by_state.get("trusted"), Some(&1));
+        assert_eq!(snap.tpm_quote_success_total, 3);
+        assert_eq!(snap.nodes_quarantined, 0);
+
+        // The rendered exposition carries the same projection.
+        let body = citadel_metrics_exporter::render(&snap);
+        assert!(body.contains("citadel_cluster_trust_score 0.2500"));
+
+        // Compromise → quarantine + failure counter.
+        for kp in &w {
+            cp.ingest_verdict(&verdict(kp, subject, Verdict::Fail, 20));
+        }
+        let snap = cp.metrics_snapshot();
+        assert_eq!(snap.nodes_quarantined, 1);
+        assert_eq!(snap.tpm_quote_failure_total, 3);
     }
 
     #[test]

@@ -43,7 +43,7 @@ cluster up?" but **"is the cluster still trustworthy?"** — Citadel exposes
 | Phase | Component | Scope | Status |
 |-------|-----------|-------|--------|
 | OBS1 | `citadel-otel-schema` | Canonical metric names + OTel attribute keys + the categorical-trust → ordinal mapping. A shared vocabulary, no backend coupling. | ✅ done |
-| OBS2 | `citadel-metrics-exporter` | Prometheus text `/metrics` projecting the CP's verified state (cluster trust score, per-node trust gauge, node-state counts, attestation pass/fail, mesh peers, quarantine). Unit-tested render. | ✅ done |
+| OBS2 | `citadel-metrics-exporter` | Prometheus text `/metrics` projecting the CP's verified state, served by the control-plane API at `/metrics`. Snapshot render + the CP projection, unit-tested. | ✅ done |
 | OBS3 | `citadel-prometheus-rules` / `citadel-grafana-dashboards` / `citadel-otel-collector-config` | Alert rules (§9), opinionated dashboards (§10), Collector config (Prometheus receiver → enrich → export). Validated with `promtool` / `otelcol` in Docker. | ✅ done |
 | OBS4 | agent OTLP | Agent-side OTLP export of metrics/logs/traces incl. the containment trace + Hexis/quote-latency counters. Needs a running Collector. | planned |
 | OBS5 | long-term + multi-cluster | Thanos/Mimir (metrics), Loki (logs), Tempo (traces); regional/global aggregation. Deployment. | planned |

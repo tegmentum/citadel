@@ -8,6 +8,8 @@ description = "Citadel control plane: a verifying aggregator over the attestatio
 [dependencies]
 citadel-mesh = { path = "../citadel-mesh" }
 citadel-spiffe = { path = "../citadel-spiffe" }
+citadel-otel-schema = { path = "../citadel-otel-schema" }
+citadel-metrics-exporter = { path = "../citadel-metrics-exporter" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
