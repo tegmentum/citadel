@@ -1,10 +1,25 @@
 # Citadel
 
-A stateful, operator-friendly TPM platform. Replaces low-level `tpm2-tools` with a resource-oriented interface built around named objects, declarative policies, explainable errors, and structured output.
+Citadel is a **TPM-backed distributed trust platform**: it roots trust in each node's hardware TPM, agrees on that trust across a mesh, and uses it to gate secrets, workload identity, and containment — with a full observability plane over the whole fabric. Identity and access become *continuously earned* properties of a node, not one-time admissions.
 
-## Why
+At its base is **`citadel tpm`**, an operator-friendly TPM toolkit (a resource-oriented replacement for low-level `tpm2-tools`). On top of it Citadel runs an attestation mesh, a verifying control plane, Mesh-Sealed Secrets, SPIFFE/SPIRE identity, and Prometheus/OpenTelemetry observability. It supports TPM 2.0 and, as a capability-gated tier, TPM 1.2.
 
-The existing TPM toolchain is powerful but hostile. Common workflows require explicit context file management, manual command sequencing, opaque error codes, and deep spec knowledge. This tool makes the TPM feel like a managed object store:
+## The platform
+
+| Layer | What it does | Reference |
+|---|---|---|
+| **TPM toolkit** — `citadel tpm` | Named objects, declarative policies, measured boot, sealing, remote attestation, a tamper-evident audit log, and the Measured Merkle Anchor. | this README; `tpm-core`, `tpm-tui` |
+| **Attestation mesh** — `citadel-mesh` | SWIM gossip + HRW witness assignment; nodes attest each other and reach **witness-quorum trust** (categorical, signed verdicts), with gossip-wired quarantine + Reed-Solomon evidence on compromise. | [`distributed-attestation-mesh.md`](docs/design/distributed-attestation-mesh.md) |
+| **Control plane** — `citadel-control-plane` | A **verifying aggregator** (explicitly *not* a root of trust): re-verifies every verdict, derives trust, serves an agreement-first dashboard + API over pluggable durable storage (Mem/redb/Postgres) with HRW sharding. Load-verified at **10k nodes (~19k verdicts/s)**. | [`control-plane-roadmap.md`](docs/design/control-plane-roadmap.md) |
+| **Mesh-Sealed Secrets** — `citadel-mss` | Quorum-gated, lease-bound, TPM-enforced secret release; threshold custody (Shamir) and threshold signing (FROST + DKG) carried over mesh gossip. | [`mss-roadmap.md`](docs/design/mss-roadmap.md) |
+| **Workload identity** — `citadel-spiffe`, `citadel-spire-*`, `citadel-trust-sync` | Mesh trust gates SPIRE SVID issuance: a NodeAttestor plugin (with AutoMTLS + the agent pair), a registration controller, and a continuous trust synchronizer that revokes on quarantine. | [`spiffe-roadmap.md`](docs/design/spiffe-roadmap.md) |
+| **Observability** — `citadel-otel-schema`, `-metrics-exporter`, `-telemetry` | Security-state Prometheus `/metrics`, OpenTelemetry logs + the containment trace, plus tool-validated alert rules / Grafana dashboards / Collector config and multi-cluster federation. | [`observability-roadmap.md`](docs/design/observability-roadmap.md) |
+
+The mesh and control plane are queryable from the CLI via **`citadel cluster`** (below). The rest of this README documents the `citadel tpm` toolkit; see the per-layer design docs above for the trust fabric.
+
+## Why the TPM toolkit
+
+The existing TPM toolchain is powerful but hostile. Common workflows require explicit context file management, manual command sequencing, opaque error codes, and deep spec knowledge. `citadel tpm` makes the TPM feel like a managed object store:
 
 - **Named objects** instead of context files and raw handles
 - **Workflow collapsing** — `citadel tpm key create` does the right create/load/persist sequence
@@ -210,7 +225,7 @@ citadel tpm identity init anchor --authorized-by release --pcr-bind 14   # upgra
 
 ### Secure audit log
 
-`tpm audit` is a tamper-evident secure log: entries are hash-chained, sealed into Merkle-rooted segments, and checkpoint-signed by a TPM-backed identity. An anti-rollback head file guards against truncation, payloads can be envelope-encrypted under a master KEK, and segment heads can be co-signed by an external witness. Multiple independent streams (each with a confidentiality tier) are supported.
+`citadel tpm audit` is a tamper-evident secure log: entries are hash-chained, sealed into Merkle-rooted segments, and checkpoint-signed by a TPM-backed identity. An anti-rollback head file guards against truncation, payloads can be envelope-encrypted under a master KEK, and segment heads can be co-signed by an external witness. Multiple independent streams (each with a confidentiality tier) are supported.
 
 ```bash
 citadel tpm audit append --event user.login --payload "session opened"   # append a hash-chained entry
@@ -297,7 +312,7 @@ Topics: `pcr`, `policy`, `hierarchy`, `key`, `seal`, `attestation`, `nv`, `ek`, 
 |------|-------------|
 | `--json` | Output as JSON (shorthand for `--format json`) |
 | `--format text\|json\|yaml` | Output format |
-| `--backend auto\|mock\|device\|vtpm` | TPM backend |
+| `--backend auto\|mock\|tpm12\|device\|vtpm` | TPM backend |
 | `--store-path <path>` | Metadata store location |
 | `--plan` | Dry-run mode — show what would happen |
 | `--verbose` | Debug logging |
@@ -306,7 +321,7 @@ Environment variables: `TPM_STORE_PATH`, `TPM_BACKEND`, `TPM_VTPM_COMPONENT`.
 
 ## TUI
 
-Running `tpm` with no arguments in a terminal launches the interactive TUI.
+Running `citadel` with no arguments in a terminal launches the interactive TUI.
 
 | Key | Action |
 |-----|--------|
@@ -395,7 +410,7 @@ error[TPM0004]: object not found: signing/missing
   path  signing/missing
 
   next steps:
-    1. run `tpm object list` to see all objects
+    1. run `citadel tpm object list` to see all objects
     2. run `citadel tpm key list` to see available keys
 ```
 
@@ -432,7 +447,7 @@ The tamper-evident secure log lives outside this tree in the standalone `secure-
 
 ```bash
 cargo build --workspace                    # build all
-cargo test --workspace                     # 171 tests
+cargo test --workspace                     # the full workspace suite (mesh, control plane, MSS, SPIFFE, observability, tpm)
 cargo build --features vtpm                # with vTPM backend
 cargo build --features tpm-hw              # with hardware TPM
 
