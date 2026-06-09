@@ -19,6 +19,8 @@ struct BackendInfo {
     manufacturer: String,
     firmware_version: String,
     available: bool,
+    /// TPM spec the device implements ("2.0" / "1.2").
+    spec_version: String,
 }
 
 #[derive(Serialize)]
@@ -42,6 +44,10 @@ impl TextRenderable for StatusReport {
         let mut out = String::new();
         out.push_str("TPM Status\n");
         out.push_str(&format!("  backend:      {}\n", self.backend.backend_type));
+        out.push_str(&format!(
+            "  spec:         TPM {}\n",
+            self.backend.spec_version
+        ));
         out.push_str(&format!("  manufacturer: {}\n", self.backend.manufacturer));
         out.push_str(&format!(
             "  firmware:     {}\n",
@@ -103,6 +109,10 @@ pub fn run(store: &Store, backend: &dyn TpmBackend, format: OutputFormat) -> any
             manufacturer: status.manufacturer,
             firmware_version: status.firmware_version,
             available: status.available,
+            spec_version: match status.spec_version {
+                tpm_core::backend::SpecVersion::Tpm12 => "1.2".to_string(),
+                tpm_core::backend::SpecVersion::Tpm20 => "2.0".to_string(),
+            },
         },
         workspace: WorkspaceInfo {
             object_count: objects.len(),

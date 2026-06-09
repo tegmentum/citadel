@@ -90,6 +90,8 @@ impl TpmBackend for MockBackend {
             manufacturer: "Mock TPM".to_string(),
             firmware_version: "0.0.0".to_string(),
             available: true,
+            spec_version: super::traits::SpecVersion::Tpm20,
+            capabilities: super::traits::Capabilities::tpm20(),
         })
     }
 
@@ -559,9 +561,33 @@ impl TpmBackend for MockBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::traits::{Capabilities, SpecVersion};
 
     fn d(byte: u8) -> Vec<u8> {
         vec![byte; 32]
+    }
+
+    #[test]
+    fn mock_advertises_tpm20_full_capabilities() {
+        let s = MockBackend::new().status().unwrap();
+        assert_eq!(s.spec_version, SpecVersion::Tpm20);
+        assert!(s.capabilities.ecc);
+        assert!(s.capabilities.policy_authorize);
+        assert!(s.capabilities.supports_bank("sha256"));
+        assert!(s.capabilities.supports_algorithm(Algorithm::EccP256));
+    }
+
+    #[test]
+    fn tpm12_capabilities_gate_ec_and_policy_authorize() {
+        let c = Capabilities::tpm12();
+        assert!(!c.ecc, "1.2 is RSA-only");
+        assert!(
+            !c.policy_authorize && !c.policy_sessions,
+            "1.2 has no policy sessions"
+        );
+        assert!(c.supports_bank("sha1") && !c.supports_bank("sha256"));
+        assert!(c.supports_algorithm(Algorithm::Rsa2048));
+        assert!(!c.supports_algorithm(Algorithm::EccP256));
     }
 
     #[test]

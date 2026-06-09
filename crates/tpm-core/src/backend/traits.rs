@@ -248,12 +248,87 @@ pub trait TpmBackend: Send + Sync {
     }
 }
 
+/// The TPM specification a backend's device implements. Citadel targets 2.0;
+/// 1.2 is a capability-gated tier (see `docs/design/tpm12-and-20-support.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SpecVersion {
+    Tpm12,
+    Tpm20,
+}
+
+fn default_spec_version() -> SpecVersion {
+    SpecVersion::Tpm20
+}
+
+/// What a backend's device can do — advertised so the command/issuance layer can
+/// gate 2.0-only paths (ECC keys, policy-authorize sealing) and degrade
+/// gracefully on a 1.2 device rather than failing deep in the backend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Capabilities {
+    /// PCR hash banks the device supports (e.g. `sha256`, `sha1`).
+    pub banks: Vec<String>,
+    /// Whether the device supports ECC keys (TPM 1.2 is RSA-only).
+    pub ecc: bool,
+    /// Whether the device supports policy sessions (PolicyPCR, …).
+    pub policy_sessions: bool,
+    /// Whether the device supports PolicyAuthorize — the TPM-enforced
+    /// quorum-gated sealing of MSS S0 (1.2 cannot).
+    pub policy_authorize: bool,
+}
+
+impl Capabilities {
+    /// Full TPM 2.0 capabilities.
+    pub fn tpm20() -> Self {
+        Capabilities {
+            banks: vec!["sha256".to_string(), "sha384".to_string()],
+            ecc: true,
+            policy_sessions: true,
+            policy_authorize: true,
+        }
+    }
+
+    /// TPM 1.2: SHA-1 PCRs, RSA only, no policy sessions.
+    pub fn tpm12() -> Self {
+        Capabilities {
+            banks: vec!["sha1".to_string()],
+            ecc: false,
+            policy_sessions: false,
+            policy_authorize: false,
+        }
+    }
+
+    /// Whether a key of `algorithm` can be created on this device.
+    pub fn supports_algorithm(&self, algorithm: Algorithm) -> bool {
+        match algorithm {
+            Algorithm::EccP256 | Algorithm::EccP384 => self.ecc,
+            Algorithm::Rsa2048 | Algorithm::Rsa3072 => true,
+        }
+    }
+
+    /// Whether this device offers the named PCR bank.
+    pub fn supports_bank(&self, bank: &str) -> bool {
+        self.banks.iter().any(|b| b == bank)
+    }
+}
+
+impl Default for Capabilities {
+    fn default() -> Self {
+        Self::tpm20()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendStatus {
     pub backend_type: String,
     pub manufacturer: String,
     pub firmware_version: String,
     pub available: bool,
+    /// The TPM spec the device implements (default 2.0 for back-compat).
+    #[serde(default = "default_spec_version")]
+    pub spec_version: SpecVersion,
+    /// What the device can do, for capability gating.
+    #[serde(default)]
+    pub capabilities: Capabilities,
 }
 
 #[derive(Debug, Clone)]

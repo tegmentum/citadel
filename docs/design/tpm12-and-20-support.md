@@ -91,7 +91,7 @@ for high-value secrets.
 
 | Phase | Scope |
 |---|---|
-| T1 | `BackendStatus.spec_version` + `Capabilities`; `MockBackend`/hardware report `Tpm20`. Capability-gate the EC + PolicyAuthorize paths with clear errors. No behavior change for 2.0. |
+| T1 | ✅ done. `BackendStatus.spec_version` + `Capabilities` (banks/ecc/policy_sessions/policy_authorize); mock/hardware/vtpm report `Tpm20`; `service::create_key` rejects unsupported algorithms with a clear error; `citadel tpm status` shows the spec tier. No behavior change for 2.0. |
 | T2 | `Tpm12Backend` (RSA keys, SHA-1 PCRs, `TPM_Quote`, seal-to-PCR, NV) via a 1.2 TSS shim, behind a `tpm12` feature. Auto-detect TIS 1.2 devices. |
 | T3 | Verifier + control-plane + observability: treat `sha1` bank as first-class; surface the device tier in trust views/selectors so policy can require 2.0. |
 | T4 | Docs + a 1.2 conformance test (against a 1.2 simulator where available) mirroring the swtpm 2.0 path. |

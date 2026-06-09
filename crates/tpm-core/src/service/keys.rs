@@ -40,6 +40,20 @@ pub fn create_key(
         .parse()
         .map_err(|e: String| anyhow::anyhow!(e))?;
 
+    // Capability gate (TPM 1.2/2.0): reject an algorithm the device can't create
+    // up front, with a clear message, rather than failing deep in the backend.
+    if let Ok(status) = backend.status() {
+        if !status.capabilities.supports_algorithm(algorithm) {
+            anyhow::bail!(
+                "this TPM ({:?}) does not support {} keys (capabilities: ecc={}); \
+                 use an RSA algorithm",
+                status.spec_version,
+                spec.algorithm,
+                status.capabilities.ecc
+            );
+        }
+    }
+
     let policy_id = if let Some(pname) = spec.policy_name {
         let policy = store
             .get_policy(pname)?

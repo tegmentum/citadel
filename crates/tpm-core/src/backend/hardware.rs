@@ -221,6 +221,8 @@ impl TpmBackend for HardwareBackend {
             manufacturer,
             firmware_version: firmware,
             available: true,
+            spec_version: super::traits::SpecVersion::Tpm20,
+            capabilities: super::traits::Capabilities::tpm20(),
         })
     }
 

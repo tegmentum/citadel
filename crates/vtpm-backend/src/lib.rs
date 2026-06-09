@@ -446,6 +446,8 @@ impl TpmBackend for VtpmBackend {
             manufacturer: "libtpms".to_string(),
             firmware_version: "2.0".to_string(),
             available: self.initialized,
+            spec_version: tpm_core::backend::SpecVersion::Tpm20,
+            capabilities: tpm_core::backend::Capabilities::tpm20(),
         })
     }
 
