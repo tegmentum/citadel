@@ -270,6 +270,11 @@ pub struct Node {
     /// Verified verdicts received over gossip, buffered for a control-plane
     /// observer to drain (CP1). Only populated in `observer` mode; transient.
     observed_verdicts: Vec<crate::types::AttestationResult>,
+    /// Generic app-layer relay inbox (`AppRelay`), keyed by topic — a dumb
+    /// broadcast channel for protocols layered above the mesh (e.g. MSS threshold
+    /// signing carries its FROST round messages here as opaque bytes, so the
+    /// mesh needn't know their types). Transient.
+    app_inbox: HashMap<[u8; 32], Vec<Vec<u8>>>,
     /// This node's firmware measured-boot log (raw TCG bytes), staged to ship in
     /// evidence and to verify its own `pcr_bound` app measurements (B1). Set from
     /// the OS (`/sys/.../binary_bios_measurements`); transient. When present it
@@ -480,6 +485,7 @@ impl Node {
             runtime_escalated: HashSet::new(),
             staged_ima: None,
             observed_verdicts: Vec::new(),
+            app_inbox: HashMap::new(),
             staged_event_log: None,
             app_results: HashMap::new(),
             app_audit,
@@ -1108,6 +1114,18 @@ impl Node {
     /// membership gossip so peers can pin it for mutual TLS.
     pub fn set_tls_cert(&mut self, cert: Vec<u8>) {
         self.membership.set_my_tls_cert(cert);
+    }
+
+    /// Broadcast an app-layer relay message on `topic` (a dumb channel for
+    /// protocols above the mesh, e.g. MSS threshold-signing rounds). The payload
+    /// is opaque to the mesh.
+    pub fn broadcast_app(&mut self, topic: [u8; 32], payload: Vec<u8>) {
+        self.broadcast(GossipMessage::AppRelay { topic, payload });
+    }
+
+    /// Drain the app-relay payloads received on `topic` since the last call.
+    pub fn drain_app(&mut self, topic: [u8; 32]) -> Vec<Vec<u8>> {
+        self.app_inbox.remove(&topic).unwrap_or_default()
     }
 
     /// Drain the verified verdicts this (observer) node has received over gossip
@@ -2216,6 +2234,9 @@ impl Node {
             GossipMessage::QuarantineApproval(a) => self.on_quarantine_approval(*a),
             GossipMessage::ReleaseRequest(r) => self.on_release_request(*r),
             GossipMessage::ReleaseVote(v) => self.on_release_vote(*v),
+            GossipMessage::AppRelay { topic, payload } => {
+                self.app_inbox.entry(topic).or_default().push(payload);
+            }
         }
     }
 

@@ -149,6 +149,10 @@ pub enum GossipMessage {
     ReleaseRequest(Box<crate::release::ReleaseRequest>),
     /// An assigned witness's signed ballot on a release request (MSS).
     ReleaseVote(Box<crate::release::ReleaseVote>),
+    /// A generic app-layer relay message: a `topic` + opaque `payload`, broadcast
+    /// for protocols layered above the mesh (e.g. MSS threshold-signing rounds).
+    /// The mesh treats the payload as opaque bytes.
+    AppRelay { topic: [u8; 32], payload: Vec<u8> },
 }
 
 // -- Attestation records (design §8) --
