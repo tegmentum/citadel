@@ -771,6 +771,7 @@ impl<S: ControlPlaneStore> ControlPlane<S> {
             ima_policy: revision.map(|r| format!("rev-{r}")),
             tpm_ak: None,
             mma_profile: None,
+            tpm_spec: None,
         }
     }
 

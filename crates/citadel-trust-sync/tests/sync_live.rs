@@ -17,6 +17,7 @@ fn view(level: TrustLevel) -> NodeTrustView {
         ima_policy: Some("baseline-v3".to_string()),
         tpm_ak: None,
         mma_profile: None,
+        tpm_spec: None,
     }
 }
 

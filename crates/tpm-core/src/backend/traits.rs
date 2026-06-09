@@ -409,7 +409,23 @@ pub fn hash_for_bank(bank: &str, data: &[u8]) -> anyhow::Result<Vec<u8>> {
             h.update(data);
             Ok(h.finalize().to_vec())
         }
-        other => anyhow::bail!("hashing for bank '{other}' is not supported (use sha256)"),
+        "sha384" => {
+            use sha2::{Digest, Sha384};
+            let mut h = Sha384::new();
+            h.update(data);
+            Ok(h.finalize().to_vec())
+        }
+        // SHA-1 is the only PCR bank on a TPM 1.2 device — weaker, but needed for
+        // measured boot / IMA on that tier (TPM 1.2/2.0 support, T3).
+        "sha1" => {
+            use sha1::{Digest, Sha1};
+            let mut h = Sha1::new();
+            h.update(data);
+            Ok(h.finalize().to_vec())
+        }
+        other => {
+            anyhow::bail!("hashing for bank '{other}' is not supported (use sha256, sha384, sha1)")
+        }
     }
 }
 
@@ -469,4 +485,22 @@ pub fn pcr_fold(bank: &str, current: &[u8], digest: &[u8]) -> anyhow::Result<Vec
     buf.extend_from_slice(current);
     buf.extend_from_slice(digest);
     hash_for_bank(bank, &buf)
+}
+
+#[cfg(test)]
+mod bank_tests {
+    use super::{bank_digest_size, hash_for_bank};
+
+    #[test]
+    fn all_banks_hash_to_their_advertised_size() {
+        // sha1 is the TPM 1.2 bank; sha256/sha384 are 2.0 — all first-class.
+        for bank in ["sha1", "sha256", "sha384"] {
+            let digest = hash_for_bank(bank, b"measurement").expect("bank should hash");
+            assert_eq!(digest.len(), bank_digest_size(bank).unwrap(), "{bank} size");
+        }
+        // sha1 is 20 bytes (the 1.2 PCR width).
+        assert_eq!(hash_for_bank("sha1", b"x").unwrap().len(), 20);
+        // An unknown bank is rejected.
+        assert!(hash_for_bank("md5", b"x").is_err());
+    }
 }

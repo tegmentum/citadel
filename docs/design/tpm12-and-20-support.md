@@ -93,7 +93,7 @@ for high-value secrets.
 |---|---|
 | T1 | ✅ done. `BackendStatus.spec_version` + `Capabilities` (banks/ecc/policy_sessions/policy_authorize); mock/hardware/vtpm report `Tpm20`; `service::create_key` rejects unsupported algorithms with a clear error; `citadel tpm status` shows the spec tier. No behavior change for 2.0. |
 | T2 | `Tpm12Backend` (RSA keys, SHA-1 PCRs, `TPM_Quote`, seal-to-PCR, NV) via a 1.2 TSS shim, behind a `tpm12` feature. Auto-detect TIS 1.2 devices. |
-| T3 | Verifier + control-plane + observability: treat `sha1` bank as first-class; surface the device tier in trust views/selectors so policy can require 2.0. |
+| T3 | ✅ done (in-tree). `hash_for_bank` now first-class for `sha1` (1.2) + `sha384`, so measured boot / IMA / reference manifests work on the SHA-1 bank; `NodeTrustView` gains `tpm_spec` + a `citadel:tpm-spec=<2.0|1.2>` selector so policy can require 2.0. Remaining: gossip the spec (MemberUpdate.tpm_spec serde-default → NodeRecord → spiffe_node_view) so the selector auto-populates live. |
 | T4 | Docs + a 1.2 conformance test (against a 1.2 simulator where available) mirroring the swtpm 2.0 path. |
 
 The 2.0 path is unaffected throughout: 1.2 is added as a capability-gated tier,

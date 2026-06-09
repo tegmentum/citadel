@@ -64,6 +64,7 @@ impl TrustView for FileTrust {
             ima_policy: None,
             tpm_ak: None,
             mma_profile: None,
+            tpm_spec: None,
         }
     }
 }

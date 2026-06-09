@@ -193,6 +193,9 @@ pub struct NodeTrustView {
     pub ima_policy: Option<String>,
     pub tpm_ak: Option<String>,
     pub mma_profile: Option<String>,
+    /// The node's TPM spec tier (`"2.0"` / `"1.2"`) when known — so policy can
+    /// require 2.0 for high-value workloads (TPM 1.2/2.0 support, T3).
+    pub tpm_spec: Option<String>,
 }
 
 impl NodeTrustView {
@@ -222,6 +225,9 @@ impl NodeTrustView {
         }
         if let Some(m) = &self.mma_profile {
             s.push(format!("citadel:mma-profile={m}"));
+        }
+        if let Some(spec) = &self.tpm_spec {
+            s.push(format!("citadel:tpm-spec={spec}"));
         }
         s
     }
@@ -311,6 +317,7 @@ mod tests {
             ima_policy: Some("baseline-v3".to_string()),
             tpm_ak: Some("ak-fpr-abcd".to_string()),
             mma_profile: None,
+            tpm_spec: None,
         };
         let s = view.selectors();
         assert!(s.contains(&"citadel:trust-level=verified".to_string()));
@@ -318,6 +325,18 @@ mod tests {
         assert!(s.contains(&"citadel:ima-policy=baseline-v3".to_string()));
         assert!(s.contains(&"citadel:tpm-ak=ak-fpr-abcd".to_string()));
         assert!(!s.iter().any(|x| x.starts_with("citadel:mma-profile")));
+        // No tpm-spec selector when the tier is unknown.
+        assert!(!s.iter().any(|x| x.starts_with("citadel:tpm-spec")));
+
+        // When the device tier is known, the selector lets policy require 2.0
+        // (TPM 1.2/2.0 support, T3).
+        let with_spec = NodeTrustView {
+            tpm_spec: Some("2.0".to_string()),
+            ..view.clone()
+        };
+        assert!(with_spec
+            .selectors()
+            .contains(&"citadel:tpm-spec=2.0".to_string()));
 
         let split = NodeTrustView {
             quorum_agree: 2,
