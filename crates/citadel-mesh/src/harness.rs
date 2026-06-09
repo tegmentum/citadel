@@ -434,6 +434,14 @@ impl Mesh {
         }
     }
 
+    /// Trust a key as an operator across every node (CP5 / §13.4) — only its
+    /// signed approvals satisfy a severe quarantine scope's operator sign-off.
+    pub fn authorize_operator_key_all(&mut self, key: crate::crypto::MeshPublicKey) {
+        for n in &mut self.nodes {
+            n.authorize_operator_key(key);
+        }
+    }
+
     /// Originate a signed reference manifest from `from`: adopt it locally and
     /// gossip it to the fleet (each node adopts it only if it trusts the issuer).
     pub fn broadcast_reference_manifest(&mut self, from: NodeId, manifest: ReferenceManifest) {

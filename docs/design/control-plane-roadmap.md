@@ -24,7 +24,8 @@ calendar (1 engineer). "Gating" = needs something outside the item itself.
 | CP2 | Agreement records + drill-down (§17.4) | Read | ✅ done | CP1 |
 | CP3 | Evidence durability + reconstruction check | Read | ✅ done | CP1 |
 | CP4 | Forensic timeline + audit-chain verify + change feed | Read | ✅ done | CP1, CP2 |
-| CP5 | Operator workflow (signed policy + audit) | Write | ✅ policy write path done; quarantine relay deferred to a mesh prereq (gossip-wire quarantine) | CP1; RVP, quarantine |
+| M2 | Mesh: gossip-wire quarantine (proposal/vote/operator-approval) | Mesh prereq | ✅ done | no |
+| CP5 | Operator workflow (signed policy + quarantine) | Write | ✅ done | CP1; RVP, quarantine, M2 |
 | CP6 | Web dashboard SPA (all §16.3 views) | UI | 3–5 wk | CP1–CP5 view API |
 | CP7 | Scale / HA (sharded observers, replica API) | Scale | 2–3 wk | CP1–CP5 |
 
@@ -66,6 +67,23 @@ with the agreement-first node drill-down, read-only, ~3–4 weeks.
   verdict still verifies; round-trip through serde.
 * **Effort:** 1–2 d. **Gating:** none. *(The one substantive in-mesh change the
   whole layer needs.)*
+
+### M2 — gossip-wire quarantine
+* **Goal:** make quarantine a mesh-propagated decision (it was a harness-only API
+  + a pure `decide_quarantine` tally) so proposals, votes, and operator approvals
+  flow over gossip and every node converges on the same enactment — and the CP
+  can relay an operator sign-off (unblocks CP5's quarantine action).
+* **Done:** `GossipMessage::{QuarantineProposal,QuarantineVote,QuarantineApproval}`
+  + `OperatorQuarantineApproval` (operator-signed, accepted only from a node's
+  trusted `operator_keys`). `Node`: `propose_and_broadcast_quarantine` (broadcast
+  + self-vote if an assigned witness), receipt handlers that record + tally,
+  `tally_and_maybe_enact` (every node tallies the same eligible-witness set via
+  `witness::assign` and enacts in its own view), `relay_quarantine_approval` +
+  `authorize_operator_key`. `broadcast()` already reaches all members, so each
+  artifact is broadcast once (no flooding).
+* **Test:** a light scope enacts mesh-wide from witness votes; full isolation
+  waits for a relayed operator approval, then enacts everywhere; an untrusted
+  operator's approval is ignored.
 
 ---
 
@@ -184,14 +202,22 @@ existing signed artifacts.
   Gating default is **single authorized-operator signature**; quorum/co-sign for
   severe scopes is a documented extension (carry multiple `OperatorAction`s + a
   per-kind threshold).
-* **Deferred — quarantine operator-action (mesh prerequisite):** the mesh's
-  quarantine flow (`propose`/`vote`/`tally`) is **not gossip-wired** — it's a
-  direct API + a pure tally function (harness-driven), with no
-  `GossipMessage::Quarantine` and no operator-approval artifact nodes ingest.
-  Relaying an operator quarantine approval therefore has no mesh entry point;
-  enacting it fleet-wide needs the quarantine protocol added to gossip first (a
-  **Track-M mesh item**, not CP-only). The CP-side `OperatorAction`/audit
-  mechanism already generalises to it once that exists.
+* **Done — quarantine operator-action (after gossip-wiring the mesh):** the
+  mesh's quarantine flow is now gossip-wired (Track-M below) —
+  `GossipMessage::{QuarantineProposal,QuarantineVote,QuarantineApproval}` +
+  `OperatorQuarantineApproval`. The CP closes the loop: `submit_quarantine_approval`
+  (operator registered + signature verifies → audit → enqueue) +
+  `relay_quarantine_approval` (drains + relays through the observer node's
+  `relay_quarantine_approval`). Tested end-to-end: a witness proposes full
+  isolation, witnesses approve but it's gated; the CP relays the operator's
+  signed approval and **the mesh enacts full isolation fleet-wide**; the relay is
+  audited; an unregistered operator's approval is refused.
+* **Follow-up (pre-existing, minor):** an isolating quarantine sets trust
+  `Isolated`, but a witness's *direct* `set_trust` in `on_evidence` (on the next
+  challenge) can overwrite it to `Suspicious` — `aggregate_trust` already freezes
+  on quarantine, but that direct path doesn't. Enforcement keys off
+  `quarantine_of`/scope (which converges correctly), so this is cosmetic; gate
+  that direct `set_trust` on quarantine to make the trust enum match.
 
 ### CP6 — web dashboard SPA
 * **Goal:** the §16.3 views, **agreement-first**, for operators.

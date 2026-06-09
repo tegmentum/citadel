@@ -248,3 +248,90 @@ async fn live_post_policies_validates_then_host_relays_to_the_mesh() {
     // The accepted write was audited.
     assert_eq!(shared.lock().unwrap().operator_audit().len(), 1);
 }
+
+#[test]
+fn cp_relays_an_operator_quarantine_approval_and_the_mesh_enacts() {
+    use citadel_mesh::quarantine::{OperatorQuarantineApproval, QuarantineScope};
+    use citadel_mesh::state::TrustState;
+
+    // A mesh with a tampered (suspicious) subject + a control-plane observer.
+    let mut mesh = Mesh::new("prod-east-1");
+    let cfg = NodeConfig {
+        witness_count: 4,
+        attestation_interval: 3,
+        pcr_selection: vec![0, 7],
+        ..NodeConfig::default()
+    };
+    let workers: Vec<NodeId> = (1..=6)
+        .map(|s| mesh.add_node(s, "worker", cfg.clone()))
+        .collect();
+    let observer = mesh.add_node(
+        7,
+        "control-plane",
+        NodeConfig {
+            observer: true,
+            ..cfg.clone()
+        },
+    );
+    mesh.wire_full_membership();
+    mesh.run(12);
+    let subject = workers[5];
+    mesh.measured_state_change(subject, "sha256", 0, &[0xAA; 32]);
+    mesh.run(16);
+    assert_eq!(
+        mesh.trust_of(workers[0], subject),
+        Some(TrustState::Suspicious)
+    );
+
+    // The operator the CP trusts; authorize it on every node so approvals count.
+    let operator = MeshKeypair::from_seed([222; 32]);
+    mesh.authorize_operator_key_all(operator.public());
+    let mut cp = ControlPlane::new(MemStore::new());
+    cp.authorize_operator(operator.public());
+
+    // A witness proposes full isolation; witnesses approve but it is gated on
+    // the operator, so it does not enact.
+    let pid = mesh.node_mut(workers[0]).propose_and_broadcast_quarantine(
+        subject,
+        QuarantineScope::FullIsolation,
+        30,
+    );
+    mesh.run(10);
+    assert_eq!(mesh.node(workers[1]).quarantine_of(subject), None);
+
+    // The operator signs the approval; the CP validates + audits + relays it
+    // through its observer node — and the mesh enacts.
+    let approval = OperatorQuarantineApproval::sign(&operator, pid, 41);
+    let res = cp.relay_quarantine_approval(approval, mesh.node_mut(observer), 41);
+    assert_eq!(res, Ok(pid));
+    mesh.run(10);
+
+    for &w in &workers {
+        if w == subject {
+            continue;
+        }
+        assert_eq!(
+            mesh.node(w).quarantine_of(subject),
+            Some(QuarantineScope::FullIsolation),
+            "the CP-relayed operator approval enacted full isolation at {w}"
+        );
+    }
+    // The CP audited the relayed approval.
+    let audit = cp.operator_audit();
+    assert!(audit.iter().any(|e| e.kind == "quarantine-approval"));
+    assert!(cp.operator_audit_ok());
+}
+
+#[test]
+fn an_unregistered_operator_quarantine_approval_is_refused() {
+    use citadel_mesh::quarantine::OperatorQuarantineApproval;
+    let stranger = MeshKeypair::from_seed([7; 32]);
+    let mut cp = ControlPlane::new(MemStore::new());
+    // stranger is not registered.
+    let approval = OperatorQuarantineApproval::sign(&stranger, [9u8; 32], 1);
+    assert_eq!(
+        cp.submit_quarantine_approval(approval, 1),
+        Err(WriteError::Unauthorized)
+    );
+    assert!(cp.operator_audit().is_empty());
+}

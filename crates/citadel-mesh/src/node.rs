@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::application::{AppAttestationResult, AppMeasurement, AppPolicy, AppVerdict};
 use crate::attest::{Attestor, ReferenceMeasurements, TrustAnchors};
-use crate::crypto::MeshKeypair;
+use crate::crypto::{MeshKeypair, MeshPublicKey};
 use crate::enrollment::{
     self, AdmissionReason, AdmissionVerdict, EnrollmentChallenge, EnrollmentClaim, EnrollmentVote,
 };
@@ -33,7 +33,9 @@ use crate::logship::{
 };
 use crate::membership::Membership;
 use crate::promotion::{PromotionProposal, PromotionVote};
-use crate::quarantine::{Ballot, QuarantineProposal, QuarantineScope, QuarantineVote};
+use crate::quarantine::{
+    Ballot, OperatorQuarantineApproval, QuarantineProposal, QuarantineScope, QuarantineVote,
+};
 use crate::reference::{
     AcceptedReferences, ArtifactIdentity, BootProfile, FleetArtifactPolicy, PcrClass,
     ReferenceEntry, ReferenceManifest, ReferenceMatchPolicy, RetiredAction, Validity,
@@ -296,6 +298,12 @@ pub struct Node {
     /// Quarantine scope currently applied to each subject (design §13). While
     /// present, the subject's trust is frozen (sticky until a rejoin lifts it).
     quarantine: HashMap<NodeId, QuarantineScope>,
+    /// In-flight quarantine votes, keyed by proposal id — the gossip-driven
+    /// proposal/vote/operator-approval state every node tallies (transient).
+    quarantine_rounds: HashMap<[u8; 32], QuarantineRound>,
+    /// Keys this node trusts as operators (CP5) — only their signed approvals
+    /// satisfy a scope's operator-sign-off requirement.
+    operator_keys: HashSet<MeshPublicKey>,
     /// This node's own measurement log (LtHash log-shipping).
     own_log: EventLog,
     /// Replicated copies of peers' logs, kept in sync by reconciliation — the
@@ -404,6 +412,17 @@ pub struct NodeSnapshot {
 /// the records (mirrors `logship::LEAF_WIDTH`).
 const LOG_LEAF_WIDTH: u64 = 4;
 
+/// Gossip-driven state for one quarantine proposal: the proposal (once seen),
+/// the votes collected (deduped by voter), whether a trusted operator has
+/// approved, and whether this node has already enacted it (design §13).
+#[derive(Default)]
+struct QuarantineRound {
+    proposal: Option<QuarantineProposal>,
+    votes: HashMap<NodeId, QuarantineVote>,
+    operator_approved: bool,
+    enacted: bool,
+}
+
 impl Node {
     pub fn new(
         mesh_id: MeshId,
@@ -461,6 +480,8 @@ impl Node {
             last_challenge: HashMap::new(),
             probation_start: HashMap::new(),
             quarantine: HashMap::new(),
+            quarantine_rounds: HashMap::new(),
+            operator_keys: HashSet::new(),
             own_log: EventLog::new(config_window),
             replicas: HashMap::new(),
             sealed_roots: HashMap::new(),
@@ -2177,6 +2198,9 @@ impl Node {
             }
             GossipMessage::LogCheckpoint(cp) => self.on_checkpoint(env.sender, *cp),
             GossipMessage::AppResult(r) => self.on_app_result(env.sender, *r),
+            GossipMessage::QuarantineProposal(p) => self.on_quarantine_proposal(*p),
+            GossipMessage::QuarantineVote(v) => self.on_quarantine_vote(*v),
+            GossipMessage::QuarantineApproval(a) => self.on_quarantine_approval(*a),
         }
     }
 
@@ -2691,6 +2715,167 @@ impl Node {
             Ballot::Reject
         };
         QuarantineVote::sign(&self.keypair, self.id, proposal.id, ballot, tick)
+    }
+
+    /// Trust a key as an operator (CP5): only its signed approvals satisfy a
+    /// quarantine scope's operator sign-off requirement.
+    pub fn authorize_operator_key(&mut self, key: MeshPublicKey) {
+        self.operator_keys.insert(key);
+    }
+
+    /// Open a quarantine vote: create + **broadcast** a proposal so the subject's
+    /// witnesses vote and every node converges on the same enactment (design
+    /// §13). Casts this node's own vote if it is an assigned witness. Returns the
+    /// proposal id.
+    pub fn propose_and_broadcast_quarantine(
+        &mut self,
+        subject: NodeId,
+        scope: QuarantineScope,
+        tick: u64,
+    ) -> [u8; 32] {
+        let proposal = self.propose_quarantine(subject, scope, tick);
+        let id = proposal.id;
+        self.quarantine_rounds.entry(id).or_default().proposal = Some(proposal.clone());
+        self.broadcast(GossipMessage::QuarantineProposal(Box::new(proposal)));
+        self.cast_quarantine_vote(id, subject, tick);
+        self.tally_and_maybe_enact(id, tick);
+        id
+    }
+
+    /// The subject's eligible voters: its assigned witnesses, minus any that are
+    /// themselves quarantined out of mesh voting (design §13.3).
+    fn eligible_voters(&self, subject: NodeId) -> HashSet<NodeId> {
+        self.witness_ids_for(subject)
+            .into_iter()
+            .filter(|w| {
+                !self
+                    .quarantine_of(*w)
+                    .map(|s| s.restricts_voting())
+                    .unwrap_or(false)
+            })
+            .collect()
+    }
+
+    /// Cast + broadcast this node's vote on a proposal, if it is an assigned
+    /// witness for the subject (and not the subject itself).
+    fn cast_quarantine_vote(&mut self, proposal_id: [u8; 32], subject: NodeId, tick: u64) {
+        if subject == self.id || self.config.observer {
+            return;
+        }
+        if !self.witness_ids_for(subject).contains(&self.id) {
+            return;
+        }
+        let Some(proposal) = self
+            .quarantine_rounds
+            .get(&proposal_id)
+            .and_then(|r| r.proposal.clone())
+        else {
+            return;
+        };
+        let vote = self.vote_on_quarantine(&proposal, tick);
+        self.quarantine_rounds
+            .entry(proposal_id)
+            .or_default()
+            .votes
+            .insert(vote.voter, vote.clone());
+        self.broadcast(GossipMessage::QuarantineVote(Box::new(vote)));
+    }
+
+    fn on_quarantine_proposal(&mut self, proposal: QuarantineProposal) {
+        let Some(proposer) = self.membership.get(&proposal.proposer) else {
+            return;
+        };
+        if !proposal.verify_signature(&proposer.public_key) {
+            return; // forged proposal
+        }
+        let id = proposal.id;
+        let first_sight = self
+            .quarantine_rounds
+            .get(&id)
+            .map(|r| r.proposal.is_none())
+            .unwrap_or(true);
+        let subject = proposal.subject;
+        self.quarantine_rounds.entry(id).or_default().proposal = Some(proposal);
+        if first_sight {
+            self.cast_quarantine_vote(id, subject, self.tick);
+        }
+        self.tally_and_maybe_enact(id, self.tick);
+    }
+
+    fn on_quarantine_vote(&mut self, vote: QuarantineVote) {
+        let Some(voter) = self.membership.get(&vote.voter) else {
+            return;
+        };
+        if !vote.verify(&voter.public_key) {
+            return; // forged vote
+        }
+        let id = vote.proposal_id;
+        self.quarantine_rounds
+            .entry(id)
+            .or_default()
+            .votes
+            .insert(vote.voter, vote);
+        self.tally_and_maybe_enact(id, self.tick);
+    }
+
+    fn on_quarantine_approval(&mut self, approval: OperatorQuarantineApproval) {
+        if !self.operator_keys.contains(&approval.operator) || !approval.verify() {
+            return; // not from a trusted operator, or forged
+        }
+        let id = approval.proposal_id;
+        self.quarantine_rounds
+            .entry(id)
+            .or_default()
+            .operator_approved = true;
+        self.tally_and_maybe_enact(id, self.tick);
+    }
+
+    /// Relay a trusted operator's quarantine approval into the mesh (CP5): the
+    /// control plane's observer node broadcasts it so every node can satisfy a
+    /// severe scope's operator sign-off. Verified + ignored if not from a key
+    /// this node trusts as an operator.
+    pub fn relay_quarantine_approval(&mut self, approval: OperatorQuarantineApproval) {
+        if !self.operator_keys.contains(&approval.operator) || !approval.verify() {
+            return;
+        }
+        let id = approval.proposal_id;
+        self.quarantine_rounds
+            .entry(id)
+            .or_default()
+            .operator_approved = true;
+        self.broadcast(GossipMessage::QuarantineApproval(Box::new(approval)));
+        self.tally_and_maybe_enact(id, self.tick);
+    }
+
+    /// Tally a proposal's votes against its scope's requirement and enact the
+    /// quarantine locally once met (design §13.4) — every node that has seen the
+    /// proposal + votes converges on the same decision in its own view.
+    fn tally_and_maybe_enact(&mut self, proposal_id: [u8; 32], tick: u64) {
+        let Some(round) = self.quarantine_rounds.get(&proposal_id) else {
+            return;
+        };
+        if round.enacted {
+            return;
+        }
+        let Some(proposal) = round.proposal.clone() else {
+            return;
+        };
+        let operator_approved = round.operator_approved;
+        let votes: Vec<QuarantineVote> = round.votes.values().cloned().collect();
+        let eligible = self.eligible_voters(proposal.subject);
+        let decision = crate::quarantine::decide_quarantine(
+            &proposal,
+            &votes,
+            &eligible,
+            self.config.witness_count,
+            operator_approved,
+        );
+        if decision.enacted {
+            self.apply_quarantine(proposal.subject, proposal.scope, tick);
+            if let Some(r) = self.quarantine_rounds.get_mut(&proposal_id) {
+                r.enacted = true;
+            }
+        }
     }
 
     /// Apply an enacted quarantine scope to `subject` in this view.

@@ -251,6 +251,44 @@ impl QuarantineVote {
     }
 }
 
+/// A trusted operator's signed approval of a quarantine proposal — the operator
+/// sign-off the most severe scopes require (§13.4). Relayed into the mesh by the
+/// control plane (CP5); a node honours it only from a key it trusts as an
+/// operator.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OperatorQuarantineApproval {
+    pub proposal_id: [u8; 32],
+    pub operator: MeshPublicKey,
+    pub timestamp_tick: u64,
+    pub signature: Signature,
+}
+
+impl OperatorQuarantineApproval {
+    fn signing_bytes(proposal_id: &[u8; 32], tick: u64) -> Vec<u8> {
+        serde_json::to_vec(&("quarantine-operator-approval", proposal_id, tick))
+            .expect("serializable")
+    }
+
+    /// Sign an approval of `proposal_id` as the operator.
+    pub fn sign(operator: &MeshKeypair, proposal_id: [u8; 32], timestamp_tick: u64) -> Self {
+        let signature = operator.sign(&Self::signing_bytes(&proposal_id, timestamp_tick));
+        OperatorQuarantineApproval {
+            proposal_id,
+            operator: operator.public(),
+            timestamp_tick,
+            signature,
+        }
+    }
+
+    /// Verify the operator's signature over `(proposal_id, tick)`.
+    pub fn verify(&self) -> bool {
+        self.operator.verify(
+            &Self::signing_bytes(&self.proposal_id, self.timestamp_tick),
+            &self.signature,
+        )
+    }
+}
+
 /// The outcome of a quarantine vote.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QuarantineDecision {

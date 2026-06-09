@@ -135,6 +135,15 @@ pub enum GossipMessage {
     /// (`application-appraisal.md` §5.1) — report-only: gossiped so a control
     /// plane can remediate; does not affect node trust.
     AppResult(Box<crate::application::AppAttestationResult>),
+    /// A peer proposes quarantining a subject at a scope (design §13.2).
+    /// Gossiped so the subject's witnesses can vote and every node converges on
+    /// the same enactment.
+    QuarantineProposal(Box<crate::quarantine::QuarantineProposal>),
+    /// A witness's signed ballot on a quarantine proposal (§13.3).
+    QuarantineVote(Box<crate::quarantine::QuarantineVote>),
+    /// A trusted operator's signed approval of a proposal — the sign-off the
+    /// most severe scopes require (§13.4); relayed in by the control plane (CP5).
+    QuarantineApproval(Box<crate::quarantine::OperatorQuarantineApproval>),
 }
 
 // -- Attestation records (design §8) --

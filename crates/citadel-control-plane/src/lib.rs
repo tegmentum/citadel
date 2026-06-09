@@ -48,6 +48,7 @@ use std::collections::{HashMap, HashSet};
 use citadel_mesh::crypto::MeshPublicKey;
 use citadel_mesh::id::Epoch;
 use citadel_mesh::membership::MemberUpdate;
+use citadel_mesh::quarantine::OperatorQuarantineApproval;
 use citadel_mesh::reference::ReferenceManifest;
 use citadel_mesh::state::TrustState;
 use citadel_mesh::types::{AttestationResult, Verdict};
@@ -67,6 +68,8 @@ pub struct ControlPlane<S: ControlPlaneStore> {
     /// validates + enqueues (no node needed); the host loop drains and
     /// broadcasts through the observer node (CP5 live `POST` wiring).
     pending_manifests: Vec<ReferenceManifest>,
+    /// Operator-authorized quarantine approvals awaiting relay (CP5).
+    pending_quarantine_approvals: Vec<OperatorQuarantineApproval>,
     /// Latest mesh tick the CP has observed — stamped onto operator audit
     /// entries created by the (tick-less) HTTP path.
     last_tick: u64,
@@ -80,6 +83,7 @@ impl<S: ControlPlaneStore> ControlPlane<S> {
             witness_count: 0,
             operators: HashSet::new(),
             pending_manifests: Vec::new(),
+            pending_quarantine_approvals: Vec::new(),
             last_tick: 0,
         }
     }
@@ -153,6 +157,50 @@ impl<S: ControlPlaneStore> ControlPlane<S> {
             observer.broadcast_reference_manifest(m);
         }
         Ok(target)
+    }
+
+    /// Validate + audit + **enqueue** a trusted operator's quarantine approval —
+    /// the operator sign-off severe scopes require (CP5; node-free half). Checks
+    /// the operator is registered and the approval's signature verifies, audits
+    /// it, and queues it; the host loop relays via [`Self::drain_pending_quarantine_approvals`].
+    /// Returns the approved proposal id.
+    pub fn submit_quarantine_approval(
+        &mut self,
+        approval: OperatorQuarantineApproval,
+        tick: u64,
+    ) -> Result<[u8; 32], WriteError> {
+        if !self.operators.contains(&approval.operator) {
+            return Err(WriteError::Unauthorized);
+        }
+        if !approval.verify() {
+            return Err(WriteError::BadSignature);
+        }
+        let pid = approval.proposal_id;
+        self.last_tick = self.last_tick.max(tick);
+        self.append_operator_audit("quarantine-approval", &pid, &approval.operator, tick);
+        self.pending_quarantine_approvals.push(approval);
+        Ok(pid)
+    }
+
+    /// Drain the quarantine approvals awaiting relay — the host loop relays each
+    /// through its observer node (`node.relay_quarantine_approval`).
+    pub fn drain_pending_quarantine_approvals(&mut self) -> Vec<OperatorQuarantineApproval> {
+        std::mem::take(&mut self.pending_quarantine_approvals)
+    }
+
+    /// Validate, audit, and relay a quarantine approval in one call via the
+    /// observer node (in-process convenience).
+    pub fn relay_quarantine_approval(
+        &mut self,
+        approval: OperatorQuarantineApproval,
+        observer: &mut citadel_mesh::node::Node,
+        tick: u64,
+    ) -> Result<[u8; 32], WriteError> {
+        let pid = self.submit_quarantine_approval(approval, tick)?;
+        for a in self.drain_pending_quarantine_approvals() {
+            observer.relay_quarantine_approval(a);
+        }
+        Ok(pid)
     }
 
     fn append_operator_audit(
