@@ -29,7 +29,7 @@ what's testable in-tree vs. deployment.
 | FL | Witnessed fact/assertion ledger | `citadel-facts` | verdict quorum, reference manifests, audit chain | 2 (broadest) | 🔨 FL1 done |
 | CA | Mesh-operated signing service / threshold CA | `citadel-ca` | FROST signing, trust gate | 2 | 🔨 CA1 done |
 | TW | Distributed tripwires / honeytokens | `citadel-tripwire` | AppRelay, quarantine | 3 | 🔨 TW1 done |
-| FED | Cross-mesh federation / trust bridging | `citadel-federation` | trust bundles, SPIFFE federation | 3 (strategic) | planned |
+| FED | Cross-mesh federation / trust bridging | `citadel-federation` | trust bundles, SPIFFE federation | 3 (strategic) | 🔨 FED1 done |
 
 **Suggested order:** MB + CAP first (foundational + unifying, both nearly free
 given FROST and the release protocol); then FL (broadest product surface) and CA;
@@ -239,7 +239,7 @@ admitted by mesh B's policy under a bounded, revocable bridge.
 
 | Phase | Scope |
 |-------|-------|
-| FED1 | `citadel-federation`: a signed `TrustBundle` (a mesh's exportable facts/keys) + an import policy (translate/limit). Pure + tested. |
+| FED1 | ✅ done. `citadel-federation`: signed `TrustBundle` (origin + trust claims + tier + beacon round) + `ImportPolicy` (trusted issuer, ceiling trust, required tier, freshness) + `import` (verify → translate → cap; downgrade-only, FED-C1). Tests: bundle signs/verifies (tamper fails); import caps remote Trusted to the ceiling while a remote Suspicious stays Suspicious; drops stale/wrong-tier claims and rejects untrusted issuers. |
 | FED2 | Bridge as a capability (CAP); bundle exchange over a transport; SPIFFE-federation alignment for workload identity across meshes. |
 | FED3 | Multi-mesh deployment + observability federation (the OBS5 gateway tier). (Needs multiple live meshes.) |
 

@@ -775,6 +775,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "citadel-federation"
+version = "0.1.0"
+dependencies = [
+ "citadel-mesh",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "citadel-mesh"
 version = "0.1.0"
 dependencies = [
