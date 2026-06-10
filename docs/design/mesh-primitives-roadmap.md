@@ -26,7 +26,7 @@ what's testable in-tree vs. deployment.
 |---|-----------|------------------|----------|----------|--------|
 | MB | Mesh randomness/freshness beacon | `citadel-beacon` | FROST/DKG, AppRelay | **1 (foundational)** | ✅ MB1–MB3 done |
 | CAP | Continuously-earned capabilities | `citadel-caps` | release protocol, leases | **1 (unifying)** | ✅ CAP1–CAP3 done |
-| FL | Witnessed fact/assertion ledger | `citadel-facts` | verdict quorum, reference manifests, audit chain | 2 (broadest) | 🔨 FL1 done |
+| FL | Witnessed fact/assertion ledger | `citadel-facts` | verdict quorum, reference manifests, audit chain | 2 (broadest) | 🔨 FL1–FL2 done |
 | CA | Mesh-operated signing service / threshold CA | `citadel-ca` | FROST signing, trust gate | 2 | 🔨 CA1 done |
 | TW | Distributed tripwires / honeytokens | `citadel-tripwire` | AppRelay, quarantine | 3 | 🔨 TW1–TW2 done |
 | FED | Cross-mesh federation / trust bridging | `citadel-federation` | trust bundles, SPIFFE federation | 3 (strategic) | 🔨 FED1–FED2 done |
@@ -143,7 +143,7 @@ verifiable, hardware-rooted notary.
 | Phase | Scope |
 |-------|-------|
 | FL1 | ✅ done. `citadel-facts`: `Assertion {subject,predicate,claim,beacon_round,evidence}` + `FactChecker` (mock `SbomHashChecker`, `PatchedChecker`); `FactVote::cast` (independent check → signed ballot) + `FactAttestation::{approvals,witnessed_true}` (quorum of eligible checkers, mirrors ReleaseAuthorization). Tests: checkers verify evidence; a quorum of checking witnesses attests a fact while a false claim gets zero approvals; forged/duplicate/outsider votes do not count. |
-| FL2 | Quorum + ledger: gossip assertions/votes (reuse the verdict path), append signed facts to the audit chain; query API ("is the fleet unanimously patched for X?"). |
+| FL2 | ✅ done. `FactMessage` (Assert/Vote) + `FACT_TOPIC` gossip serde; `FactLedger` records attestations iff witnessed-true and answers queries — `is_witnessed(subject, predicate)` and `fleet_satisfies(predicate, subjects)` ("is the whole fleet patched for CVE-X?"). Tests: message round-trips; the ledger records witnessed facts + answers the fleet-unanimity query; a false attestation is not recorded. Durable audit-chain append + control-plane API are FL3. |
 | FL3 | Control-plane + observability surface: fleet-wide fact rollups, a `citadel:fact-<k>` selector for policy, a dashboard panel. |
 
 ---

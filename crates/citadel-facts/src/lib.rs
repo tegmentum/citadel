@@ -314,3 +314,165 @@ mod tests {
         );
     }
 }
+
+// -- FL2: gossip + the queryable fact ledger ---------------------------------
+
+/// A fact-protocol message gossiped between nodes: an assertion to be checked, or
+/// a witness's vote on one (reuses the verdict gossip path).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum FactMessage {
+    Assert(Assertion),
+    Vote(FactVote),
+}
+
+/// The `AppRelay` topic the fact protocol runs on.
+pub const FACT_TOPIC: [u8; 32] = *b"citadel-fact-protocol-topic\x00\x00\x00\x00\x00";
+
+impl FactMessage {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("fact message is serializable")
+    }
+    pub fn from_bytes(b: &[u8]) -> Option<Self> {
+        serde_json::from_slice(b).ok()
+    }
+}
+
+/// A ledger of facts the mesh has witnessed true — the queryable notary surface.
+/// (FL2 keeps it in memory; FL3 appends to the durable audit chain and exposes a
+/// control-plane API.)
+#[derive(Default)]
+pub struct FactLedger {
+    facts: Vec<FactAttestation>,
+}
+
+impl FactLedger {
+    pub fn new() -> Self {
+        FactLedger::default()
+    }
+
+    /// Record an attestation **iff** it is witnessed true by a quorum of eligible
+    /// checkers. Returns whether it was recorded.
+    pub fn record(
+        &mut self,
+        attestation: FactAttestation,
+        quorum: usize,
+        eligible: &[(NodeId, MeshPublicKey)],
+    ) -> bool {
+        if attestation.witnessed_true(quorum, eligible) {
+            self.facts.push(attestation);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Is there a witnessed fact for this subject + predicate?
+    pub fn is_witnessed(&self, subject: NodeId, predicate: &str) -> bool {
+        self.facts
+            .iter()
+            .any(|f| f.subject == subject && f.predicate == predicate)
+    }
+
+    /// The fleet-unanimity query: does **every** listed subject have a witnessed
+    /// fact for `predicate`? (e.g. "is the whole fleet patched for CVE-X?")
+    pub fn fleet_satisfies(&self, predicate: &str, subjects: &[NodeId]) -> bool {
+        !subjects.is_empty() && subjects.iter().all(|s| self.is_witnessed(*s, predicate))
+    }
+
+    pub fn facts(&self) -> &[FactAttestation] {
+        &self.facts
+    }
+}
+
+#[cfg(test)]
+mod ledger_tests {
+    use super::*;
+
+    fn idk(n: u8) -> (NodeId, MeshKeypair) {
+        let kp = MeshKeypair::from_seed([n; 32]);
+        (NodeId(kp.public().fingerprint()), kp)
+    }
+    fn node(n: u8) -> NodeId {
+        NodeId([n; 32])
+    }
+
+    // A witnessed "patched" attestation for `subject`, by a quorum of `witnesses`.
+    fn patched_attestation(
+        subject: NodeId,
+        cve: &str,
+        witnesses: &[(NodeId, MeshKeypair)],
+        round: u64,
+    ) -> FactAttestation {
+        let a = Assertion {
+            subject,
+            predicate: format!("patched:{cve}"),
+            claim: "patched".to_string(),
+            beacon_round: round,
+            evidence: format!("applied fix for {cve}").into_bytes(),
+        };
+        let votes = witnesses
+            .iter()
+            .map(|(id, kp)| FactVote::cast(kp, &a, *id, &PatchedChecker, round))
+            .collect();
+        FactAttestation {
+            assertion_id: a.id(),
+            subject,
+            predicate: a.predicate,
+            claim: a.claim,
+            beacon_round: round,
+            votes,
+        }
+    }
+
+    #[test]
+    fn gossip_message_round_trips() {
+        let a = Assertion {
+            subject: node(7),
+            predicate: "sbom".to_string(),
+            claim: "x".to_string(),
+            beacon_round: 1,
+            evidence: vec![1, 2, 3],
+        };
+        let m = FactMessage::Assert(a);
+        let back = FactMessage::from_bytes(&m.to_bytes()).unwrap();
+        assert!(matches!(back, FactMessage::Assert(_)));
+    }
+
+    #[test]
+    fn ledger_records_witnessed_facts_and_answers_fleet_queries() {
+        let witnesses: Vec<(NodeId, MeshKeypair)> = (10u8..=14).map(idk).collect();
+        let eligible: Vec<(NodeId, MeshPublicKey)> = witnesses
+            .iter()
+            .map(|(id, kp)| (*id, kp.public()))
+            .collect();
+        let quorum = 3;
+        let cve = "CVE-2024-1234";
+        let fleet = [node(1), node(2), node(3)];
+
+        let mut ledger = FactLedger::new();
+        for &s in &fleet {
+            assert!(ledger.record(
+                patched_attestation(s, cve, &witnesses, 100),
+                quorum,
+                &eligible
+            ));
+        }
+        // The whole fleet is witnessed patched.
+        assert!(ledger.fleet_satisfies(&format!("patched:{cve}"), &fleet));
+        // A subject with no recorded fact breaks unanimity.
+        assert!(!ledger.fleet_satisfies(&format!("patched:{cve}"), &[node(1), node(2), node(9)]));
+
+        // A *false* attestation (witnesses can't check it) is not recorded.
+        let false_att = FactAttestation {
+            assertion_id: [0u8; 32],
+            subject: node(4),
+            predicate: format!("patched:{cve}"),
+            claim: "patched".to_string(),
+            beacon_round: 100,
+            // votes for a different assertion id → zero approvals for this one
+            votes: vec![],
+        };
+        assert!(!ledger.record(false_att, quorum, &eligible));
+        assert!(!ledger.is_witnessed(node(4), &format!("patched:{cve}")));
+    }
+}
