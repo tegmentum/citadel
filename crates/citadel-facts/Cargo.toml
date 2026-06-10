@@ -1,0 +1,12 @@
+[package]
+name = "citadel-facts"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Citadel witnessed fact ledger — the mesh as a hardware-rooted notary (FL1)"
+
+[dependencies]
+citadel-mesh = { path = "../citadel-mesh" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+blake3 = "1"

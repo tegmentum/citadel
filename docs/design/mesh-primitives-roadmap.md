@@ -26,7 +26,7 @@ what's testable in-tree vs. deployment.
 |---|-----------|------------------|----------|----------|--------|
 | MB | Mesh randomness/freshness beacon | `citadel-beacon` | FROST/DKG, AppRelay | **1 (foundational)** | 🔨 MB1–MB2 done |
 | CAP | Continuously-earned capabilities | `citadel-caps` | release protocol, leases | **1 (unifying)** | ✅ CAP1–CAP3 done |
-| FL | Witnessed fact/assertion ledger | `citadel-facts` | verdict quorum, reference manifests, audit chain | 2 (broadest) | planned |
+| FL | Witnessed fact/assertion ledger | `citadel-facts` | verdict quorum, reference manifests, audit chain | 2 (broadest) | 🔨 FL1 done |
 | CA | Mesh-operated signing service / threshold CA | `citadel-ca` | FROST signing, trust gate | 2 | planned |
 | TW | Distributed tripwires / honeytokens | `citadel-tripwire` | AppRelay, quarantine | 3 | planned |
 | FED | Cross-mesh federation / trust bridging | `citadel-federation` | trust bundles, SPIFFE federation | 3 (strategic) | planned |
@@ -142,7 +142,7 @@ verifiable, hardware-rooted notary.
 
 | Phase | Scope |
 |-------|-------|
-| FL1 | `citadel-facts`: `Assertion` + a `FactChecker` trait (verify evidence); signed `FactAttestation` (quorum of checking witnesses). Pure + tested with mock checkers (SBOM-hash, patched-CVE). |
+| FL1 | ✅ done. `citadel-facts`: `Assertion {subject,predicate,claim,beacon_round,evidence}` + `FactChecker` (mock `SbomHashChecker`, `PatchedChecker`); `FactVote::cast` (independent check → signed ballot) + `FactAttestation::{approvals,witnessed_true}` (quorum of eligible checkers, mirrors ReleaseAuthorization). Tests: checkers verify evidence; a quorum of checking witnesses attests a fact while a false claim gets zero approvals; forged/duplicate/outsider votes do not count. |
 | FL2 | Quorum + ledger: gossip assertions/votes (reuse the verdict path), append signed facts to the audit chain; query API ("is the fleet unanimously patched for X?"). |
 | FL3 | Control-plane + observability surface: fleet-wide fact rollups, a `citadel:fact-<k>` selector for policy, a dashboard panel. |
 
