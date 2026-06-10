@@ -230,3 +230,68 @@ mod tests {
         assert_ne!(a.id, c.id);
     }
 }
+
+// -- TW2: gossip + triage into the quarantine flow ---------------------------
+
+use citadel_mesh::quarantine::QuarantineScope;
+
+/// The `AppRelay` topic trip events are gossiped on.
+pub const TRIP_TOPIC: [u8; 32] = *b"citadel-tripwire-event-topic\x00\x00\x00\x00";
+
+impl TripEvent {
+    /// Serialize for gossip (`AppRelay` payload).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("trip event is serializable")
+    }
+    /// Deserialize a gossiped trip.
+    pub fn from_bytes(b: &[u8]) -> Option<Self> {
+        serde_json::from_slice(b).ok()
+    }
+}
+
+/// The quarantine scope a trip warrants — `Some` for high-confidence classes
+/// (which propose quarantine via the M2 flow), `None` for low-confidence ones
+/// (which only raise a finding).
+pub fn quarantine_scope(class: TripClass) -> Option<QuarantineScope> {
+    match class.action() {
+        TripAction::ProposeQuarantine => Some(QuarantineScope::BlockWorkloadScheduling),
+        TripAction::RaiseFinding => None,
+    }
+}
+
+/// A containment recommendation derived from a verified high-confidence trip:
+/// propose this scope for this subject (the caller enacts it via the mesh
+/// quarantine flow).
+#[derive(Clone, Debug)]
+pub struct Containment {
+    pub subject: NodeId,
+    pub scope: QuarantineScope,
+    pub trip: TripEvent,
+}
+
+/// Verify gossiped trips against their observers and return the containment
+/// actions. A high-confidence trip with a known, attributable subject becomes a
+/// quarantine recommendation; forged trips (TW-C1) and low-confidence trips
+/// (TW-C2) produce none.
+pub fn triage(payloads: &[Vec<u8>], observers: &[(NodeId, MeshPublicKey)]) -> Vec<Containment> {
+    let mut out = Vec::new();
+    for p in payloads {
+        let Some(trip) = TripEvent::from_bytes(p) else {
+            continue;
+        };
+        let Some((_, pubkey)) = observers.iter().find(|(id, _)| *id == trip.observer) else {
+            continue;
+        };
+        if !trip.verify(pubkey) {
+            continue;
+        }
+        if let (Some(scope), Some(subject)) = (quarantine_scope(trip.class), trip.subject) {
+            out.push(Containment {
+                subject,
+                scope,
+                trip,
+            });
+        }
+    }
+    out
+}

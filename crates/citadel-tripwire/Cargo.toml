@@ -9,3 +9,4 @@ description = "Citadel distributed tripwires / honeytokens — signed trip evide
 citadel-mesh = { path = "../citadel-mesh" }
 serde = { workspace = true }
 blake3 = "1"
+serde_json = { workspace = true }
