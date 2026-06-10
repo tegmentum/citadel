@@ -25,7 +25,7 @@ what's testable in-tree vs. deployment.
 | # | Primitive | Crate (proposed) | Rides on | Priority | Status |
 |---|-----------|------------------|----------|----------|--------|
 | MB | Mesh randomness/freshness beacon | `citadel-beacon` | FROST/DKG, AppRelay | **1 (foundational)** | 🔨 MB1–MB2 done |
-| CAP | Continuously-earned capabilities | `citadel-caps` | release protocol, leases | **1 (unifying)** | planned |
+| CAP | Continuously-earned capabilities | `citadel-caps` | release protocol, leases | **1 (unifying)** | 🔨 CAP1 done |
 | FL | Witnessed fact/assertion ledger | `citadel-facts` | verdict quorum, reference manifests, audit chain | 2 (broadest) | planned |
 | CA | Mesh-operated signing service / threshold CA | `citadel-ca` | FROST signing, trust gate | 2 | planned |
 | TW | Distributed tripwires / honeytokens | `citadel-tripwire` | AppRelay, quarantine | 3 | planned |
@@ -107,7 +107,7 @@ is decided by the mesh.
 
 | Phase | Scope |
 |-------|-------|
-| CAP1 | `citadel-caps`: `Capability` (scope + caveats + lease + beacon round), token mint/verify, attenuation (caveat-chain narrowing). Pure + tested. |
+| CAP1 | ✅ done. `citadel-caps`: `Capability` (scope/holder/beacon_round/lease) + `Caveat` (ExpiresAtRound/ScopePrefix/BoundToHolder); `mint`/`attenuate`/`verify` (signature chain, only-narrows) + `authorizes` (scope + lease freshness + expiry + holder). Tests: mint→authorize within scope+lease; attenuation narrows (broadening rejected); tamper + wrong-signer rejected; holder binding. |
 | CAP2 | Issuance over the release protocol: `request_capability` → witness votes → quorum `CapabilityGrant`. Reuse `release` round machinery; tested over the harness (Trusted → granted, dropped trust → denied at renewal). |
 | CAP3 | Enforcement adapters: an example PEP (policy-enforcement point) that verifies a token before an action; map an existing gate (e.g. a control-plane write) onto a capability. |
 

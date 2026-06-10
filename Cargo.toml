@@ -16,6 +16,7 @@ members = [
     "crates/citadel-metrics-exporter",
     "crates/citadel-telemetry",
     "crates/citadel-beacon",
+    "crates/citadel-caps",
     "crates/citadel-spire-plugin",
     "crates/citadel-spire-controller",
     "crates/citadel-trust-sync",
