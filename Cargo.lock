@@ -731,6 +731,7 @@ dependencies = [
  "citadel-mesh",
  "citadel-mss",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

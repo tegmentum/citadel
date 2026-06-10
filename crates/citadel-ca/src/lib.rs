@@ -247,3 +247,196 @@ mod tests {
         .is_healthy(0.0));
     }
 }
+
+// -- CA2: the service shape (request / halt-on-incident / issuance) -----------
+
+use serde::{Deserialize, Serialize};
+
+/// The `AppRelay` topic the CA request/approve/sign flow runs on.
+pub const CA_TOPIC: [u8; 32] = *b"citadel-ca-signing-topic\x00\x00\x00\x00\x00\x00\x00\x00";
+
+/// A request for the CA to sign `artifact`, gossiped to the requester's witnesses
+/// (who vote on its trust via the release protocol).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SigningRequest {
+    pub requester: NodeId,
+    pub artifact: Vec<u8>,
+    pub quorum: usize,
+    pub witness_count: usize,
+}
+
+impl SigningRequest {
+    pub fn new(requester: NodeId, artifact: Vec<u8>, quorum: usize, witness_count: usize) -> Self {
+        SigningRequest {
+            requester,
+            artifact,
+            quorum,
+            witness_count,
+        }
+    }
+    /// The release secret-class id this request is authorized under.
+    pub fn secret_id(&self) -> [u8; 32] {
+        signing_secret_id(self.requester, blake3::hash(&self.artifact).as_bytes())
+    }
+    pub fn to_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("request is serializable")
+    }
+    pub fn from_bytes(b: &[u8]) -> Option<Self> {
+        serde_json::from_slice(b).ok()
+    }
+}
+
+/// Whether the CA is currently issuing or **halted** because the cluster is
+/// unhealthy — issuance pauses automatically during an incident (CA-C1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaStatus {
+    Available,
+    Halted,
+}
+
+/// The CA's issuance posture given current cluster health.
+pub fn ca_status(health: &ClusterHealth, min_health: f64) -> CaStatus {
+    if health.is_healthy(min_health) {
+        CaStatus::Available
+    } else {
+        CaStatus::Halted
+    }
+}
+
+/// Canonical bytes for a release artifact (a build/release the CA attests by
+/// signing) — typically the digest of a reproduced build (CA-C3: a witnessed fact).
+pub fn release_artifact(name: &str, digest: &[u8; 32]) -> Vec<u8> {
+    serde_json::to_vec(&("citadel-ca-release", name, digest)).expect("serializable")
+}
+
+/// Canonical bytes for a certificate the CA issues (subject + SubjectPublicKeyInfo).
+pub fn cert_artifact(subject: &str, spki: &[u8]) -> Vec<u8> {
+    serde_json::to_vec(&("citadel-ca-cert", subject, spki)).expect("serializable")
+}
+
+/// The service entry point: sign a request iff the CA is **Available** (cluster
+/// healthy) and the request is quorum-authorized. Refuses (no signature) while
+/// halted — the explicit service-level halt-on-incident on top of
+/// [`sign_artifact`]'s gate.
+#[allow(clippy::too_many_arguments)]
+pub fn service_sign(
+    holders: &[KeyPackage],
+    public: &PublicKeyPackage,
+    request: &SigningRequest,
+    auth: &ReleaseAuthorization,
+    eligible: &[(NodeId, MeshPublicKey)],
+    health: &ClusterHealth,
+    min_health: f64,
+) -> Option<SignedArtifact> {
+    if ca_status(health, min_health) == CaStatus::Halted {
+        return None;
+    }
+    sign_artifact(
+        holders,
+        public,
+        &request.artifact,
+        request.requester,
+        auth,
+        request.quorum,
+        eligible,
+        health,
+        min_health,
+    )
+}
+
+#[cfg(test)]
+mod service_tests {
+    use super::*;
+    use citadel_mesh::crypto::MeshKeypair;
+    use citadel_mesh::release::{ReleaseRequest, ReleaseVote};
+
+    fn idk(n: u8) -> (NodeId, MeshKeypair) {
+        let kp = MeshKeypair::from_seed([n; 32]);
+        (NodeId(kp.public().fingerprint()), kp)
+    }
+
+    #[test]
+    fn the_service_signs_when_available_and_halts_during_an_incident() {
+        let (public, holders) = ca_keygen(3, 5).unwrap();
+        let requester = idk(1);
+        let artifact = release_artifact("hexis v1.2.3", &[7u8; 32]);
+        let request = SigningRequest::new(requester.0, artifact, 3, 5);
+        let quorum = 3;
+
+        let witnesses: Vec<(NodeId, MeshKeypair)> = (10u8..=14).map(idk).collect();
+        let eligible: Vec<(NodeId, MeshPublicKey)> = witnesses
+            .iter()
+            .map(|(id, kp)| (*id, kp.public()))
+            .collect();
+        let secret_id = request.secret_id();
+        let req = ReleaseRequest::create(
+            &requester.1,
+            requester.0,
+            secret_id,
+            [9u8; 32],
+            quorum,
+            5,
+            100,
+            5,
+        );
+        let auth = ReleaseAuthorization {
+            secret_id,
+            requester: requester.0,
+            nonce: req.nonce,
+            votes: witnesses
+                .iter()
+                .take(quorum)
+                .map(|(id, kp)| ReleaseVote::sign(kp, &req, *id, true, 6))
+                .collect(),
+        };
+
+        let healthy = ClusterHealth {
+            trusted: 9,
+            total: 10,
+        };
+        let unhealthy = ClusterHealth {
+            trusted: 5,
+            total: 10,
+        };
+
+        // Available → signs, and the release artifact verifies.
+        assert_eq!(ca_status(&healthy, 0.8), CaStatus::Available);
+        let signed = service_sign(
+            &holders[0..3],
+            &public,
+            &request,
+            &auth,
+            &eligible,
+            &healthy,
+            0.8,
+        )
+        .expect("signed while available");
+        assert!(signed.verify(&public));
+
+        // Halted during an incident → refuses (issuance pauses).
+        assert_eq!(ca_status(&unhealthy, 0.8), CaStatus::Halted);
+        assert!(service_sign(
+            &holders[0..3],
+            &public,
+            &request,
+            &auth,
+            &eligible,
+            &unhealthy,
+            0.8
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn issuance_helpers_and_request_round_trip() {
+        // Distinct artifact namespaces for releases vs certs.
+        assert_ne!(
+            release_artifact("x", &[0u8; 32]),
+            cert_artifact("x", &[0u8; 32])
+        );
+        // The request round-trips over the wire and keeps its secret-class id.
+        let r = SigningRequest::new(idk(1).0, b"artifact".to_vec(), 3, 5);
+        let back = SigningRequest::from_bytes(&r.to_bytes()).unwrap();
+        assert_eq!(back.secret_id(), r.secret_id());
+    }
+}
