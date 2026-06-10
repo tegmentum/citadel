@@ -9,3 +9,4 @@ description = "Citadel cross-mesh federation — signed trust bundles + translat
 citadel-mesh = { path = "../citadel-mesh" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+citadel-caps = { path = "../citadel-caps" }

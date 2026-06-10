@@ -254,3 +254,130 @@ mod tests {
         assert_eq!(import(&b, &other, 120), Err(ImportError::UntrustedIssuer));
     }
 }
+
+// -- FED2: the bridge is itself a capability + bundle transport --------------
+
+use citadel_caps::{CapabilityToken, Decision, Pep};
+
+impl TrustBundle {
+    /// Serialize for exchange over a transport.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("bundle is serializable")
+    }
+    /// Deserialize a received bundle.
+    pub fn from_bytes(b: &[u8]) -> Option<Self> {
+        serde_json::from_slice(b).ok()
+    }
+}
+
+/// The capability scope that authorizes bridging a given origin mesh — the
+/// authority to federate is a mesh-issued, lease-bound, revocable capability
+/// (FED-C2), so a federation link is continuously earned like everything else.
+pub fn bridge_scope(origin_mesh: &str) -> String {
+    format!("federate:{origin_mesh}")
+}
+
+/// Why a gated import was refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FedError {
+    /// No valid bridge capability authorizes federating this origin.
+    Unauthorized,
+    /// The bundle itself failed verification.
+    Import(ImportError),
+}
+
+/// Import a bundle **only** behind a valid bridge capability (FED-C2): the
+/// presented `bridge_token` must authorize `federate:<origin>` (verified by the
+/// importer's `Pep`), then the bundle is verified + translated as in [`import`].
+/// An expired or wrong-origin bridge capability refuses the whole exchange.
+pub fn import_gated(
+    bundle: &TrustBundle,
+    policy: &ImportPolicy,
+    current_round: u64,
+    pep: &Pep,
+    bridge_token: &CapabilityToken,
+    holder: &NodeId,
+) -> Result<Vec<FederatedTrust>, FedError> {
+    let scope = bridge_scope(&bundle.origin_mesh);
+    if pep.authorize(bridge_token, &scope, current_round, holder) != Decision::Allow {
+        return Err(FedError::Unauthorized);
+    }
+    import(bundle, policy, current_round).map_err(FedError::Import)
+}
+
+#[cfg(test)]
+mod fed2_tests {
+    use super::*;
+    use citadel_caps::{mint, Capability};
+    use citadel_mesh::crypto::MeshKeypair;
+
+    fn kp(n: u8) -> MeshKeypair {
+        MeshKeypair::from_seed([n; 32])
+    }
+    fn node(n: u8) -> NodeId {
+        NodeId([n; 32])
+    }
+
+    #[test]
+    fn federation_requires_a_valid_bridge_capability() {
+        // mesh-a exports a signed bundle.
+        let exporter = kp(1);
+        let bundle = TrustBundle::sign(
+            &exporter,
+            "mesh-a",
+            vec![TrustClaim {
+                subject: node(7),
+                trust: TrustState::Trusted,
+                tpm_spec: Some("2.0".into()),
+                beacon_round: 100,
+            }],
+        );
+        // round-trips over a transport.
+        assert!(TrustBundle::from_bytes(&bundle.to_bytes())
+            .unwrap()
+            .verify());
+
+        let policy = ImportPolicy {
+            trusted_issuer: exporter.public(),
+            max_trust: TrustState::Trusted,
+            require_tpm_spec: None,
+            max_age_rounds: 50,
+        };
+
+        // The local mesh's capability authority + a bridge operator.
+        let cap_authority = kp(2);
+        let pep = Pep::new(cap_authority.public());
+        let operator = node(5);
+        let bridge_cap = |scope: &str, lease: u64| {
+            mint(
+                &cap_authority,
+                Capability {
+                    scope: scope.to_string(),
+                    holder: operator,
+                    beacon_round: 100,
+                    lease_ticks: lease,
+                },
+            )
+        };
+
+        // A valid `federate:mesh-a` capability → the bridge imports.
+        let ok = bridge_cap("federate:mesh-a", 50);
+        let view = import_gated(&bundle, &policy, 120, &pep, &ok, &operator).unwrap();
+        assert_eq!(view.len(), 1);
+        assert_eq!(view[0].subject, node(7));
+
+        // A capability for a different origin → unauthorized.
+        let wrong_origin = bridge_cap("federate:mesh-z", 50);
+        assert_eq!(
+            import_gated(&bundle, &policy, 120, &pep, &wrong_origin, &operator),
+            Err(FedError::Unauthorized)
+        );
+
+        // An expired bridge capability → unauthorized (revocable at renewal).
+        let expired = bridge_cap("federate:mesh-a", 5);
+        assert_eq!(
+            import_gated(&bundle, &policy, 200, &pep, &expired, &operator),
+            Err(FedError::Unauthorized)
+        );
+    }
+}
