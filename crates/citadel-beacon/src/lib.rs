@@ -323,3 +323,98 @@ mod gossip_tests {
         assert_eq!(state.value(), Some(r2.value()));
     }
 }
+
+// -- MB3: freshness consumers (replay-proof challenges + leases) -------------
+
+/// A verifier challenge tied to a beacon round. The challenged party answers
+/// with `nonce` (e.g. in a TPM quote); because the nonce is derived from the
+/// round's unpredictable beacon value, it can't be precomputed, and because the
+/// round is carried, a response answering a *stale* round is detectable — a
+/// replay.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Challenge {
+    pub beacon_round: u64,
+    pub nonce: [u8; 32],
+}
+
+impl BeaconRound {
+    /// Issue a replay-proof challenge bound to this round + `context` (e.g. the
+    /// subject being attested).
+    pub fn challenge(&self, context: &[u8]) -> Challenge {
+        Challenge {
+            beacon_round: self.round,
+            nonce: self.nonce_for(context),
+        }
+    }
+}
+
+impl BeaconState {
+    /// Issue a challenge from the current beacon round (`None` until a beacon is
+    /// adopted) — the attestation-verifier helper.
+    pub fn challenge(&self, context: &[u8]) -> Option<Challenge> {
+        self.current.as_ref().map(|r| r.challenge(context))
+    }
+}
+
+/// Whether a challenge is still fresh: its round is within `max_age_rounds` of
+/// the current beacon round. A response to a staler challenge is a replay and
+/// should be rejected.
+pub fn challenge_fresh(challenge: &Challenge, current_round: u64, max_age_rounds: u64) -> bool {
+    current_round.saturating_sub(challenge.beacon_round) <= max_age_rounds
+}
+
+/// Whether a beacon-round lease is still active — the canonical freshness
+/// predicate shared by MSS lease epochs, SVID renewal cadence, and capability
+/// TTLs (`citadel-caps` already uses it): valid while fewer than `lease_rounds`
+/// beacon rounds have elapsed since `issued_round`. Renewal re-runs the issuing
+/// quorum at the current round, so a node that lost trust is denied at renewal.
+pub fn lease_active(issued_round: u64, current_round: u64, lease_rounds: u64) -> bool {
+    current_round.saturating_sub(issued_round) <= lease_rounds
+}
+
+#[cfg(test)]
+mod freshness_tests {
+    use super::*;
+
+    #[test]
+    fn challenges_are_replay_proof_across_rounds() {
+        let (public, packages) = tsig::keygen(3, 5).unwrap();
+        let signers = &packages[0..3];
+        let r0 = BeaconRound::produce(0, GENESIS_PREV, signers, &public).unwrap();
+        let r1 = next_round(&r0, signers, &public).unwrap();
+
+        let c0 = r0.challenge(b"attest:node-7");
+        let c1 = r1.challenge(b"attest:node-7");
+        // A round-0 answer can't be passed off as answering round 1.
+        assert_ne!(c0.nonce, c1.nonce);
+        assert_eq!(c0.beacon_round, 0);
+
+        // Fresh within the age window, stale beyond it (a replay is detected).
+        assert!(challenge_fresh(&c0, 0, 2));
+        assert!(challenge_fresh(&c0, 2, 2));
+        assert!(!challenge_fresh(&c0, 3, 2), "a stale challenge is a replay");
+    }
+
+    #[test]
+    fn beacon_state_issues_challenges_from_the_current_round() {
+        let (public, packages) = tsig::keygen(3, 5).unwrap();
+        let r0 = BeaconRound::produce(0, GENESIS_PREV, &packages[0..3], &public).unwrap();
+        let mut state = BeaconState::new(public);
+        assert!(
+            state.challenge(b"x").is_none(),
+            "no challenge before a beacon is adopted"
+        );
+        state.adopt(r0.clone());
+        assert_eq!(state.challenge(b"x"), Some(r0.challenge(b"x")));
+    }
+
+    #[test]
+    fn lease_active_over_beacon_rounds() {
+        assert!(lease_active(100, 100, 10));
+        assert!(lease_active(100, 110, 10));
+        assert!(
+            !lease_active(100, 111, 10),
+            "lease expired -> deny at renewal"
+        );
+    }
+}
