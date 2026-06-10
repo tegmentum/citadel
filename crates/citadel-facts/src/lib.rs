@@ -599,3 +599,38 @@ mod fl3_tests {
             .unanimous());
     }
 }
+
+// -- P3: fact protocol over the live mesh (AppRelay) --------------------------
+
+/// A witness's reaction to gossiped fact messages (FL live): check each gossiped
+/// assertion with `checker` and return the votes to broadcast. The flow mirrors
+/// TW2 — a node broadcasts `FactMessage::Assert` on [`FACT_TOPIC`]; each witness
+/// runs this and re-broadcasts the votes; a collector aggregates them.
+pub fn witness_gossiped_assertions(
+    payloads: &[Vec<u8>],
+    kp: &MeshKeypair,
+    voter: NodeId,
+    checker: &dyn FactChecker,
+    round: u64,
+) -> Vec<FactVote> {
+    payloads
+        .iter()
+        .filter_map(|p| FactMessage::from_bytes(p))
+        .filter_map(|m| match m {
+            FactMessage::Assert(a) => Some(FactVote::cast(kp, &a, voter, checker, round)),
+            FactMessage::Vote(_) => None,
+        })
+        .collect()
+}
+
+/// Collect the [`FactVote`]s out of gossiped fact messages (the collector side).
+pub fn votes_from_gossip(payloads: &[Vec<u8>]) -> Vec<FactVote> {
+    payloads
+        .iter()
+        .filter_map(|p| FactMessage::from_bytes(p))
+        .filter_map(|m| match m {
+            FactMessage::Vote(v) => Some(v),
+            FactMessage::Assert(_) => None,
+        })
+        .collect()
+}

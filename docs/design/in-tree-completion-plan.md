@@ -19,7 +19,7 @@ infrastructure, explicitly **out of scope** here.
 |---|------|-------|--------|-----------|
 | P1 | ✅ MSS8b driver integration scenario | `citadel-mss` | ~0.5 d | MSS8a/b (done) |
 | P2 | ✅ Persist + reclaim sealed shares (MSS8 D3) | `citadel-mss` | ~1 d | MSS8a (done) |
-| P3 | Fact-gossip into the live mesh | `citadel-mss`→`citadel-mesh` test | ~1 d | FL1/FL2, AppRelay (done) |
+| P3 | ✅ Fact-gossip into the live mesh | `citadel-facts` + harness test | ~1 d | FL1/FL2, AppRelay (done) |
 | P4 | Threshold-BLS unbiasable beacon (MB hardening) | `citadel-beacon` | ~2–3 d | MB1–3 (done) |
 
 **Suggested order:** P1 → P2 → P3 → P4 (compose-existing first; the new-crypto
