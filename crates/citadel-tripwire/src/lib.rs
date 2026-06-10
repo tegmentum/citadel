@@ -11,8 +11,8 @@
 //! class** — a high-confidence trip (a sealed honeytoken decrypted) proposes
 //! quarantine via the M2 flow; a low-confidence one raises a finding (TW-C2).
 //! Decoy *contents* are MSS-sealed and never gossiped; only their **identifiers**
-//! + the access detection ride the wire (TW-C3) — so the `Tripwire` here carries
-//! an `id`, never the secret itself.
+//! and the access detection ride the wire (TW-C3) — so the `Tripwire` here
+//! carries an `id`, never the secret itself.
 //!
 //! TW1 is the pure core (the trip event, its signature, and the confidence→action
 //! mapping). TW2 wires it over `AppRelay` + the quarantine flow; TW3 adds the
