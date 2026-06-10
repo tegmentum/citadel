@@ -381,3 +381,44 @@ mod fed2_tests {
         );
     }
 }
+
+// -- FED3 (in-tree slice): SPIFFE-federation alignment -----------------------
+//
+// Multi-mesh deployment + observability federation (the OBS5 gateway tier) need
+// live meshes; the cross-mesh identity selectors are in-tree and testable here.
+
+impl FederatedTrust {
+    /// Cross-mesh policy selectors for an imported node: its origin mesh and its
+    /// (capped) trust level. A SPIRE registration entry can then admit a federated
+    /// workload under bounded conditions — e.g. require `citadel:origin-mesh=mesh-a`
+    /// **and** `citadel:federated-trust=trusted` — the SPIFFE-federation alignment
+    /// for workload identity across meshes (mirrors `citadel:tpm-spec` /
+    /// `citadel:fact-<k>`).
+    pub fn selectors(&self) -> Vec<String> {
+        vec![
+            format!("citadel:origin-mesh={}", self.origin_mesh),
+            format!("citadel:federated-trust={}", self.trust.as_str()),
+        ]
+    }
+}
+
+#[cfg(test)]
+mod fed3_tests {
+    use super::*;
+
+    #[test]
+    fn federated_trust_emits_cross_mesh_selectors() {
+        let ft = FederatedTrust {
+            subject: NodeId([7; 32]),
+            origin_mesh: "mesh-a".to_string(),
+            trust: TrustState::Probationary,
+        };
+        assert_eq!(
+            ft.selectors(),
+            vec![
+                "citadel:origin-mesh=mesh-a".to_string(),
+                "citadel:federated-trust=probationary".to_string(),
+            ]
+        );
+    }
+}
