@@ -201,3 +201,125 @@ mod tests {
         );
     }
 }
+
+// -- MB2: gossip + per-node beacon state -------------------------------------
+
+/// The `AppRelay` topic beacon rounds are broadcast on.
+pub const BEACON_TOPIC: [u8; 32] = *b"citadel-beacon-round-topic\x00\x00\x00\x00\x00\x00";
+
+impl BeaconRound {
+    /// Serialize for gossip (`AppRelay` payload).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("beacon round is serializable")
+    }
+    /// Deserialize a gossiped round.
+    pub fn from_bytes(b: &[u8]) -> anyhow::Result<Self> {
+        Ok(serde_json::from_slice(b)?)
+    }
+}
+
+/// A node's view of the beacon: the latest **verified** round it has adopted.
+/// Each round is independently authentic (threshold-signed), so adoption is
+/// "newest verified wins" — monotonic and gap-tolerant (a late joiner adopts the
+/// current beacon without the full chain; `verify_chain` proves a full sequence
+/// when needed).
+pub struct BeaconState {
+    public: PublicKeyPackage,
+    current: Option<BeaconRound>,
+}
+
+impl BeaconState {
+    pub fn new(public: PublicKeyPackage) -> Self {
+        BeaconState {
+            public,
+            current: None,
+        }
+    }
+
+    /// The current beacon round, if any has been adopted.
+    pub fn current(&self) -> Option<&BeaconRound> {
+        self.current.as_ref()
+    }
+
+    /// The current round number (0 before any beacon is adopted).
+    pub fn round(&self) -> u64 {
+        self.current.as_ref().map(|r| r.round).unwrap_or(0)
+    }
+
+    /// Adopt `round` iff it verifies against the group key **and** is strictly
+    /// newer than the current one. Returns true if adopted.
+    pub fn adopt(&mut self, round: BeaconRound) -> bool {
+        if !round.verify(&self.public) {
+            return false;
+        }
+        let newer = self
+            .current
+            .as_ref()
+            .map(|c| round.round > c.round)
+            .unwrap_or(true);
+        if newer {
+            self.current = Some(round);
+        }
+        newer
+    }
+
+    /// Adopt every gossiped round drained from `AppRelay` (the newest valid one
+    /// wins). Returns true if the current round advanced.
+    pub fn ingest(&mut self, payloads: &[Vec<u8>]) -> bool {
+        let mut advanced = false;
+        for p in payloads {
+            if let Ok(round) = BeaconRound::from_bytes(p) {
+                advanced |= self.adopt(round);
+            }
+        }
+        advanced
+    }
+
+    /// The current round's random output (freshness anchor), if any.
+    pub fn value(&self) -> Option<[u8; 32]> {
+        self.current.as_ref().map(|r| r.value())
+    }
+
+    /// A replay-proof, freshness-bound challenge nonce for `context`, tied to the
+    /// current beacon round (the attestation-challenge helper, MB3 consumer).
+    pub fn nonce_for(&self, context: &[u8]) -> Option<[u8; 32]> {
+        self.current.as_ref().map(|r| r.nonce_for(context))
+    }
+}
+
+#[cfg(test)]
+mod gossip_tests {
+    use super::*;
+
+    #[test]
+    fn beacon_state_adopts_newest_verified_and_rejects_stale_or_forged() {
+        let (public, packages) = tsig::keygen(3, 5).unwrap();
+        let signers = &packages[0..3];
+        let r0 = BeaconRound::produce(0, GENESIS_PREV, signers, &public).unwrap();
+        let r1 = next_round(&r0, signers, &public).unwrap();
+
+        let mut state = BeaconState::new(public.clone());
+        assert!(
+            state.adopt(r1.clone()),
+            "adopts a verified round (late joiner)"
+        );
+        assert_eq!(state.round(), 1);
+        assert!(!state.adopt(r0.clone()), "an older round is not adopted");
+        assert_eq!(state.round(), 1);
+
+        // A round validly signed by a *different* group is rejected by our state.
+        let (other_pub, other_pkgs) = tsig::keygen(3, 5).unwrap();
+        let forged = BeaconRound::produce(2, r1.digest(), &other_pkgs[0..3], &other_pub).unwrap();
+        assert!(forged.verify(&other_pub), "valid under the other group");
+        assert!(
+            !state.adopt(forged),
+            "but not signed by our group -> rejected"
+        );
+
+        // round-trip through the gossip encoding.
+        let r2 = next_round(&r1, signers, &public).unwrap();
+        assert!(state.ingest(&[r2.to_bytes()]));
+        assert_eq!(state.round(), 2);
+        assert_eq!(state.value(), Some(r2.value()));
+    }
+}

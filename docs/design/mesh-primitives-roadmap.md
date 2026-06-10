@@ -24,7 +24,7 @@ what's testable in-tree vs. deployment.
 
 | # | Primitive | Crate (proposed) | Rides on | Priority | Status |
 |---|-----------|------------------|----------|----------|--------|
-| MB | Mesh randomness/freshness beacon | `citadel-beacon` | FROST/DKG, AppRelay | **1 (foundational)** | 🔨 MB1 done |
+| MB | Mesh randomness/freshness beacon | `citadel-beacon` | FROST/DKG, AppRelay | **1 (foundational)** | 🔨 MB1–MB2 done |
 | CAP | Continuously-earned capabilities | `citadel-caps` | release protocol, leases | **1 (unifying)** | planned |
 | FL | Witnessed fact/assertion ledger | `citadel-facts` | verdict quorum, reference manifests, audit chain | 2 (broadest) | planned |
 | CA | Mesh-operated signing service / threshold CA | `citadel-ca` | FROST signing, trust gate | 2 | planned |
@@ -66,7 +66,7 @@ tick off the same round), fair witness sampling, and TPM-rooted leader election.
 | Phase | Scope |
 |-------|-------|
 | MB1 | ✅ done. `citadel-beacon`: `BeaconRound::{produce,verify,value,digest,nonce_for}` (threshold-sign `round ‖ prev` via FROST), `next_round`, `verify_chain`. Tests: rounds chain + verify; output unpredictable + single-node-unbiasable; tamper breaks verify/chain; nonces freshness-bound + domain-separated. |
-| MB2 | Gossip the round over `AppRelay`; a beacon driver in the node loop; nonce-from-beacon helper used by the attestation challenge path. |
+| MB2 | ✅ done. `BeaconState` (per-node driver: adopt newest-verified, monotonic + gap-tolerant; `ingest` from drained AppRelay payloads; `value`/`nonce_for`) + `BEACON_TOPIC` + round serde. Live harness test: a holder broadcasts a round over AppRelay → every peer adopts the same verified value + freshness nonce. |
 | MB3 | Wire freshness consumers: MSS lease epochs + SVID renewal cadence quote the beacon round; replay-proof verifier challenges. |
 
 ---
