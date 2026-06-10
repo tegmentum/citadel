@@ -889,6 +889,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "citadel-tripwire"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "citadel-mesh",
+ "serde",
+]
+
+[[package]]
 name = "citadel-trust-sync"
 version = "0.1.0"
 dependencies = [

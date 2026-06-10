@@ -1,0 +1,11 @@
+[package]
+name = "citadel-tripwire"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Citadel distributed tripwires / honeytokens — signed trip evidence → quorum response (TW1)"
+
+[dependencies]
+citadel-mesh = { path = "../citadel-mesh" }
+serde = { workspace = true }
+blake3 = "1"

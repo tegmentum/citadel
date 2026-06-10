@@ -28,7 +28,7 @@ what's testable in-tree vs. deployment.
 | CAP | Continuously-earned capabilities | `citadel-caps` | release protocol, leases | **1 (unifying)** | ✅ CAP1–CAP3 done |
 | FL | Witnessed fact/assertion ledger | `citadel-facts` | verdict quorum, reference manifests, audit chain | 2 (broadest) | 🔨 FL1 done |
 | CA | Mesh-operated signing service / threshold CA | `citadel-ca` | FROST signing, trust gate | 2 | 🔨 CA1 done |
-| TW | Distributed tripwires / honeytokens | `citadel-tripwire` | AppRelay, quarantine | 3 | planned |
+| TW | Distributed tripwires / honeytokens | `citadel-tripwire` | AppRelay, quarantine | 3 | 🔨 TW1 done |
 | FED | Cross-mesh federation / trust bridging | `citadel-federation` | trust bundles, SPIFFE federation | 3 (strategic) | planned |
 
 **Suggested order:** MB + CAP first (foundational + unifying, both nearly free
@@ -208,7 +208,7 @@ detect compromise."
 
 | Phase | Scope |
 |-------|-------|
-| TW1 | `citadel-tripwire`: `Tripwire` (decoy id + class), signed `TripEvent`, the confidence→action mapping (degrade vs. propose-quarantine). Pure + tested. |
+| TW1 | ✅ done. `citadel-tripwire`: `TripClass` (SealedDecoy/Credential=High, DecoyFile/Canary=Low) → `TripAction` (ProposeQuarantine vs RaiseFinding); `Tripwire` (stable id, never contents — TW-C3); signed `TripEvent` (observer/subject/what/when, TW-C1). Tests: class→action mapping; a signed trip verifies while tamper + forged-key fail; ids stable + distinct. |
 | TW2 | Wire over AppRelay + quarantine: a trip proposes quarantine via the M2 flow; control-plane surfaces trips on the timeline. |
 | TW3 | Detection adapters (deployment): file/credential honeytokens, access hooks (eBPF/Hexis), seeded MSS decoys. |
 
