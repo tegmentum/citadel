@@ -111,7 +111,7 @@ earned over the existing probation window (reuse `promotion`).
 | MSS6 | Threshold custody (Shamir; pluggable sharks/vsss) | Crypto | ✅ done | MSS1 |
 | MSS6b | Threshold signing (FROST) | Crypto | ✅ done (+ DKG + gossip transport) | MSS6 |
 | MSS7 | Escrow + break-glass + bootstrap class | Ops | ✅ done | MSS1, MSS2 |
-| MSS8 | Dynamic committees / proactive resharing (churn) | Crypto+Ops | 🔨 MSS8a (reshare core) + MSS8b (driver) | MSS6, MSS6b |
+| MSS8 | Dynamic committees / proactive resharing (churn) | Crypto+Ops | ✅ MSS8a (custody reshare) + MSS8b (driver) + MSS8c (FROST refresh) | MSS6, MSS6b |
 
 **MVP = S0 + MSS1 + MSS2** — quorum-gated, leased release with revocation and
 audit. That covers all eight of the design's §20 success criteria except the
@@ -168,7 +168,7 @@ group public key without reconstruction (MSS8c), the analogue of `tsig` for keys
 - **MSS8b (done):** the membership-reactive driver — epoch cadence, durably-gone with
   grace, reclaim-share-on-restart, escalate-below-k; quorum-gated over gossip
   (release-protocol shape).
-- **MSS8c:** FROST reshare (same group key, no reassembly) for the signing /
+- **MSS8c (done):** FROST reshare (same group key, no reassembly) for the signing /
   beacon (MB) / CA committees.
 
 ### S0 — tpm-core: quorum-authorized unseal

@@ -185,3 +185,90 @@ mod tests {
         );
     }
 }
+
+// -- MSS8c: FROST reshare (same group key, no reassembly) ---------------------
+
+/// Refresh (reshare) a FROST committee, **keeping the same group public key** and
+/// **never reconstructing the private key** (MSS8c — the signing-committee analog
+/// of the custody reshare, for the signing / beacon / CA committees). The
+/// refreshing members re-randomize their shares onto a fresh polynomial via the
+/// Trusted-Dealer refresh; the member set may **drop** holders (down to the
+/// threshold), which evicts a departed/zombie holder (its un-refreshed share is on
+/// the old polynomial and can't co-sign with the refreshed set). `threshold` must
+/// equal the group's original threshold (refresh can't lower it). Adding a
+/// brand-new identity uses the DKG refresh (`refresh_dkg_*`), a follow-on.
+///
+/// Returns the refreshed public package (same verifying key) + the new key
+/// packages, in the order of `current_packages`.
+pub fn refresh(
+    public: &PublicKeyPackage,
+    current_packages: &[KeyPackage],
+    threshold: u16,
+) -> anyhow::Result<(PublicKeyPackage, Vec<KeyPackage>)> {
+    use frost::keys::refresh::{compute_refreshing_shares, refresh_share};
+    let max = current_packages.len() as u16;
+    let identifiers: Vec<frost::Identifier> =
+        current_packages.iter().map(|p| *p.identifier()).collect();
+    let (refreshing, new_public) = compute_refreshing_shares::<frost::Ed25519Sha512, _>(
+        public.clone(),
+        max,
+        threshold,
+        &identifiers,
+        &mut OsRng,
+    )?;
+    let new_packages = current_packages
+        .iter()
+        .zip(refreshing)
+        .map(|(pkg, rs)| refresh_share::<frost::Ed25519Sha512>(rs, pkg))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((new_public, new_packages))
+}
+
+#[cfg(test)]
+mod refresh_tests {
+    use super::*;
+
+    #[test]
+    fn refresh_keeps_the_group_key_without_reassembly_and_evicts_on_drop() {
+        let (public, packages) = keygen(3, 5).unwrap();
+        let msg = b"cluster release v2";
+        assert!(verify(
+            &public,
+            msg,
+            &sign(&packages[0..3], &public, msg).unwrap()
+        ));
+
+        // Refresh the whole committee → SAME group key, new shares, no reassembly.
+        let (new_public, new_packages) = refresh(&public, &packages, 3).unwrap();
+        assert_eq!(
+            new_public.verifying_key(),
+            public.verifying_key(),
+            "refresh preserves the group public key"
+        );
+        let sig = sign(&new_packages[0..3], &new_public, msg).unwrap();
+        assert!(
+            verify(&public, msg, &sig),
+            "refreshed committee signs under the SAME key"
+        );
+
+        // Drop a holder: refresh among 4 survivors (threshold still 3, same key) —
+        // the dropped holder is evicted.
+        let (sub_public, sub_packages) = refresh(&public, &packages[0..4], 3).unwrap();
+        assert_eq!(sub_public.verifying_key(), public.verifying_key());
+        assert_eq!(sub_packages.len(), 4);
+        assert!(verify(
+            &public,
+            msg,
+            &sign(&sub_packages[0..3], &sub_public, msg).unwrap()
+        ));
+
+        // Fence: a stale (pre-refresh) share can't co-sign with refreshed shares.
+        let mut mixed = new_packages[0..2].to_vec();
+        mixed.push(packages[4].clone());
+        let mixed = sign(&mixed, &new_public, msg);
+        assert!(
+            mixed.is_err() || !verify(&new_public, msg, &mixed.unwrap()),
+            "old + refreshed shares cannot co-sign"
+        );
+    }
+}
