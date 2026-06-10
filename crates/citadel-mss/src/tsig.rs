@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 
 use frost_ed25519 as frost;
 use rand::rngs::OsRng;
+use serde::{Deserialize, Serialize};
 
 pub use frost::keys::{KeyPackage, PublicKeyPackage};
 pub use frost::Signature;
@@ -269,6 +270,126 @@ mod refresh_tests {
         assert!(
             mixed.is_err() || !verify(&new_public, msg, &mixed.unwrap()),
             "old + refreshed shares cannot co-sign"
+        );
+    }
+}
+
+// -- MSS8c (add-member): committee rotation with continuity -------------------
+//
+// Admitting a *new* identity while keeping the group key is NOT supported by
+// frost-core (refresh_dkg_shares requires every participant to already be in the
+// old public package — "Unknown identifier" otherwise). So add-member rotates to
+// a fresh key, chained by a continuity attestation the OUTGOING committee signs.
+// (Use `refresh` to keep the key when only dropping/refreshing existing holders.)
+
+/// A continuity attestation: the outgoing committee threshold-signs the **new**
+/// group public key, so a verifier trusting the old key follows the chain to the
+/// new committee (and its rotated key).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ContinuityAttestation {
+    pub from_generation: u64,
+    pub to_generation: u64,
+    pub new_public: PublicKeyPackage,
+    pub signature: Signature,
+}
+
+fn continuity_message(to_generation: u64, new_public: &PublicKeyPackage) -> Vec<u8> {
+    let np = serde_json::to_vec(new_public).expect("public package serializable");
+    let mut m = b"citadel-frost-continuity\x00".to_vec();
+    m.extend_from_slice(&to_generation.to_le_bytes());
+    m.extend_from_slice(&np);
+    m
+}
+
+impl ContinuityAttestation {
+    /// Verify the rotation was authorized by the outgoing (`old_public`) committee.
+    pub fn verify(&self, old_public: &PublicKeyPackage) -> bool {
+        verify(
+            old_public,
+            &continuity_message(self.to_generation, &self.new_public),
+            &self.signature,
+        )
+    }
+}
+
+/// Reshare to a new committee that may **admit new identities** (and/or drop
+/// holders): DKG a fresh group key for `new_n`/`new_k`, then the outgoing holders
+/// threshold-sign a [`ContinuityAttestation`] binding it. The group key **rotates**
+/// (admitting a newcomer can't keep the key — see the module note); a verifier
+/// trusting the old key follows the attestation to the new committee. `old_signers`
+/// must be ≥ the old threshold.
+pub fn reshare_rotate(
+    old_signers: &[KeyPackage],
+    old_public: &PublicKeyPackage,
+    from_generation: u64,
+    new_k: u16,
+    new_n: u16,
+) -> anyhow::Result<(PublicKeyPackage, Vec<KeyPackage>, ContinuityAttestation)> {
+    let (new_public, new_packages) = keygen_dkg(new_k, new_n)?;
+    let to_generation = from_generation + 1;
+    let signature = sign(
+        old_signers,
+        old_public,
+        &continuity_message(to_generation, &new_public),
+    )?;
+    let attestation = ContinuityAttestation {
+        from_generation,
+        to_generation,
+        new_public: new_public.clone(),
+        signature,
+    };
+    Ok((new_public, new_packages, attestation))
+}
+
+#[cfg(test)]
+mod reshare_rotate_tests {
+    use super::*;
+
+    #[test]
+    fn rotate_admits_newcomers_with_a_verifiable_continuity_chain() {
+        let (old_public, old_packages) = keygen(3, 4).unwrap();
+        let msg = b"release v3";
+
+        // Rotate to a fresh 3-of-5 committee (admitting newcomers); the outgoing
+        // 3-of-4 threshold signs the continuity attestation.
+        let (new_public, new_packages, att) =
+            reshare_rotate(&old_packages[0..3], &old_public, 0, 3, 5).unwrap();
+
+        // A verifier trusting the OLD key follows the chain to the new committee.
+        assert!(
+            att.verify(&old_public),
+            "continuity attestation verifies under the old key"
+        );
+        assert_eq!((att.from_generation, att.to_generation), (0, 1));
+        assert_ne!(
+            new_public.verifying_key(),
+            old_public.verifying_key(),
+            "rotate changes the group key"
+        );
+
+        // The new committee signs under the new key.
+        assert!(verify(
+            &new_public,
+            msg,
+            &sign(&new_packages[0..3], &new_public, msg).unwrap()
+        ));
+
+        // A forged continuity (the NEW committee self-signs) fails under the old key.
+        let self_sig = sign(
+            &new_packages[0..3],
+            &new_public,
+            &continuity_message(1, &new_public),
+        )
+        .unwrap();
+        let forged = ContinuityAttestation {
+            from_generation: 0,
+            to_generation: 1,
+            new_public: new_public.clone(),
+            signature: self_sig,
+        };
+        assert!(
+            !forged.verify(&old_public),
+            "only the outgoing committee can authorize the rotation"
         );
     }
 }

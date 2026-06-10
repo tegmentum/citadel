@@ -168,7 +168,7 @@ group public key without reconstruction (MSS8c), the analogue of `tsig` for keys
 - **MSS8b (done):** the membership-reactive driver — epoch cadence, durably-gone with
   grace, reclaim-share-on-restart, escalate-below-k; quorum-gated over gossip
   (release-protocol shape).
-- **MSS8c (done):** FROST reshare (same group key, no reassembly) for the signing /
+- **MSS8c (done):** FROST `refresh` (same group key, no reassembly — drop/refresh existing holders) + `reshare_rotate` (admit newcomers → rotates the key, chained by a continuity attestation; frost-core can't add a member while keeping the key). For the signing /
   beacon (MB) / CA committees.
 
 ### S0 — tpm-core: quorum-authorized unseal
