@@ -888,3 +888,188 @@ mod committee_tests {
         assert_eq!(threshold::combine_gen(&recovered), Some(secret));
     }
 }
+
+// -- MSS8b: the membership-reactive reshare driver ----------------------------
+//
+// The patient, hysteretic decision the driver makes each epoch tick: keep
+// transient absences (reboot/network) but reconfigure on durably-gone holders,
+// reshare to the current trusted set, and escalate rather than run below k.
+
+/// A committee member's observed liveness — the last tick it was seen alive.
+#[derive(Clone, Copy, Debug)]
+pub struct HolderLiveness {
+    pub node: NodeId,
+    pub last_seen_tick: u64,
+}
+
+/// What the driver should do at an epoch tick.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReshareDecision {
+    /// All holders present or within the grace window — do nothing (D2).
+    NoChange,
+    /// Durably-gone holders detected and a viable target exists — reshare to it.
+    Reshare {
+        next: CustodyCommittee,
+        evicted: Vec<NodeId>,
+    },
+    /// Cannot field `k` trusted holders — escalate (break-glass/operator), never
+    /// run unsafe (D1 floor).
+    Escalate { reason: String },
+}
+
+/// Decide whether to reshare. Patient + hysteretic (MSS8 D2): a current holder is
+/// "lost" only if absent **past the grace period** (`now - last_seen > grace`) —
+/// a reboot/network blip that returns within grace keeps its seat (reboots are
+/// free, D3). If any holder is lost, recompute the target over the currently
+/// durably-trusted set (`trusted`) and reshare to it (gen+1), unless fewer than
+/// `k` are available → escalate.
+pub fn decide_reshare(
+    current: &CustodyCommittee,
+    trusted: &[NodeId],
+    liveness: &[HolderLiveness],
+    now_tick: u64,
+    grace_ticks: u64,
+    n: usize,
+) -> ReshareDecision {
+    let lost = |m: &NodeId| -> bool {
+        match liveness.iter().find(|l| &l.node == m) {
+            Some(l) => now_tick.saturating_sub(l.last_seen_tick) > grace_ticks,
+            None => true, // never observed → treat as durably gone
+        }
+    };
+    let evicted: Vec<NodeId> = current
+        .members
+        .iter()
+        .filter(|m| lost(m))
+        .cloned()
+        .collect();
+    if evicted.is_empty() {
+        return ReshareDecision::NoChange; // transient absences ride out the grace window
+    }
+    let next = CustodyCommittee::target(
+        current.secret_id,
+        trusted,
+        n,
+        current.k,
+        current.generation + 1,
+    );
+    if !next.viable() {
+        return ReshareDecision::Escalate {
+            reason: format!(
+                "{} trusted members available, need k={}",
+                next.members.len(),
+                current.k
+            ),
+        };
+    }
+    ReshareDecision::Reshare { next, evicted }
+}
+
+#[cfg(test)]
+mod driver_tests {
+    use super::*;
+
+    fn nodes(range: std::ops::RangeInclusive<u8>) -> Vec<NodeId> {
+        range.map(|n| NodeId([n; 32])).collect()
+    }
+
+    fn committee(secret_id: [u8; 32], trusted: &[NodeId]) -> CustodyCommittee {
+        CustodyCommittee::target(secret_id, trusted, 5, 3, 0)
+    }
+
+    #[test]
+    fn present_or_transiently_absent_holders_do_not_reshare() {
+        let sid = [7u8; 32];
+        let trusted = nodes(1..=7);
+        let c0 = committee(sid, &trusted);
+        let grace = 20;
+        let now = 100;
+
+        // All current holders seen recently → NoChange.
+        let fresh: Vec<HolderLiveness> = c0
+            .members
+            .iter()
+            .map(|n| HolderLiveness {
+                node: *n,
+                last_seen_tick: now - 1,
+            })
+            .collect();
+        assert_eq!(
+            decide_reshare(&c0, &trusted, &fresh, now, grace, 5),
+            ReshareDecision::NoChange
+        );
+
+        // One holder absent but WITHIN grace (reboot/blip) → still NoChange (D2/D3).
+        let mut blip = fresh.clone();
+        blip[0].last_seen_tick = now - (grace - 5); // 15 < 20 grace
+        assert_eq!(
+            decide_reshare(&c0, &trusted, &blip, now, grace, 5),
+            ReshareDecision::NoChange
+        );
+    }
+
+    #[test]
+    fn a_durably_gone_holder_triggers_reshare_to_the_current_trusted_set() {
+        let sid = [9u8; 32];
+        let trusted_before = nodes(1..=7);
+        let c0 = committee(sid, &trusted_before);
+        let grace = 20;
+        let now = 100;
+
+        // One holder durably gone (absent past grace); it drops out of the trusted set,
+        // and a fresh identity has joined (constant N, rotating ids).
+        let gone = c0.members[0];
+        let mut live: Vec<HolderLiveness> = c0
+            .members
+            .iter()
+            .map(|n| HolderLiveness {
+                node: *n,
+                last_seen_tick: now - 1,
+            })
+            .collect();
+        live[0].last_seen_tick = now - (grace + 5); // 25 > 20 grace → durably gone
+        let trusted_after: Vec<NodeId> = trusted_before
+            .iter()
+            .cloned()
+            .filter(|m| *m != gone)
+            .chain([NodeId([99; 32])])
+            .collect();
+
+        match decide_reshare(&c0, &trusted_after, &live, now, grace, 5) {
+            ReshareDecision::Reshare { next, evicted } => {
+                assert!(evicted.contains(&gone));
+                assert_eq!(next.generation, 1, "generation bumps on reshare");
+                assert!(
+                    !next.contains(&gone),
+                    "the gone holder is not in the new committee"
+                );
+                assert!(next.viable());
+            }
+            other => panic!("expected Reshare, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn below_k_escalates_rather_than_running_unsafe() {
+        let sid = [3u8; 32];
+        let trusted = nodes(1..=7);
+        let c0 = committee(sid, &trusted);
+        let grace = 20;
+        let now = 100;
+        // A holder is durably gone, and the trusted pool has collapsed below k.
+        let mut live: Vec<HolderLiveness> = c0
+            .members
+            .iter()
+            .map(|n| HolderLiveness {
+                node: *n,
+                last_seen_tick: now - 1,
+            })
+            .collect();
+        live[0].last_seen_tick = now - 50;
+        let starved = nodes(1..=2); // < k=3
+        match decide_reshare(&c0, &starved, &live, now, grace, 5) {
+            ReshareDecision::Escalate { .. } => {}
+            other => panic!("expected Escalate, got {other:?}"),
+        }
+    }
+}
