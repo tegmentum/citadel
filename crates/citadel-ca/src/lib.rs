@@ -440,3 +440,104 @@ mod service_tests {
         assert_eq!(back.secret_id(), r.secret_id());
     }
 }
+
+// -- CA3 (in-tree slice): the key-rotation / epoch ceremony -------------------
+//
+// Pinning holders across nodes + release-pipeline integration are deployment; the
+// rotation ceremony (key continuity across epochs) is in-tree and testable here.
+
+/// A signed attestation that a new CA key supersedes the current one — produced
+/// by the **outgoing** key's threshold, so a verifier who trusts the old key can
+/// follow the chain to the new one (no flag day, no re-rooting).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RotationAttestation {
+    pub from_epoch: u64,
+    pub to_epoch: u64,
+    pub new_public: PublicKeyPackage,
+    pub signature: Signature,
+}
+
+fn rotation_message(to_epoch: u64, new_public: &PublicKeyPackage) -> Vec<u8> {
+    let np = serde_json::to_vec(new_public).expect("public package is serializable");
+    let mut m = b"citadel-ca-rotate\x00".to_vec();
+    m.extend_from_slice(&to_epoch.to_le_bytes());
+    m.extend_from_slice(&np);
+    m
+}
+
+impl RotationAttestation {
+    /// Verify the rotation was authorized by the outgoing (`old_public`) key.
+    pub fn verify(&self, old_public: &PublicKeyPackage) -> bool {
+        tsig::verify(
+            old_public,
+            &rotation_message(self.to_epoch, &self.new_public),
+            &self.signature,
+        )
+    }
+}
+
+/// Rotate the CA key to the next epoch: DKG a fresh key (no node holds it), then
+/// have the outgoing holders threshold-sign an attestation binding the new key to
+/// the new epoch. Returns the new public package, the new holder key packages, and
+/// the signed rotation attestation.
+pub fn rotate(
+    old_holders: &[KeyPackage],
+    old_public: &PublicKeyPackage,
+    old_epoch: u64,
+    threshold: u16,
+    n: u16,
+) -> anyhow::Result<(PublicKeyPackage, Vec<KeyPackage>, RotationAttestation)> {
+    let (new_public, new_holders) = ca_keygen(threshold, n)?;
+    let to_epoch = old_epoch + 1;
+    let signature = tsig::sign(
+        old_holders,
+        old_public,
+        &rotation_message(to_epoch, &new_public),
+    )?;
+    let attestation = RotationAttestation {
+        from_epoch: old_epoch,
+        to_epoch,
+        new_public: new_public.clone(),
+        signature,
+    };
+    Ok((new_public, new_holders, attestation))
+}
+
+#[cfg(test)]
+mod rotation_tests {
+    use super::*;
+
+    #[test]
+    fn rotation_preserves_key_continuity() {
+        let (old_public, old_holders) = ca_keygen(3, 5).unwrap();
+        let (new_public, new_holders, att) =
+            rotate(&old_holders[0..3], &old_public, 0, 3, 5).unwrap();
+
+        // A verifier trusting the old key follows the rotation to the new key.
+        assert!(att.verify(&old_public));
+        assert_eq!((att.from_epoch, att.to_epoch), (0, 1));
+
+        // The new key is a working CA key (it signs + verifies).
+        let sig = tsig::sign(&new_holders[0..3], &new_public, b"release v2").unwrap();
+        assert!(tsig::verify(&new_public, b"release v2", &sig));
+
+        // A rotation "attestation" signed by the new key itself (not the old) is
+        // rejected — only the outgoing key authorizes its successor.
+        let self_sig = tsig::sign(
+            &new_holders[0..3],
+            &new_public,
+            &rotation_message(1, &new_public),
+        )
+        .unwrap();
+        let forged = RotationAttestation {
+            from_epoch: 0,
+            to_epoch: 1,
+            new_public,
+            signature: self_sig,
+        };
+        assert!(
+            !forged.verify(&old_public),
+            "the successor cannot self-authorize"
+        );
+    }
+}
