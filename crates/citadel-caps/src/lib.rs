@@ -424,3 +424,178 @@ mod issuance_tests {
         assert!(grant(&authority, other, quorum, &approve(quorum), &eligible).is_none());
     }
 }
+
+// -- CAP3: enforcement (policy-enforcement point) ----------------------------
+
+/// Why a capability did not authorize an action — surfaced for audit/logging.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DenyReason {
+    /// Signature chain invalid, wrong issuer, or a broadening attenuation.
+    BadToken,
+    /// The action is outside the capability's (narrowed) scope.
+    OutOfScope,
+    /// The beacon-round lease has elapsed (deny-at-renewal).
+    LeaseExpired,
+    /// An `ExpiresAtRound` caveat has passed.
+    Expired,
+    /// The capability is bound to a different holder.
+    WrongHolder,
+}
+
+/// The PEP's verdict on an action.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Decision {
+    Allow,
+    Deny(DenyReason),
+}
+
+/// A policy-enforcement point: a service holds the mesh's capability-issuing
+/// public key and checks every privileged action against a presented token. This
+/// is the seam any gate maps onto — verify the capability, *then* act.
+pub struct Pep {
+    issuer: MeshPublicKey,
+}
+
+impl Pep {
+    /// Trust capabilities minted by `issuer` (the mesh's capability authority).
+    pub fn new(issuer: MeshPublicKey) -> Self {
+        Pep { issuer }
+    }
+
+    /// Decide whether `token` authorizes `action_scope` at `current_round` for
+    /// `holder`, with a specific deny reason (the reasoned form of
+    /// [`authorizes`]).
+    pub fn authorize(
+        &self,
+        token: &CapabilityToken,
+        action_scope: &str,
+        current_round: u64,
+        holder: &NodeId,
+    ) -> Decision {
+        let eff = match verify(token, &self.issuer) {
+            Some(e) => e,
+            None => return Decision::Deny(DenyReason::BadToken),
+        };
+        if !action_scope.starts_with(&eff.scope) {
+            return Decision::Deny(DenyReason::OutOfScope);
+        }
+        if current_round.saturating_sub(eff.beacon_round) > eff.lease_ticks {
+            return Decision::Deny(DenyReason::LeaseExpired);
+        }
+        if let Some(e) = eff.expires_round {
+            if current_round > e {
+                return Decision::Deny(DenyReason::Expired);
+            }
+        }
+        if let Some(h) = eff.bound_holder {
+            if h != *holder {
+                return Decision::Deny(DenyReason::WrongHolder);
+            }
+        }
+        Decision::Allow
+    }
+
+    /// Run `action` only if `token` authorizes `action_scope` — the enforcement
+    /// pattern a gate maps onto. Returns the action's result, or the deny reason.
+    pub fn guard<T>(
+        &self,
+        token: &CapabilityToken,
+        action_scope: &str,
+        current_round: u64,
+        holder: &NodeId,
+        action: impl FnOnce() -> T,
+    ) -> Result<T, DenyReason> {
+        match self.authorize(token, action_scope, current_round, holder) {
+            Decision::Allow => Ok(action()),
+            Decision::Deny(r) => Err(r),
+        }
+    }
+}
+
+#[cfg(test)]
+mod enforcement_tests {
+    use super::*;
+
+    fn kp(n: u8) -> MeshKeypair {
+        MeshKeypair::from_seed([n; 32])
+    }
+    fn node(n: u8) -> NodeId {
+        NodeId([n; 32])
+    }
+
+    #[test]
+    fn pep_allows_in_scope_and_denies_with_reasons() {
+        let authority = kp(1);
+        let holder = node(7);
+        let cap = Capability {
+            scope: "cp:write:policy".to_string(),
+            holder,
+            beacon_round: 100,
+            lease_ticks: 10,
+        };
+        let token = mint(&authority, cap);
+        let pep = Pep::new(authority.public());
+
+        // In scope, within lease, right holder -> Allow.
+        assert_eq!(
+            pep.authorize(&token, "cp:write:policy/boot", 105, &holder),
+            Decision::Allow
+        );
+        // Out of scope.
+        assert_eq!(
+            pep.authorize(&token, "cp:write:operators", 105, &holder),
+            Decision::Deny(DenyReason::OutOfScope)
+        );
+        // Past the lease.
+        assert_eq!(
+            pep.authorize(&token, "cp:write:policy", 120, &holder),
+            Decision::Deny(DenyReason::LeaseExpired)
+        );
+        // A token from a different issuer is a bad token.
+        let pep_other = Pep::new(kp(2).public());
+        assert_eq!(
+            pep_other.authorize(&token, "cp:write:policy", 105, &holder),
+            Decision::Deny(DenyReason::BadToken)
+        );
+    }
+
+    #[test]
+    fn guard_maps_a_gate_onto_a_capability() {
+        // Example: a control-plane write gated by a "cp:write:policy" capability.
+        let authority = kp(1);
+        let holder = node(7);
+        let pep = Pep::new(authority.public());
+        let token = mint(
+            &authority,
+            Capability {
+                scope: "cp:write:policy".into(),
+                holder,
+                beacon_round: 100,
+                lease_ticks: 10,
+            },
+        );
+
+        // The action runs only behind a valid capability.
+        let mut written = false;
+        let r = pep.guard(&token, "cp:write:policy", 105, &holder, || {
+            written = true;
+            "ok"
+        });
+        assert_eq!(r, Ok("ok"));
+        assert!(written, "the guarded action ran");
+
+        // A holder the capability isn't bound to is denied — the action never runs.
+        let bound = attenuate(
+            &token,
+            &authority,
+            vec![Caveat::BoundToHolder(node(7))],
+            kp(9).public(),
+        );
+        let mut ran = false;
+        let denied = pep.guard(&bound, "cp:write:policy", 105, &node(8), || {
+            ran = true;
+        });
+        assert_eq!(denied, Err(DenyReason::WrongHolder));
+        assert!(!ran, "the action did not run for the wrong holder");
+    }
+}
