@@ -111,10 +111,65 @@ earned over the existing probation window (reuse `promotion`).
 | MSS6 | Threshold custody (Shamir; pluggable sharks/vsss) | Crypto | ✅ done | MSS1 |
 | MSS6b | Threshold signing (FROST) | Crypto | ✅ done (+ DKG + gossip transport) | MSS6 |
 | MSS7 | Escrow + break-glass + bootstrap class | Ops | ✅ done | MSS1, MSS2 |
+| MSS8 | Dynamic committees / proactive resharing (churn) | Crypto+Ops | 🔨 MSS8a (reshare core + generation fencing) | MSS6, MSS6b |
 
 **MVP = S0 + MSS1 + MSS2** — quorum-gated, leased release with revocation and
 audit. That covers all eight of the design's §20 success criteria except the
 threshold/HSM extension (MSS6).
+
+### MSS8 — dynamic committees under churn (proactive resharing)
+
+**Problem.** Custody/signing committees are *static* — `distribute`/DKG fix the
+holder set at provisioning. But a real cluster has **slow identity churn**: a node
+goes down and capacity returns as a *different* node — a new TPM, new key, new
+identity, **no share**. You can't restore the old (TPM-sealed, now-dead) share to
+it; the committee must reconfigure. Authorization already handles churn (the
+release quorum is HRW-recomputed from current membership every request); **custody
+is the static half that breaks.**
+
+**Decisions.**
+- **D1 — fixed (k, n), rotating membership.** Cluster size N is ~constant, so the
+  committee *shape* stays fixed; only *which identities* hold shares rotates. The
+  target committee = **HRW-top-n of the currently-durably-trusted members** (same
+  HRW as witness sets) — so it tracks membership and, if a slot can't be filled,
+  re-selects over whoever's actually there (**reshare-to-available, never wait for
+  a specific replacement**). Hard floor at **k**; below it, *escalate*
+  (break-glass/operator), never silently run unsafe.
+- **D2 — patient + hysteretic.** Reshare on an **epoch cadence** (beacon/MB-paced),
+  acting only on **durably-gone** holders — grace period ≫ max(reboot, network
+  heal), read off the mesh liveness ladder (Alive→Suspicious→Faulty→Dead). The
+  k-of-n margin absorbs transient absence; safety needs only *cadence ≪
+  margin ÷ churn-rate*, trivially met under slow churn. Most epochs are no-ops.
+- **D3 — reboots are free.** A committee member has **persistent TPM-rooted
+  identity + a persisted, reclaim-on-restart sealed share**, so a reboot/blip
+  returns the *same* identity *with its share* — no reshare. (Persisting +
+  reclaiming the sealed share is the wiring MSS8b adds.)
+- **D4 — generation fencing (the zombie defence).** Every reshare bumps a
+  **generation** and **refreshes** shares. The live committee is `(members, gen)`;
+  cross-generation shares **do not combine**. A node that was evicted + replaced
+  and later reappears holds a stale-gen share: it's both *cryptographically inert*
+  (won't combine with the current generation; and TPM-sealed to its dead epoch)
+  and *fenced from participating* (stale `gen` ⇒ steps down, holder actions
+  refused). It may re-enrol as an ordinary member; it does not reclaim its seat.
+- **D5 — high churn is out of scope.** Sustained high churn is an operational
+  emergency (you've lost the cluster), handled by escalation — not the steady-state
+  reshare loop. MSS8 is designed for the slow-drift envelope.
+
+**Custody vs. signing.** Custody secrets are *reassembled on use* (the existing
+model), so the custody reshare may transiently reconstruct under a quorum gate
+(MSS8a). Signing keys must *never* reassemble — the FROST reshare keeps the same
+group public key without reconstruction (MSS8c), the analogue of `tsig` for keys.
+
+**Sub-phases.**
+- **MSS8a (this phase):** generation-fenced shares + the custody reshare core
+  (gather ≥k current-gen shares → fresh shares for the new committee at gen+1, old
+  generation fenced) + `CustodyCommittee` (HRW target over current members, the
+  `(members, gen)` fence). Pure + tested.
+- **MSS8b:** the membership-reactive driver — epoch cadence, durably-gone with
+  grace, reclaim-share-on-restart, escalate-below-k; quorum-gated over gossip
+  (release-protocol shape).
+- **MSS8c:** FROST reshare (same group key, no reassembly) for the signing /
+  beacon (MB) / CA committees.
 
 ### S0 — tpm-core: quorum-authorized unseal
 * **Goal:** unseal only when an authority approved the policy — the C2 binding.

@@ -686,3 +686,205 @@ mod tests {
         assert!(open_breakglass(&backend, &normal, nonce, &two2, &officers).is_err());
     }
 }
+
+// -- MSS8a: dynamic custody committees under churn ----------------------------
+
+/// Fixed HRW epoch for committee selection: the committee is determined by
+/// (secret_id, members) only, so it is **stable across generations** unless
+/// membership changes (generations are for fencing, not selection).
+const COMMITTEE_HRW_EPOCH: u64 = 0;
+
+/// A custody committee: which nodes hold shares of a secret, at which
+/// **generation**, with threshold `k`. Membership rotates under churn (MSS8 D1);
+/// the generation fences returning evicted holders (D4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CustodyCommittee {
+    pub secret_id: [u8; 32],
+    pub generation: u64,
+    pub members: Vec<NodeId>,
+    pub k: u8,
+}
+
+impl CustodyCommittee {
+    /// The target committee over the currently durably-trusted members: the
+    /// HRW-top-`n` (same HRW as witness sets), determined by membership only — so
+    /// it tracks churn and re-selects over whoever is available, never waiting for
+    /// a specific replacement (D1). If fewer than `n` are trusted, it picks what's
+    /// there.
+    pub fn target(
+        secret_id: [u8; 32],
+        trusted: &[NodeId],
+        n: usize,
+        k: u8,
+        generation: u64,
+    ) -> Self {
+        let members = assigned_witnesses(secret_id, trusted, COMMITTEE_HRW_EPOCH, n);
+        CustodyCommittee {
+            secret_id,
+            generation,
+            members,
+            k,
+        }
+    }
+
+    pub fn contains(&self, node: &NodeId) -> bool {
+        self.members.contains(node)
+    }
+
+    /// The generation fence: a share is accepted only if it is the committee's
+    /// current generation. A returning evicted holder's stale-generation share is
+    /// refused (D4).
+    pub fn accepts(&self, share: &threshold::GenShare) -> bool {
+        share.generation == self.generation
+    }
+
+    /// Still safe to operate — at least `k` members hold shares. Below this the
+    /// driver must escalate (break-glass/operator), never run unsafe (D1 floor).
+    pub fn viable(&self) -> bool {
+        self.members.len() >= self.k as usize
+    }
+
+    /// Holders that left vs. joined moving to `next` — the reshare delta.
+    pub fn delta(&self, next: &CustodyCommittee) -> (Vec<NodeId>, Vec<NodeId>) {
+        let left = self
+            .members
+            .iter()
+            .filter(|m| !next.contains(m))
+            .cloned()
+            .collect();
+        let joined = next
+            .members
+            .iter()
+            .filter(|m| !self.contains(m))
+            .cloned()
+            .collect();
+        (left, joined)
+    }
+}
+
+/// Reshare a secret to the `next` committee from ≥ `k` surviving current-generation
+/// shares: mint fresh generation-`next` shares and seal each to its new holder's
+/// TPM. Old-generation shares are fenced thereafter (D4). Transiently reconstructs
+/// (custody's reassemble-on-use model, quorum-gated; no-reassembly PSS/FROST is
+/// MSS8c).
+pub fn reshare_committee(
+    backend: &dyn TpmBackend,
+    surviving: &[threshold::GenShare],
+    next: &CustodyCommittee,
+) -> anyhow::Result<Vec<(NodeId, SealedData)>> {
+    let fresh = threshold::reshare(surviving, next.k, next.members.len() as u8, next.generation)
+        .ok_or_else(|| anyhow::anyhow!("reshare: fewer than k current-generation shares"))?;
+    next.members
+        .iter()
+        .zip(fresh)
+        .map(|(holder, gs)| {
+            let bytes = serde_json::to_vec(&gs)?;
+            Ok((*holder, backend.seal(&bytes, None)?))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod committee_tests {
+    use super::*;
+
+    fn nodes(range: std::ops::RangeInclusive<u8>) -> Vec<NodeId> {
+        range.map(|n| NodeId([n; 32])).collect()
+    }
+
+    #[test]
+    fn committee_tracks_membership_is_stable_and_fences_generations() {
+        let sid = [7u8; 32];
+        let trusted = nodes(1..=7);
+        let c0 = CustodyCommittee::target(sid, &trusted, 5, 3, 0);
+        assert_eq!(c0.members.len(), 5);
+        assert!(c0.viable());
+        // Deterministic + generation-independent: same membership -> same committee.
+        assert_eq!(
+            CustodyCommittee::target(sid, &trusted, 5, 3, 9).members,
+            c0.members
+        );
+
+        // The generation fence (D4).
+        let cur = threshold::GenShare {
+            generation: 0,
+            share: threshold::Share { bytes: vec![1] },
+        };
+        let stale = threshold::GenShare {
+            generation: 0,
+            share: threshold::Share { bytes: vec![1] },
+        };
+        assert!(c0.accepts(&cur));
+        let c1 = CustodyCommittee {
+            generation: 1,
+            ..c0.clone()
+        };
+        assert!(
+            !c1.accepts(&stale),
+            "a stale-generation (zombie) share is fenced"
+        );
+    }
+
+    #[test]
+    fn churn_reselects_the_committee_and_below_k_is_not_viable() {
+        let sid = [9u8; 32];
+        let before = nodes(1..=6);
+        let c0 = CustodyCommittee::target(sid, &before, 4, 3, 0);
+        // A member of c0 leaves; a fresh identity joins (constant N, rotating ids).
+        let gone = c0.members[0];
+        let after: Vec<NodeId> = before
+            .iter()
+            .cloned()
+            .filter(|m| *m != gone)
+            .chain([NodeId([99; 32])])
+            .collect();
+        let c1 = CustodyCommittee::target(sid, &after, 4, 3, 1);
+        let (left, joined) = c0.delta(&c1);
+        assert!(
+            joined.iter().all(|j| c1.contains(j) && !c0.contains(j)),
+            "joined are new to the committee"
+        );
+        assert!(
+            left.contains(&gone),
+            "the departed holder shows up in the delta"
+        );
+        assert!(!c1.contains(&gone), "and is no longer in the committee");
+
+        // Floor at k: a committee that can't reach k members is not viable -> escalate.
+        let tiny = CustodyCommittee::target(sid, &nodes(1..=2), 4, 3, 2);
+        assert!(
+            !tiny.viable(),
+            "fewer than k trusted nodes -> escalate, do not run unsafe"
+        );
+    }
+
+    #[test]
+    fn reshare_committee_reseals_to_the_new_holders() {
+        let backend = tpm_core::backend::MockBackend::new();
+        let secret = b"db-master-key".to_vec();
+        let g0: Vec<threshold::GenShare> = threshold::split(&secret, 3, 5)
+            .into_iter()
+            .map(|share| threshold::GenShare {
+                generation: 0,
+                share,
+            })
+            .collect();
+        let next = CustodyCommittee {
+            secret_id: [1; 32],
+            generation: 1,
+            members: nodes(10..=14),
+            k: 3,
+        };
+        let sealed = reshare_committee(&backend, &g0[..3], &next).expect("reshare");
+        assert_eq!(sealed.len(), 5);
+        // unseal a couple of new shares and confirm gen-1 reconstructs the secret.
+        let recovered: Vec<threshold::GenShare> = sealed[..3]
+            .iter()
+            .map(|(_, s)| serde_json::from_slice(&backend.unseal(s).unwrap()).unwrap())
+            .collect();
+        assert!(recovered
+            .iter()
+            .all(|gs: &threshold::GenShare| gs.generation == 1));
+        assert_eq!(threshold::combine_gen(&recovered), Some(secret));
+    }
+}
