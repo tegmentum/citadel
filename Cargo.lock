@@ -824,6 +824,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sharks",
+ "tempfile",
  "tpm-core",
  "vsss-rs",
 ]

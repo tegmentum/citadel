@@ -21,3 +21,6 @@ vsss-rs = { version = "5", optional = true }
 # Pluggable Shamir backend: the reviewed `vsss-rs` crate as an alternative to the
 # default `sharks` (see threshold::SecretSharing).
 shamir-vsss = ["dep:vsss-rs"]
+
+[dev-dependencies]
+tempfile = { workspace = true }

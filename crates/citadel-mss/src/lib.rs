@@ -14,6 +14,7 @@
 //! bounded by HRW (C4); the authorization is nonce-bound (C5).
 
 pub mod session;
+pub mod share_store;
 pub mod threshold;
 pub mod tsig;
 
