@@ -295,3 +295,92 @@ pub fn triage(payloads: &[Vec<u8>], observers: &[(NodeId, MeshPublicKey)]) -> Ve
     }
     out
 }
+
+// -- TW3 (in-tree slice): the detection adapter ------------------------------
+//
+// Real detection hooks (eBPF/file/credential-store, MSS-sealed-decoy unsealing)
+// are deployment; the adapter trait + an in-process software detector are in-tree.
+
+use std::collections::HashMap;
+
+/// A detection adapter: it watches seeded decoys and, on an access, emits a
+/// **signed** trip (TW-C1). Real adapters hook the filesystem / credential store /
+/// eBPF; `SoftwareDetector` is the in-process registry (for tests and the
+/// sealed-decoy path).
+pub trait Detector {
+    /// Arm a tripwire to be watched.
+    fn arm(&mut self, tripwire: Tripwire);
+    /// Report an access to a decoy by id → a signed trip if that decoy is armed.
+    fn on_access(
+        &self,
+        tripwire_id: &[u8; 32],
+        subject: Option<NodeId>,
+        tick: u64,
+    ) -> Option<TripEvent>;
+}
+
+/// An in-process detector that signs trips with the observing node's key.
+pub struct SoftwareDetector {
+    observer: NodeId,
+    observer_kp: MeshKeypair,
+    armed: HashMap<[u8; 32], Tripwire>,
+}
+
+impl SoftwareDetector {
+    pub fn new(observer: NodeId, observer_kp: MeshKeypair) -> Self {
+        SoftwareDetector {
+            observer,
+            observer_kp,
+            armed: HashMap::new(),
+        }
+    }
+}
+
+impl Detector for SoftwareDetector {
+    fn arm(&mut self, tripwire: Tripwire) {
+        self.armed.insert(tripwire.id, tripwire);
+    }
+
+    fn on_access(
+        &self,
+        tripwire_id: &[u8; 32],
+        subject: Option<NodeId>,
+        tick: u64,
+    ) -> Option<TripEvent> {
+        let tripwire = self.armed.get(tripwire_id)?;
+        Some(TripEvent::sign(
+            &self.observer_kp,
+            tripwire,
+            self.observer,
+            subject,
+            tick,
+        ))
+    }
+}
+
+#[cfg(test)]
+mod detector_tests {
+    use super::*;
+
+    #[test]
+    fn software_detector_arms_and_signs_trips_on_access() {
+        let observer_kp = MeshKeypair::from_seed([1; 32]);
+        let observer = NodeId(observer_kp.public().fingerprint());
+        let mut det = SoftwareDetector::new(observer, observer_kp.clone());
+
+        let tw = Tripwire::new("db/root-password-decoy", TripClass::SealedDecoy);
+        det.arm(tw);
+
+        // An access to the armed decoy → a verifiable, attributable trip.
+        let attacker = NodeId([5; 32]);
+        let trip = det
+            .on_access(&tw.id, Some(attacker), 42)
+            .expect("armed decoy trips");
+        assert!(trip.verify(&observer_kp.public()));
+        assert_eq!(trip.subject, Some(attacker));
+        assert_eq!(trip.action(), TripAction::ProposeQuarantine);
+
+        // An access to something that was never armed → no trip.
+        assert!(det.on_access(&[9u8; 32], Some(attacker), 42).is_none());
+    }
+}
