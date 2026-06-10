@@ -1,0 +1,13 @@
+[package]
+name = "citadel-ca"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Citadel mesh-operated signing service / threshold CA — a key no node holds, signs only under live quorum + health (CA1)"
+
+[dependencies]
+citadel-mss = { path = "../citadel-mss" }
+citadel-mesh = { path = "../citadel-mesh" }
+serde = { workspace = true }
+blake3 = "1"
+anyhow = { workspace = true }

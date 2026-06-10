@@ -27,7 +27,7 @@ what's testable in-tree vs. deployment.
 | MB | Mesh randomness/freshness beacon | `citadel-beacon` | FROST/DKG, AppRelay | **1 (foundational)** | ✅ MB1–MB3 done |
 | CAP | Continuously-earned capabilities | `citadel-caps` | release protocol, leases | **1 (unifying)** | ✅ CAP1–CAP3 done |
 | FL | Witnessed fact/assertion ledger | `citadel-facts` | verdict quorum, reference manifests, audit chain | 2 (broadest) | 🔨 FL1 done |
-| CA | Mesh-operated signing service / threshold CA | `citadel-ca` | FROST signing, trust gate | 2 | planned |
+| CA | Mesh-operated signing service / threshold CA | `citadel-ca` | FROST signing, trust gate | 2 | 🔨 CA1 done |
 | TW | Distributed tripwires / honeytokens | `citadel-tripwire` | AppRelay, quarantine | 3 | planned |
 | FED | Cross-mesh federation / trust bridging | `citadel-federation` | trust bundles, SPIFFE federation | 3 (strategic) | planned |
 
@@ -176,7 +176,7 @@ single point of key compromise.
 
 | Phase | Scope |
 |-------|-------|
-| CA1 | `citadel-ca`: a signing-request type + the gate (quorum + trust + health), producing a FROST group signature over the artifact. Reuse `tsig`/`session` + DKG. Tested live over the harness (gated sign → verifies; unhealthy cluster → refused). |
+| CA1 | ✅ done. `citadel-ca`: `ca_keygen` (DKG — no node holds the key), `signing_secret_id`, `ClusterHealth` (the OBS2 trust-score gate), `sign_artifact` (signs iff quorum-authorized AND healthy; refuses otherwise) → `SignedArtifact::verify`. Tests: signs under quorum+health and verifies; unhealthy / below-quorum / wrong-artifact refused; live harness — a signing request is authorized for a Trusted requester, denied for a compromised one. |
 | CA2 | Service shape: a request/approve/sign flow over gossip; cert/release issuance helpers; halt-on-incident wiring (issuance pauses while trust is degraded). |
 | CA3 | Deployment: pin holders across nodes, key-rotation/epoch ceremony, integration with a release pipeline. (Needs a live multi-node deploy.) |
 

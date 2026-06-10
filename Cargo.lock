@@ -723,6 +723,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "citadel-ca"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "citadel-mesh",
+ "citadel-mss",
+ "serde",
+]
+
+[[package]]
 name = "citadel-caps"
 version = "0.1.0"
 dependencies = [
