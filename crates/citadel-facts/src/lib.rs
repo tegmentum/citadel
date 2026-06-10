@@ -476,3 +476,126 @@ mod ledger_tests {
         assert!(!ledger.is_witnessed(node(4), &format!("patched:{cve}")));
     }
 }
+
+// -- FL3 (in-tree slice): the citadel:fact-<k> selector + fleet rollup --------
+//
+// The control-plane API + dashboard panel are deployment; the policy selector and
+// the rollup query are in-tree and testable here.
+
+/// The policy selector a witnessed fact grants — e.g. a SPIRE registration entry
+/// can require `citadel:fact-patched:CVE-2024-1234`, so a workload only lands on a
+/// node the mesh has witnessed as patched (mirrors the `citadel:tpm-spec` selector).
+pub fn fact_selector(predicate: &str) -> String {
+    format!("citadel:fact-{predicate}")
+}
+
+/// A fleet-wide summary of who is witnessed for a predicate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FleetRollup {
+    pub predicate: String,
+    pub witnessed: usize,
+    pub total: usize,
+}
+
+impl FleetRollup {
+    /// Every listed subject is witnessed for the predicate.
+    pub fn unanimous(&self) -> bool {
+        self.total > 0 && self.witnessed == self.total
+    }
+}
+
+impl FactLedger {
+    /// The `citadel:fact-<predicate>` selectors a subject's witnessed facts grant.
+    pub fn selectors_for(&self, subject: NodeId) -> Vec<String> {
+        let mut sels: Vec<String> = self
+            .facts
+            .iter()
+            .filter(|f| f.subject == subject)
+            .map(|f| fact_selector(&f.predicate))
+            .collect();
+        sels.sort();
+        sels.dedup();
+        sels
+    }
+
+    /// Roll up how many of `subjects` are witnessed for `predicate`.
+    pub fn fleet_rollup(&self, predicate: &str, subjects: &[NodeId]) -> FleetRollup {
+        let witnessed = subjects
+            .iter()
+            .filter(|s| self.is_witnessed(**s, predicate))
+            .count();
+        FleetRollup {
+            predicate: predicate.to_string(),
+            witnessed,
+            total: subjects.len(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod fl3_tests {
+    use super::*;
+
+    fn idk(n: u8) -> (NodeId, MeshKeypair) {
+        let kp = MeshKeypair::from_seed([n; 32]);
+        (NodeId(kp.public().fingerprint()), kp)
+    }
+    fn node(n: u8) -> NodeId {
+        NodeId([n; 32])
+    }
+
+    fn patched(subject: NodeId, cve: &str, ws: &[(NodeId, MeshKeypair)]) -> FactAttestation {
+        let a = Assertion {
+            subject,
+            predicate: format!("patched:{cve}"),
+            claim: "patched".to_string(),
+            beacon_round: 100,
+            evidence: format!("fix for {cve}").into_bytes(),
+        };
+        let votes = ws
+            .iter()
+            .map(|(id, kp)| FactVote::cast(kp, &a, *id, &PatchedChecker, 100))
+            .collect();
+        FactAttestation {
+            assertion_id: a.id(),
+            subject,
+            predicate: a.predicate,
+            claim: a.claim,
+            beacon_round: 100,
+            votes,
+        }
+    }
+
+    #[test]
+    fn witnessed_facts_grant_selectors_and_roll_up() {
+        let ws: Vec<(NodeId, MeshKeypair)> = (10u8..=14).map(idk).collect();
+        let eligible: Vec<(NodeId, MeshPublicKey)> =
+            ws.iter().map(|(id, kp)| (*id, kp.public())).collect();
+        let cve = "CVE-2024-1234";
+        let mut ledger = FactLedger::new();
+        ledger.record(patched(node(1), cve, &ws), 3, &eligible);
+        ledger.record(patched(node(2), cve, &ws), 3, &eligible);
+
+        // node 1 grants the fact selector; node 3 (no fact) grants nothing.
+        assert_eq!(
+            ledger.selectors_for(node(1)),
+            vec![fact_selector(&format!("patched:{cve}"))]
+        );
+        assert!(ledger.selectors_for(node(3)).is_empty());
+
+        // The fleet rollup: 2 of 3 witnessed → not unanimous.
+        let rollup = ledger.fleet_rollup(&format!("patched:{cve}"), &[node(1), node(2), node(3)]);
+        assert_eq!(
+            rollup,
+            FleetRollup {
+                predicate: format!("patched:{cve}"),
+                witnessed: 2,
+                total: 3
+            }
+        );
+        assert!(!rollup.unanimous());
+        assert!(ledger
+            .fleet_rollup(&format!("patched:{cve}"), &[node(1), node(2)])
+            .unanimous());
+    }
+}
