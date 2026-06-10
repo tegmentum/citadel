@@ -25,7 +25,7 @@ what's testable in-tree vs. deployment.
 | # | Primitive | Crate (proposed) | Rides on | Priority | Status |
 |---|-----------|------------------|----------|----------|--------|
 | MB | Mesh randomness/freshness beacon | `citadel-beacon` | FROST/DKG, AppRelay | **1 (foundational)** | 🔨 MB1–MB2 done |
-| CAP | Continuously-earned capabilities | `citadel-caps` | release protocol, leases | **1 (unifying)** | 🔨 CAP1 done |
+| CAP | Continuously-earned capabilities | `citadel-caps` | release protocol, leases | **1 (unifying)** | 🔨 CAP1–CAP2 done |
 | FL | Witnessed fact/assertion ledger | `citadel-facts` | verdict quorum, reference manifests, audit chain | 2 (broadest) | planned |
 | CA | Mesh-operated signing service / threshold CA | `citadel-ca` | FROST signing, trust gate | 2 | planned |
 | TW | Distributed tripwires / honeytokens | `citadel-tripwire` | AppRelay, quarantine | 3 | planned |
@@ -108,7 +108,7 @@ is decided by the mesh.
 | Phase | Scope |
 |-------|-------|
 | CAP1 | ✅ done. `citadel-caps`: `Capability` (scope/holder/beacon_round/lease) + `Caveat` (ExpiresAtRound/ScopePrefix/BoundToHolder); `mint`/`attenuate`/`verify` (signature chain, only-narrows) + `authorizes` (scope + lease freshness + expiry + holder). Tests: mint→authorize within scope+lease; attenuation narrows (broadening rejected); tamper + wrong-signer rejected; holder binding. |
-| CAP2 | Issuance over the release protocol: `request_capability` → witness votes → quorum `CapabilityGrant`. Reuse `release` round machinery; tested over the harness (Trusted → granted, dropped trust → denied at renewal). |
+| CAP2 | ✅ done. `capability_secret_id(holder, scope)` makes a capability a mesh-released class; `grant(authority, capability, quorum, auth, eligible)` mints **only** on a satisfied ReleaseAuthorization (reuses `release`, gates like MSS `open`). Tests: grant gated on quorum (below quorum / wrong scope refused); live harness — a Trusted node is authorized, a compromised one denied. |
 | CAP3 | Enforcement adapters: an example PEP (policy-enforcement point) that verifies a token before an action; map an existing gate (e.g. a control-plane write) onto a capability. |
 
 ---

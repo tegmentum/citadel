@@ -726,6 +726,7 @@ dependencies = [
 name = "citadel-caps"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "citadel-mesh",
  "serde",
  "serde_json",

@@ -314,3 +314,113 @@ mod tests {
         );
     }
 }
+
+// -- CAP2: quorum issuance over the release protocol -------------------------
+
+use citadel_mesh::release::ReleaseAuthorization;
+
+/// The release secret-class id for a capability request (CAP-C1): a node requests
+/// a capability the same way it requests a sealed secret, so the assigned
+/// witnesses vote on its current trust and a quorum authorizes issuance. Stable
+/// per (holder, scope).
+pub fn capability_secret_id(holder: NodeId, scope: &str) -> [u8; 32] {
+    let mut h = blake3::Hasher::new();
+    h.update(b"citadel-capability\x00");
+    h.update(&holder.0);
+    h.update(scope.as_bytes());
+    *h.finalize().as_bytes()
+}
+
+/// Mint a capability **iff the mesh authorized it** (CAP2): the
+/// [`ReleaseAuthorization`] must be a satisfied quorum of the capability's
+/// eligible witnesses, for this exact (holder, scope). Otherwise refuse — the
+/// authority issues no capability without live mesh agreement, exactly like MSS
+/// `open` releases no bytes without it. `authority` is the mesh's
+/// capability-issuing key (a single key here models the role; distributed via
+/// MSS6 threshold signing).
+pub fn grant(
+    authority: &MeshKeypair,
+    capability: Capability,
+    quorum: usize,
+    auth: &ReleaseAuthorization,
+    eligible: &[(NodeId, MeshPublicKey)],
+) -> Option<CapabilityToken> {
+    if auth.secret_id != capability_secret_id(capability.holder, &capability.scope)
+        || auth.requester != capability.holder
+        || !auth.satisfies(quorum, eligible)
+    {
+        return None;
+    }
+    Some(mint(authority, capability))
+}
+
+#[cfg(test)]
+mod issuance_tests {
+    use super::*;
+    use citadel_mesh::crypto::MeshKeypair;
+    use citadel_mesh::release::{ReleaseRequest, ReleaseVote};
+
+    fn idk(n: u8) -> (NodeId, MeshKeypair) {
+        let kp = MeshKeypair::from_seed([n; 32]);
+        (NodeId(kp.public().fingerprint()), kp)
+    }
+
+    #[test]
+    fn capability_is_minted_only_with_a_satisfied_quorum() {
+        let holder = idk(1);
+        let scope = "deploy:prod";
+        let secret_id = capability_secret_id(holder.0, scope);
+        let quorum = 3;
+
+        // Five assigned witnesses (with keys) and the requester's request.
+        let witnesses: Vec<(NodeId, MeshKeypair)> = (10u8..=14).map(idk).collect();
+        let eligible: Vec<(NodeId, MeshPublicKey)> = witnesses
+            .iter()
+            .map(|(id, kp)| (*id, kp.public()))
+            .collect();
+        let req =
+            ReleaseRequest::create(&holder.1, holder.0, secret_id, [9u8; 32], quorum, 5, 100, 5);
+
+        let approve = |take: usize| ReleaseAuthorization {
+            secret_id,
+            requester: holder.0,
+            nonce: req.nonce,
+            votes: witnesses
+                .iter()
+                .take(take)
+                .map(|(id, kp)| ReleaseVote::sign(kp, &req, *id, true, 6))
+                .collect(),
+        };
+
+        let authority = MeshKeypair::from_seed([99; 32]);
+        let cap = Capability {
+            scope: scope.to_string(),
+            holder: holder.0,
+            beacon_round: 100,
+            lease_ticks: 10,
+        };
+
+        // A quorum of approvals → granted; the token verifies + authorizes.
+        let token =
+            grant(&authority, cap.clone(), quorum, &approve(quorum), &eligible).expect("granted");
+        let eff = verify(&token, &authority.public()).unwrap();
+        assert!(authorizes(&eff, "deploy:prod:svc-a", 105, &holder.0));
+
+        // Below quorum → refused.
+        assert!(grant(
+            &authority,
+            cap.clone(),
+            quorum,
+            &approve(quorum - 1),
+            &eligible
+        )
+        .is_none());
+
+        // An authorization for a different scope (secret-id mismatch) → refused.
+        let other = Capability {
+            scope: "deploy:staging".to_string(),
+            ..cap
+        };
+        assert!(grant(&authority, other, quorum, &approve(quorum), &eligible).is_none());
+    }
+}
