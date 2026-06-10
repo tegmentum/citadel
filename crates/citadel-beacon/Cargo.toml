@@ -14,6 +14,13 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 blake3 = "1"
+# P4: optional unbiasable threshold-BLS beacon (BLS12-381 pairing crypto). Behind
+# the `bls` feature so the default beacon stays FROST-only with no extra dep.
+blsttc = { version = "8.0", optional = true }
+rand = { version = "0.8", optional = true }
+
+[features]
+bls = ["dep:blsttc", "dep:rand"]
 
 [dev-dependencies]
 citadel-mesh = { path = "../citadel-mesh" }

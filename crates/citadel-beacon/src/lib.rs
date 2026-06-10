@@ -22,6 +22,9 @@ use citadel_mss::tsig::{self, KeyPackage, PublicKeyPackage, Signature};
 use serde::{Deserialize, Serialize};
 
 /// The `prev` of the first round (no predecessor).
+#[cfg(feature = "bls")]
+pub mod bls;
+
 pub const GENESIS_PREV: [u8; 32] = [0u8; 32];
 
 /// The message the threshold group signs for round `round` chaining to `prev`.

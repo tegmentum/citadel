@@ -50,6 +50,9 @@ jobs:
       - name: Test (x509-authority feature)
         run: cargo test -p citadel-mesh --features x509-authority
 
+      - name: Test (beacon bls feature)
+        run: cargo test -p citadel-beacon --features bls
+
       # Compile-check the agent's optional vTPM backend so the feature-gated code
       # can't bit-rot (it isn't in the default build). Runtime needs a built vTPM
       # component, so this is build-only. The `tpm-hw` feature needs tpm2-tss
