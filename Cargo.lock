@@ -711,6 +711,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "citadel-beacon"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "citadel-mss",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "citadel-control-plane"
 version = "0.1.0"
 dependencies = [

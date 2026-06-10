@@ -15,6 +15,7 @@ members = [
     "crates/citadel-otel-schema",
     "crates/citadel-metrics-exporter",
     "crates/citadel-telemetry",
+    "crates/citadel-beacon",
     "crates/citadel-spire-plugin",
     "crates/citadel-spire-controller",
     "crates/citadel-trust-sync",

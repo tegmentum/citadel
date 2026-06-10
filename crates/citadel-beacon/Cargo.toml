@@ -1,0 +1,16 @@
+[package]
+name = "citadel-beacon"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Citadel mesh randomness/freshness beacon — threshold-signed, chained rounds (MB1)"
+
+[dependencies]
+# Reuses the FROST threshold signing built for Mesh-Sealed Secrets (MSS6b). tsig
+# is a general threshold-signing module that happens to live here; it could be
+# extracted to a shared crate later.
+citadel-mss = { path = "../citadel-mss" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+blake3 = "1"
